@@ -72,3 +72,12 @@ pub async fn lcu_post(
 pub fn invalidate_lcu_cache(state: State<AppState>) {
     state.riot_client.invalidate_cache();
 }
+
+#[tauri::command]
+pub async fn detect_server(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .riot_client
+        .detect_server()
+        .await
+        .map_err(|e| e.to_string())
+}

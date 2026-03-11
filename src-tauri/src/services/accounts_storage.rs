@@ -225,6 +225,7 @@ impl AccountsStorage {
                 rank_display: record.rank_display,
                 riot_id: record.riot_id,
                 rank_icon_url: record.rank_icon_url,
+                server: String::new(),
                 is_selected: false,
             };
 

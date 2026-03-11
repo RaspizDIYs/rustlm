@@ -24,6 +24,8 @@ pub struct AccountRecord {
     pub riot_id: String,
     #[serde(default)]
     pub rank_icon_url: String,
+    #[serde(default)]
+    pub server: String,
     #[serde(skip)]
     pub is_selected: bool,
 }
@@ -41,6 +43,7 @@ impl Default for AccountRecord {
             rank_display: String::new(),
             riot_id: String::new(),
             rank_icon_url: String::new(),
+            server: String::new(),
             is_selected: false,
         }
     }

@@ -22,8 +22,24 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Download, Upload, Loader2, Lock } from "lucide-react";
+import { Download, Upload, Loader2, Lock, ArrowUpDown } from "lucide-react";
 import type { AccountRecord, ClientConnectivityStatus } from "@/lib/tauri";
+
+const RANK_ORDER: Record<string, number> = {
+  IRON: 1, BRONZE: 2, SILVER: 3, GOLD: 4, PLATINUM: 5,
+  EMERALD: 6, DIAMOND: 7, MASTER: 8, GRANDMASTER: 9, CHALLENGER: 10,
+};
+const DIVISION_ORDER: Record<string, number> = { IV: 1, III: 2, II: 3, I: 4 };
+
+function rankToNumber(rankDisplay: string): number {
+  if (!rankDisplay) return 0;
+  const parts = rankDisplay.toUpperCase().split(" ");
+  const tier = RANK_ORDER[parts[0]] || 0;
+  const div = DIVISION_ORDER[parts[1]] || 0;
+  return tier * 10 + div;
+}
+
+type SortMode = "default" | "rank-asc" | "rank-desc";
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
@@ -39,6 +55,7 @@ export default function AccountsPage() {
   } | null>(null);
   const [dialogPassword, setDialogPassword] = useState("");
   const [dialogError, setDialogError] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>("default");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAccounts = useCallback(async () => {
@@ -255,97 +272,151 @@ export default function AccountsPage() {
               <TableRow>
                 <TableHead>Логин</TableHead>
                 <TableHead>Заметка</TableHead>
-                <TableHead>Аккаунт</TableHead>
-                <TableHead>Создан</TableHead>
+                <TableHead>
+                  <button
+                    className="flex items-center gap-1 hover:text-foreground transition-colors"
+                    onClick={() => setSortMode((m) => m === "default" ? "rank-desc" : m === "rank-desc" ? "rank-asc" : "default")}
+                  >
+                    Аккаунт
+                    <ArrowUpDown className={`h-3 w-3 ${sortMode !== "default" ? "text-primary" : "opacity-50"}`} />
+                  </button>
+                </TableHead>
+                <TableHead>Сервер</TableHead>
                 <TableHead className="w-[150px]">Действия</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {accounts.map((account) => (
-                <TableRow key={account.Username}>
-                  <TableCell className="font-medium">
-                    {hideLogins ? "••••••••" : account.Username}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {account.Note || "—"}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      {account.AvatarUrl && (
-                        <img
-                          src={account.AvatarUrl}
-                          alt=""
-                          className="w-8 h-8 rounded-full"
-                        />
-                      )}
-                      <div>
-                        <div className="text-sm">
-                          {account.RiotId || account.SummonerName || "—"}
-                        </div>
-                        {account.RankDisplay && (
-                          <Badge variant="secondary" className="text-xs">
-                            {account.RankDisplay}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {new Date(account.CreatedAt).toLocaleDateString("ru-RU")}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      {loginInProgress === account.Username ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={async () => {
-                            try {
-                              const { cancelLogin } = await import("@/lib/tauri");
-                              await cancelLogin();
-                            } catch {}
-                          }}
-                        >
-                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                          Отмена
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="default"
-                          size="sm"
-                          disabled={loginInProgress !== null}
-                          onClick={async () => {
-                            setLoginInProgress(account.Username);
-                            setLoginError(null);
-                            try {
-                              const { loginToAccount } = await import("@/lib/tauri");
-                              await loginToAccount(account.Username, account.EncryptedPassword);
-                            } catch (e) {
-                              const msg = String(e);
-                              if (!msg.includes("cancelled")) {
-                                setLoginError(`${account.Username}: ${msg}`);
-                                setTimeout(() => setLoginError(null), 5000);
-                              }
-                            } finally {
-                              setLoginInProgress(null);
-                            }
-                          }}
-                        >
-                          Войти
-                        </Button>
-                      )}
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        disabled={loginInProgress !== null}
-                        onClick={() => handleDelete(account.Username)}
-                      >
-                        Удалить
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {(() => {
+                let sorted = [...accounts];
+                if (sortMode === "rank-desc") {
+                  sorted.sort((a, b) => rankToNumber(b.RankDisplay) - rankToNumber(a.RankDisplay));
+                } else if (sortMode === "rank-asc") {
+                  sorted.sort((a, b) => rankToNumber(a.RankDisplay) - rankToNumber(b.RankDisplay));
+                }
+
+                const servers = new Map<string, AccountRecord[]>();
+                for (const acc of sorted) {
+                  const srv = acc.Server || "Без сервера";
+                  if (!servers.has(srv)) servers.set(srv, []);
+                  servers.get(srv)!.push(acc);
+                }
+
+                const hasMultipleServers = servers.size > 1 || (servers.size === 1 && !servers.has("Без сервера"));
+
+                const rows: React.ReactNode[] = [];
+                for (const [server, group] of servers) {
+                  if (hasMultipleServers) {
+                    rows.push(
+                      <TableRow key={`srv-${server}`}>
+                        <TableCell colSpan={5} className="bg-muted/30 py-1.5 px-3">
+                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                            {server} ({group.length})
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  }
+                  for (const account of group) {
+                    rows.push(
+                      <TableRow key={account.Username}>
+                        <TableCell className="font-medium">
+                          {hideLogins ? "••••••••" : account.Username}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {account.Note || "—"}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {account.AvatarUrl && (
+                              <img
+                                src={account.AvatarUrl}
+                                alt=""
+                                className="w-8 h-8 rounded-full"
+                              />
+                            )}
+                            <div>
+                              <div className="text-sm">
+                                {account.RiotId || account.SummonerName || "—"}
+                              </div>
+                              {account.RankDisplay && (
+                                <Badge variant="secondary" className="text-xs">
+                                  {account.RankDisplay}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm">
+                          {account.Server || "—"}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            {loginInProgress === account.Username ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  try {
+                                    const { cancelLogin } = await import("@/lib/tauri");
+                                    await cancelLogin();
+                                  } catch {}
+                                }}
+                              >
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                Отмена
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="default"
+                                size="sm"
+                                disabled={loginInProgress !== null}
+                                onClick={async () => {
+                                  setLoginInProgress(account.Username);
+                                  setLoginError(null);
+                                  try {
+                                    const { loginToAccount, detectServer, saveAccount } = await import("@/lib/tauri");
+                                    await loginToAccount(account.Username, account.EncryptedPassword);
+                                    // Auto-detect server via RC API (available immediately after login)
+                                    try {
+                                      const server = await detectServer();
+                                      if (server && server !== account.Server) {
+                                        const updated = { ...account, Server: server };
+                                        await saveAccount(updated);
+                                        fetchAccounts();
+                                      }
+                                    } catch {
+                                      // Non-critical: server detection failed
+                                    }
+                                  } catch (e) {
+                                    const msg = String(e);
+                                    if (!msg.includes("cancelled")) {
+                                      setLoginError(`${account.Username}: ${msg}`);
+                                      setTimeout(() => setLoginError(null), 5000);
+                                    }
+                                  } finally {
+                                    setLoginInProgress(null);
+                                  }
+                                }}
+                              >
+                                Войти
+                              </Button>
+                            )}
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              disabled={loginInProgress !== null}
+                              onClick={() => handleDelete(account.Username)}
+                            >
+                              Удалить
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  }
+                }
+                return rows;
+              })()}
             </TableBody>
           </Table>
         </div>

@@ -11,6 +11,7 @@ export interface AccountRecord {
   RankDisplay: string;
   RiotId: string;
   RankIconUrl: string;
+  Server: string;
 }
 
 // Accounts
@@ -84,12 +85,14 @@ export interface ClientConnectivityStatus {
 }
 
 export interface AccountInfo {
-  game_name: string;
-  tag_line: string;
-  summoner_level: number;
-  profile_icon_id: number;
-  summoner_id: string;
+  summoner_name: string;
+  avatar_url: string;
+  rank: string;
+  rank_display: string;
+  riot_id: string;
   puuid: string;
+  summoner_level: number;
+  server: string;
 }
 
 export async function isRiotClientRunning(): Promise<boolean> {
@@ -130,6 +133,10 @@ export async function lcuPost(endpoint: string, body: string): Promise<string> {
 
 export async function invalidateLcuCache(): Promise<void> {
   return invoke("invalidate_lcu_cache");
+}
+
+export async function detectServer(): Promise<string> {
+  return invoke<string>("detect_server");
 }
 
 // Data Dragon

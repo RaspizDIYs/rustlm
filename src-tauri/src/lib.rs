@@ -50,6 +50,7 @@ pub fn run() {
             commands::riot_client::lcu_get,
             commands::riot_client::lcu_post,
             commands::riot_client::invalidate_lcu_cache,
+            commands::riot_client::detect_server,
             commands::data_dragon::get_ddragon_version,
             commands::data_dragon::get_champions,
             commands::data_dragon::get_champion_info,

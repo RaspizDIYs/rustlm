@@ -598,6 +598,9 @@ impl RiotClientService {
         // Get Riot ID
         let riot_id = self.get_riot_id().await.unwrap_or_default();
 
+        // Detect server/region
+        let server = self.detect_server().await.unwrap_or_default();
+
         Ok(Some(AccountInfo {
             summoner_name: display_name,
             avatar_url,
@@ -606,7 +609,35 @@ impl RiotClientService {
             riot_id,
             puuid,
             summoner_level: summoner_level as i32,
+            server,
         }))
+    }
+
+    pub async fn detect_server(&self) -> Result<String, AppError> {
+        // Try /riotclient/region-locale first (works via RC API)
+        if let Ok(resp) = self.rc_request(reqwest::Method::GET, "/riotclient/region-locale", None).await {
+            let val: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
+            if let Some(region) = val.get("region").and_then(|v| v.as_str()) {
+                if !region.is_empty() {
+                    return Ok(platform_to_server(region));
+                }
+            }
+        }
+
+        // Fallback: LCU shard-data
+        if let Ok(resp) = self.lcu_get("/lol-service-status/v1/shard-data").await {
+            let val: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
+            // Try slug first (e.g. "euw1"), then name
+            for field in &["slug", "name"] {
+                if let Some(v) = val.get(field).and_then(|v| v.as_str()) {
+                    if !v.is_empty() {
+                        return Ok(platform_to_server(v));
+                    }
+                }
+            }
+        }
+
+        Ok(String::new())
     }
 
     async fn get_riot_id(&self) -> Result<String, AppError> {
@@ -943,4 +974,28 @@ pub struct AccountInfo {
     pub riot_id: String,
     pub puuid: String,
     pub summoner_level: i32,
+    pub server: String,
+}
+
+fn platform_to_server(platform: &str) -> String {
+    let upper = platform.to_uppercase();
+    match upper.as_str() {
+        "EUW1" | "EUW" => "EUW",
+        "EUN1" | "EUNE" => "EUNE",
+        "NA1" | "NA" => "NA",
+        "KR" => "KR",
+        "RU" => "RU",
+        "TR1" | "TR" => "TR",
+        "BR1" | "BR" => "BR",
+        "JP1" | "JP" => "JP",
+        "LA1" | "LAN" => "LAN",
+        "LA2" | "LAS" => "LAS",
+        "OC1" | "OCE" => "OCE",
+        "PH2" | "PH" => "PH",
+        "SG2" | "SG" => "SG",
+        "TH2" | "TH" => "TH",
+        "TW2" | "TW" => "TW",
+        "VN2" | "VN" => "VN",
+        _ => return upper,
+    }.to_string()
 }
