@@ -82,6 +82,8 @@ pub fn run() {
             commands::reveal::test_api_key,
             commands::reveal::get_teams_info,
             commands::reveal::send_chat_message,
+            commands::migration::check_lolmanager_installed,
+            commands::migration::uninstall_lolmanager,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

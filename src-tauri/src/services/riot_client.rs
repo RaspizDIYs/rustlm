@@ -5,6 +5,9 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
 use crate::error::AppError;
@@ -162,8 +165,10 @@ impl RiotClientService {
 
     #[cfg(windows)]
     fn find_league_lockfile_from_process() -> Option<PathBuf> {
+        use std::os::windows::process::CommandExt;
         let output = Command::new("wmic")
             .args(["process", "where", "name='LeagueClientUx.exe'", "get", "ExecutablePath", "/VALUE"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -281,21 +286,27 @@ impl RiotClientService {
     pub fn kill_league(include_riot_client: bool) {
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
             let _ = Command::new("taskkill")
                 .args(["/F", "/IM", "LeagueClientUx.exe"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output();
             let _ = Command::new("taskkill")
                 .args(["/F", "/IM", "LeagueClient.exe"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output();
             if include_riot_client {
                 let _ = Command::new("taskkill")
                     .args(["/F", "/IM", "Riot Client.exe"])
+                    .creation_flags(CREATE_NO_WINDOW)
                     .output();
                 let _ = Command::new("taskkill")
                     .args(["/F", "/IM", "RiotClientUx.exe"])
+                    .creation_flags(CREATE_NO_WINDOW)
                     .output();
                 let _ = Command::new("taskkill")
                     .args(["/F", "/IM", "RiotClientServices.exe"])
+                    .creation_flags(CREATE_NO_WINDOW)
                     .output();
             }
         }

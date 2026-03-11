@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Sidebar } from "@/components/sidebar";
+import { LolManagerCleanupDialog } from "@/components/lolmanager-cleanup-dialog";
 import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +22,7 @@ export default function RootLayout({
       <body className="flex h-screen">
         <Sidebar />
         <main className="flex-1 overflow-auto p-6">{children}</main>
+        <LolManagerCleanupDialog />
       </body>
     </html>
   );

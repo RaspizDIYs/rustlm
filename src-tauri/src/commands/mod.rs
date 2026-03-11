@@ -4,6 +4,7 @@ pub mod customization;
 pub mod data_dragon;
 pub mod login;
 pub mod logs;
+pub mod migration;
 pub mod reveal;
 pub mod riot_client;
 pub mod rune_pages;

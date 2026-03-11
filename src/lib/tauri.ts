@@ -410,6 +410,15 @@ export async function saveUpdateSettings(settings: UpdateSettingsModel): Promise
   return invoke("save_update_settings", { settings });
 }
 
+// Migration
+export async function checkLolManagerInstalled(): Promise<boolean> {
+  return invoke<boolean>("check_lolmanager_installed");
+}
+
+export async function uninstallLolManager(): Promise<void> {
+  return invoke("uninstall_lolmanager");
+}
+
 // Greet (test)
 export async function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });
