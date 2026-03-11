@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RustLM",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "identifier": "com.rustlm.app",
   "build": {
     "frontendDist": "../out",
@@ -43,7 +43,10 @@
       "endpoints": [
         "https://github.com/RaspizDIYs/rustlm/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY4N0FBOTM3MjEzRTNBNDQKUldSRU9qNGhONmw2K0M3UHVaYzhtcSs0MlNXQU1SdXd5cm5TVEw0SmhtWHNsR2o3Z1hSZ09zU3oK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY4N0FBOTM3MjEzRTNBNDQKUldSRU9qNGhONmw2K0M3UHVaYzhtcSs0MlNXQU1SdXd5cm5TVEw0SmhtWHNsR2o3Z1hSZ09zU3oK",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
