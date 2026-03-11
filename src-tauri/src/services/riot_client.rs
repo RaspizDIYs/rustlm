@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -29,6 +30,31 @@ impl RiotClientService {
         }
     }
 
+    // --- Riot Client Install Detection ---
+
+    /// RiotClientInstalls.json lives in %PROGRAMDATA%\Riot Games\, NOT %LOCALAPPDATA%
+    fn find_installs_json() -> Option<PathBuf> {
+        // Primary: %PROGRAMDATA% (C:\ProgramData)
+        if let Ok(program_data) = env::var("PROGRAMDATA") {
+            let path = PathBuf::from(&program_data)
+                .join("Riot Games")
+                .join("RiotClientInstalls.json");
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        // Fallback: %LOCALAPPDATA% (some old installs)
+        if let Some(local_app_data) = dirs::data_local_dir() {
+            let path = local_app_data
+                .join("Riot Games")
+                .join("RiotClientInstalls.json");
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
     // --- Lockfile Parsing ---
 
     pub fn find_rc_lockfile() -> Option<LockfileInfo> {
@@ -57,14 +83,10 @@ impl RiotClientService {
     fn enumerate_lcu_lockfile_candidates() -> Vec<PathBuf> {
         let mut candidates = Vec::new();
 
-        // Try RiotClientInstalls.json first
-        if let Some(local_app_data) = dirs::data_local_dir() {
-            let installs_json = local_app_data
-                .join("Riot Games")
-                .join("RiotClientInstalls.json");
+        // Try RiotClientInstalls.json first (from %PROGRAMDATA%)
+        if let Some(installs_json) = Self::find_installs_json() {
             if let Ok(content) = fs::read_to_string(&installs_json) {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
-                    // Look for league_of_legends.product_install_full_path
                     if let Some(lol) = parsed.get("associated_client") {
                         if let Some(obj) = lol.as_object() {
                             for (path, _) in obj {
@@ -215,14 +237,8 @@ impl RiotClientService {
     pub fn start_riot_client() -> Result<(), AppError> {
         #[cfg(windows)]
         {
-            let local_app_data = dirs::data_local_dir()
-                .ok_or_else(|| AppError::Custom("Cannot find LocalAppData".to_string()))?;
-
-            let installs_json = local_app_data
-                .join("Riot Games")
-                .join("RiotClientInstalls.json");
-
-            if installs_json.exists() {
+            // Try RiotClientInstalls.json from %PROGRAMDATA% (primary) or %LOCALAPPDATA% (fallback)
+            if let Some(installs_json) = Self::find_installs_json() {
                 let content = fs::read_to_string(&installs_json)?;
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(rc_path) = parsed
@@ -238,6 +254,21 @@ impl RiotClientService {
                             return Ok(());
                         }
                     }
+                }
+            }
+
+            // Fallback: try common install paths
+            let fallback_paths = [
+                r"C:\Riot Games\Riot Client\RiotClientServices.exe",
+                r"D:\Riot Games\Riot Client\RiotClientServices.exe",
+            ];
+            for path_str in &fallback_paths {
+                let path = PathBuf::from(path_str);
+                if path.exists() {
+                    Command::new(&path)
+                        .spawn()
+                        .map_err(|e| AppError::Custom(format!("Failed to start RC: {}", e)))?;
+                    return Ok(());
                 }
             }
 
