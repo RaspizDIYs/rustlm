@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { RunePageEditor } from "@/components/rune-page-editor";
 import type { RunePage, RunePathModel, AutomationSettings } from "@/lib/tauri";
 
 const DDRAGON = "https://ddragon.leagueoflegends.com";
@@ -38,12 +39,18 @@ export default function AutomationPage() {
 
   // Automation settings
   const [autoAcceptEnabled, setAutoAcceptEnabled] = useState(false);
+  const [autoPickEnabled, setAutoPickEnabled] = useState(true);
+  const [autoBanEnabled, setAutoBanEnabled] = useState(true);
+  const [autoSpellsEnabled, setAutoSpellsEnabled] = useState(true);
+  const [autoRunesEnabled, setAutoRunesEnabled] = useState(true);
   const [selectedPick, setSelectedPick] = useState("");
   const [selectedBan, setSelectedBan] = useState("");
   const [selectedSpell1, setSelectedSpell1] = useState("");
   const [selectedSpell2, setSelectedSpell2] = useState("");
   const [selectedRunePage, setSelectedRunePage] = useState("");
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("pick");
+  const [runeEditorOpen, setRuneEditorOpen] = useState(false);
+  const [editingRunePage, setEditingRunePage] = useState<RunePage | null>(null);
 
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -70,6 +77,10 @@ export default function AutomationPage() {
       if (settings.Spell1Id) setSelectedSpell1(String(settings.Spell1Id));
       if (settings.Spell2Id) setSelectedSpell2(String(settings.Spell2Id));
       if (settings.SelectedRunePageName) setSelectedRunePage(settings.SelectedRunePageName);
+      if (settings.AutoPickEnabled !== undefined) setAutoPickEnabled(settings.AutoPickEnabled);
+      if (settings.AutoBanEnabled !== undefined) setAutoBanEnabled(settings.AutoBanEnabled);
+      if (settings.AutoSpellsEnabled !== undefined) setAutoSpellsEnabled(settings.AutoSpellsEnabled);
+      if (settings.AutoRunesEnabled !== undefined) setAutoRunesEnabled(settings.AutoRunesEnabled);
     } catch {
       // Not in Tauri
     } finally {
@@ -137,6 +148,17 @@ export default function AutomationPage() {
     }
   };
 
+  const handleSaveRunePage = async (page: RunePage) => {
+    try {
+      const { saveRunePage } = await import("@/lib/tauri");
+      await saveRunePage(page);
+      const { loadRunePages } = await import("@/lib/tauri");
+      setRunePages(await loadRunePages());
+    } catch (e) {
+      console.error("Save rune page failed:", e);
+    }
+  };
+
   const handleSelectRunePage = (pageName: string) => {
     setSelectedRunePage(pageName);
     saveSettings({ SelectedRunePageName: pageName });
@@ -172,7 +194,23 @@ export default function AutomationPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center justify-between">
-              <span>Выбор чемпиона</span>
+              <div className="flex items-center gap-3">
+                <span>Выбор чемпиона</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground font-normal">Пик</span>
+                  <Switch
+                    checked={autoPickEnabled}
+                    onCheckedChange={(v) => { setAutoPickEnabled(v); saveSettings({ AutoPickEnabled: v }); }}
+                    className="scale-75"
+                  />
+                  <span className="text-xs text-muted-foreground font-normal">Бан</span>
+                  <Switch
+                    checked={autoBanEnabled}
+                    onCheckedChange={(v) => { setAutoBanEnabled(v); saveSettings({ AutoBanEnabled: v }); }}
+                    className="scale-75"
+                  />
+                </div>
+              </div>
               <div className="flex gap-1">
                 <Button
                   variant={selectionMode === "pick" ? "default" : "outline"}
@@ -242,7 +280,13 @@ export default function AutomationPage() {
         {/* Summoner spells */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Заклинания призывателя</CardTitle>
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>Заклинания призывателя</span>
+              <Switch
+                checked={autoSpellsEnabled}
+                onCheckedChange={(v) => { setAutoSpellsEnabled(v); saveSettings({ AutoSpellsEnabled: v }); }}
+              />
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-4 gap-2">
@@ -294,10 +338,24 @@ export default function AutomationPage() {
       {/* Rune pages */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base">Страницы рун</CardTitle>
-          <span className="text-sm text-muted-foreground">
-            {runePages.length} сохранено
-          </span>
+          <div className="flex items-center gap-3">
+            <CardTitle className="text-base">Страницы рун</CardTitle>
+            <Switch
+              checked={autoRunesEnabled}
+              onCheckedChange={(v) => { setAutoRunesEnabled(v); saveSettings({ AutoRunesEnabled: v }); }}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">
+              {runePages.length} сохранено
+            </span>
+            <Button
+              size="sm"
+              onClick={() => { setEditingRunePage(null); setRuneEditorOpen(true); }}
+            >
+              Создать
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {runePages.length === 0 ? (
@@ -338,16 +396,29 @@ export default function AutomationPage() {
                       <span className="text-sm font-medium">{page.Name}</span>
                       {isSelected && <Badge variant="secondary" className="text-xs">Выбрано</Badge>}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteRunePage(page.Name);
-                      }}
-                    >
-                      Удалить
-                    </Button>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingRunePage(page);
+                          setRuneEditorOpen(true);
+                        }}
+                      >
+                        Изменить
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteRunePage(page.Name);
+                        }}
+                      >
+                        Удалить
+                      </Button>
+                    </div>
                   </div>
                 );
               })}
@@ -355,6 +426,14 @@ export default function AutomationPage() {
           )}
         </CardContent>
       </Card>
+
+      <RunePageEditor
+        open={runeEditorOpen}
+        onOpenChange={setRuneEditorOpen}
+        runePaths={runePaths}
+        editPage={editingRunePage}
+        onSave={handleSaveRunePage}
+      />
     </div>
   );
 }

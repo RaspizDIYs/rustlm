@@ -104,6 +104,10 @@ export async function killLeague(includeRiotClient: boolean): Promise<void> {
   return invoke("kill_league", { includeRiotClient });
 }
 
+export async function restartLeague(): Promise<void> {
+  return invoke("restart_league");
+}
+
 export async function startRiotClient(): Promise<void> {
   return invoke("start_riot_client");
 }
@@ -271,6 +275,10 @@ export interface AutomationSettings {
   BanChampionId?: number | null;
   Spell1Id?: number | null;
   Spell2Id?: number | null;
+  AutoPickEnabled?: boolean;
+  AutoBanEnabled?: boolean;
+  AutoSpellsEnabled?: boolean;
+  AutoRunesEnabled?: boolean;
 }
 
 export async function setAutoAcceptEnabled(enabled: boolean): Promise<void> {
@@ -292,6 +300,10 @@ export async function getAutomationSettings(): Promise<AutomationSettings> {
 // Login
 export async function loginToAccount(username: string, password: string): Promise<void> {
   return invoke("login_to_account", { username, password });
+}
+
+export async function cancelLogin(): Promise<void> {
+  return invoke("cancel_login");
 }
 
 // Customization

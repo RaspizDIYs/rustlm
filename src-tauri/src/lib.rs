@@ -44,6 +44,7 @@ pub fn run() {
             commands::riot_client::is_league_running,
             commands::riot_client::kill_league,
             commands::riot_client::start_riot_client,
+            commands::riot_client::restart_league,
             commands::riot_client::probe_connectivity,
             commands::riot_client::get_account_info,
             commands::riot_client::lcu_get,
@@ -69,6 +70,7 @@ pub fn run() {
             commands::auto_accept::set_automation_settings,
             commands::auto_accept::get_automation_settings,
             commands::login::login_to_account,
+            commands::login::cancel_login,
             commands::customization::set_profile_status,
             commands::customization::set_profile_availability,
             commands::customization::set_profile_icon,
@@ -89,13 +91,21 @@ pub fn run() {
                 )?;
             }
 
-            // Set app handle on auto-accept service for event emission
+            // Load persisted automation settings and set app handle
             let state = app.state::<AppState>();
+            commands::auto_accept::load_persisted_automation_settings(&state);
+
             let handle = app.handle().clone();
             let auto_accept = state.auto_accept.clone();
             tauri::async_runtime::spawn(async move {
                 auto_accept.set_app_handle(handle).await;
             });
+
+            // Set window icon explicitly (for dev mode where EXE resources aren't embedded)
+            let app_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))?;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_icon(app_icon.clone());
+            }
 
             // System tray
             let show_item = MenuItem::with_id(app, "show", "Показать", true, None::<&str>)?;
@@ -103,6 +113,7 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
             let _tray = TrayIconBuilder::new()
+                .icon(app_icon)
                 .menu(&menu)
                 .tooltip("RustLM")
                 .on_menu_event(|app, event| {

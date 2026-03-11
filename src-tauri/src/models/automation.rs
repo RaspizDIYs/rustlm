@@ -46,6 +46,16 @@ pub struct AutomationSettings {
     #[serde(default)]
     pub auto_rune_generation_enabled: bool,
 
+    // Individual automation toggles
+    #[serde(default = "default_true")]
+    pub auto_pick_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_ban_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_spells_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_runes_enabled: bool,
+
     // Runtime IDs resolved from champion/spell names
     #[serde(default)]
     pub pick_champion1: Option<String>,
@@ -69,6 +79,10 @@ pub struct AutomationSettings {
     pub spell2_id: Option<i32>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_auto_accept_method() -> String {
     "Polling".to_string()
 }
@@ -89,6 +103,10 @@ impl Default for AutomationSettings {
             is_pick_delay_enabled: false,
             pick_delay_seconds: 0,
             auto_rune_generation_enabled: false,
+            auto_pick_enabled: true,
+            auto_ban_enabled: true,
+            auto_spells_enabled: true,
+            auto_runes_enabled: true,
             pick_champion1: None,
             pick_champion2: None,
             pick_champion3: None,

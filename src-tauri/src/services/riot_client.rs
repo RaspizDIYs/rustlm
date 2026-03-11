@@ -178,40 +178,104 @@ impl RiotClientService {
         None
     }
 
-    pub fn is_riot_client_running() -> bool {
+    /// Check if a process is running by name using Windows ToolHelp API.
+    /// Handles names with spaces (e.g. "Riot Client.exe") without shell quoting issues.
+    fn is_process_running(name: &str) -> bool {
         #[cfg(windows)]
         {
-            let output = Command::new("tasklist")
-                .args(["/FI", "IMAGENAME eq RiotClientUx.exe", "/NH"])
-                .output();
-            match output {
-                Ok(o) => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    stdout.contains("RiotClientUx.exe")
+            Self::find_process_pids(name).len() > 0
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = name;
+            false
+        }
+    }
+
+    /// Find all PIDs of a process by name using CreateToolhelp32Snapshot.
+    #[cfg(windows)]
+    fn find_process_pids(name: &str) -> Vec<u32> {
+        use windows::Win32::System::Diagnostics::ToolHelp::*;
+        use windows::Win32::Foundation::CloseHandle;
+
+        let mut pids = Vec::new();
+        unsafe {
+            let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+                Ok(h) => h,
+                Err(_) => return pids,
+            };
+
+            let mut entry = PROCESSENTRY32W::default();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+            if Process32FirstW(snapshot, &mut entry).is_ok() {
+                loop {
+                    let exe_name = String::from_utf16_lossy(
+                        &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                    );
+                    if exe_name.eq_ignore_ascii_case(name) {
+                        pids.push(entry.th32ProcessID);
+                    }
+                    if Process32NextW(snapshot, &mut entry).is_err() {
+                        break;
+                    }
                 }
-                Err(_) => false,
+            }
+            let _ = CloseHandle(snapshot);
+        }
+        pids
+    }
+
+    /// Check if any Riot Client process is running.
+    /// Uses lockfile PID verification + process name checks.
+    pub fn is_riot_client_running() -> bool {
+        // Check lockfile — but verify the PID is actually alive
+        if let Some(lockfile) = Self::find_rc_lockfile() {
+            if Self::is_pid_alive(lockfile.pid) {
+                return true;
+            }
+            // Lockfile exists but PID is dead — stale lockfile, ignore it
+        }
+        Self::is_process_running("RiotClientServices.exe")
+            || Self::is_process_running("Riot Client.exe")
+            || Self::is_process_running("RiotClientUx.exe")
+    }
+
+    /// Check if a process with the given PID is still alive.
+    fn is_pid_alive(pid: u32) -> bool {
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+            use windows::Win32::Foundation::CloseHandle;
+            unsafe {
+                match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    Ok(handle) => {
+                        let _ = CloseHandle(handle);
+                        true
+                    }
+                    Err(_) => false,
+                }
             }
         }
         #[cfg(not(windows))]
-        false
+        {
+            let _ = pid;
+            false
+        }
+    }
+
+    /// Check specifically if the Riot Client UI process is running.
+    pub fn is_riot_client_ui_running() -> bool {
+        Self::is_process_running("Riot Client.exe")
+            || Self::is_process_running("RiotClientUx.exe")
+    }
+
+    pub fn is_riot_client_services_running() -> bool {
+        Self::is_process_running("RiotClientServices.exe")
     }
 
     pub fn is_league_running() -> bool {
-        #[cfg(windows)]
-        {
-            let output = Command::new("tasklist")
-                .args(["/FI", "IMAGENAME eq LeagueClientUx.exe", "/NH"])
-                .output();
-            match output {
-                Ok(o) => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    stdout.contains("LeagueClientUx.exe")
-                }
-                Err(_) => false,
-            }
-        }
-        #[cfg(not(windows))]
-        false
+        Self::is_process_running("LeagueClientUx.exe")
     }
 
     pub fn kill_league(include_riot_client: bool) {
@@ -224,6 +288,9 @@ impl RiotClientService {
                 .args(["/F", "/IM", "LeagueClient.exe"])
                 .output();
             if include_riot_client {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/IM", "Riot Client.exe"])
+                    .output();
                 let _ = Command::new("taskkill")
                     .args(["/F", "/IM", "RiotClientUx.exe"])
                     .output();
@@ -554,6 +621,284 @@ impl RiotClientService {
         } else {
             Ok(format!("{}#{}", game_name, tag_line))
         }
+    }
+
+    // --- RC HTTP API (Riot Client, NOT LCU) ---
+
+    /// Make an HTTP request to Riot Client via its lockfile (port + password).
+    /// This is separate from LCU — RC lockfile is in %LOCALAPPDATA%/Riot Games/Riot Client/Config/lockfile.
+    async fn rc_request(
+        &self,
+        method: reqwest::Method,
+        endpoint: &str,
+        body: Option<&str>,
+    ) -> Result<String, AppError> {
+        let lockfile = Self::find_rc_lockfile()
+            .ok_or_else(|| AppError::Custom("RC lockfile not found".to_string()))?;
+
+        let url = format!("https://127.0.0.1:{}{}", lockfile.port, endpoint);
+        let auth = Self::make_auth_header(&lockfile.password);
+
+        let mut req = self
+            .http_client
+            .request(method, &url)
+            .header(AUTHORIZATION, &auth)
+            .header(CONTENT_TYPE, "application/json");
+
+        if let Some(b) = body {
+            req = req.body(b.to_string());
+        }
+
+        let response = req
+            .send()
+            .await
+            .map_err(|e| AppError::Custom(format!("RC request failed: {}", e)))?;
+
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|e| AppError::Custom(format!("RC response read failed: {}", e)))?;
+
+        // Only log non-200 responses to reduce noise
+        if !status.is_success() {
+            eprintln!("[RC_API] {} → {} | {}", endpoint, status.as_u16(),
+                if text.len() > 200 { &text[..200] } else { &text });
+        }
+
+        Ok(text)
+    }
+
+    /// Logout current account via RC API.
+    /// Tries DELETE on both v1 and v2 endpoints — ignores individual errors.
+    pub async fn logout_via_rc(&self) -> Result<(), AppError> {
+        let _ = self.rc_request(reqwest::Method::DELETE, "/rso-auth/v1/authorization", None).await;
+        let _ = self.rc_request(reqwest::Method::DELETE, "/rso-auth/v2/authorizations", None).await;
+        Ok(())
+    }
+
+    /// Check if a user is currently authorized via RSO (Riot Sign-On).
+    pub async fn is_rso_authorized(&self) -> bool {
+        let resp = match self
+            .rc_request(reqwest::Method::GET, "/rso-auth/v1/authorization", None)
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
+            if json.get("errorCode").is_some() {
+                return false;
+            }
+            if json.get("isAuthorized").and_then(|v| v.as_bool()) == Some(true) {
+                return true;
+            }
+            if let Some(auth) = json.get("authorization") {
+                if auth.get("accessToken").and_then(|v| v.as_str()).is_some() {
+                    return true;
+                }
+            }
+            if json.get("authorized").and_then(|v| v.as_bool()) == Some(true) {
+                return true;
+            }
+            if json.get("subject").and_then(|v| v.as_str()).map(|s| !s.is_empty()) == Some(true) {
+                return true;
+            }
+            if json.get("currentAccountId").and_then(|v| v.as_u64()).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Initialize RSO session — required before login_via_rc can work.
+    /// POST /rso-auth/v2/authorizations creates the RSO session.
+    pub async fn init_rso_session(&self) -> Result<(), AppError> {
+        let body = r#"{"clientId":"riot-client","trustLevels":["always_trusted"]}"#;
+        let resp = self
+            .rc_request(reqwest::Method::POST, "/rso-auth/v2/authorizations", Some(body))
+            .await?;
+
+        eprintln!("[RSO_INIT] v2 response: {}",
+            if resp.len() > 300 { &resp[..300] } else { &resp });
+
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
+            if json.get("errorCode").is_some() {
+                // v2 failed, try v1
+                let resp_v1 = self
+                    .rc_request(reqwest::Method::POST, "/rso-auth/v1/authorization", Some(body))
+                    .await?;
+                eprintln!("[RSO_INIT] v1 response: {}",
+                    if resp_v1.len() > 300 { &resp_v1[..300] } else { &resp_v1 });
+                if let Ok(json_v1) = serde_json::from_str::<serde_json::Value>(&resp_v1) {
+                    if let Some(ec) = json_v1.get("errorCode").and_then(|v| v.as_str()) {
+                        return Err(AppError::Custom(format!("RSO session init failed: {}", ec)));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Login via RC API using credentials (no UIA needed).
+    /// Requires init_rso_session() to be called first.
+    /// PUT /rso-auth/v1/session/credentials
+    pub async fn login_via_rc(&self, username: &str, password: &str) -> Result<(), AppError> {
+        let body = serde_json::json!({
+            "username": username,
+            "password": password,
+            "persistLogin": false
+        });
+
+        let resp = self
+            .rc_request(
+                reqwest::Method::PUT,
+                "/rso-auth/v1/session/credentials",
+                Some(&body.to_string()),
+            )
+            .await?;
+
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
+            let resp_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+            // Success
+            if resp_type == "authenticated" || resp_type == "success" {
+                return Ok(());
+            }
+
+            // 2FA required
+            if resp_type == "multifactor" {
+                let method = json.get("multifactor")
+                    .and_then(|m| m.get("method"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(AppError::Custom(format!("Login requires 2FA (method: {})", method)));
+            }
+
+            // Error
+            if let Some(error) = json.get("error").and_then(|v| v.as_str()) {
+                return Err(AppError::Custom(format!("Login failed: {} (type: {})", error, resp_type)));
+            }
+            if let Some(error_code) = json.get("errorCode").and_then(|v| v.as_str()) {
+                let message = json.get("message").and_then(|v| v.as_str()).unwrap_or(error_code);
+                return Err(AppError::Custom(format!("Login failed: {}", message)));
+            }
+
+            // No error fields — success
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    /// Launch League of Legends via RC product launcher API.
+    /// Tries multiple endpoints since Riot changes them between versions.
+    pub async fn launch_league_via_rc(&self) -> Result<(), AppError> {
+        // List of endpoints to try (in order of likelihood)
+        let endpoints = [
+            ("/product-launcher/v1/products/league_of_legends/patchlines/live", "POST"),
+            ("/product-launcher/v1/products/league_of_legends/patchlines/live/launch", "POST"),
+            ("/product-launcher/v1/launch", "POST"),
+        ];
+
+        let body = r#"{"productId":"league_of_legends","patchlineId":"live"}"#;
+
+        for (endpoint, _) in &endpoints {
+            match self.rc_request(reqwest::Method::POST, endpoint, Some(body)).await {
+                Ok(r) if !r.contains("errorCode") => return Ok(()),
+                _ => continue,
+            }
+        }
+
+        // Last resort: start League directly via process
+        Self::start_league_directly()
+    }
+
+    /// Start League Client directly via RiotClientServices.exe with launch args.
+    fn start_league_directly() -> Result<(), AppError> {
+        #[cfg(windows)]
+        {
+            if let Some(installs_json) = Self::find_installs_json() {
+                let content = fs::read_to_string(&installs_json)?;
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(rc_path) = parsed
+                        .get("rc_default")
+                        .or_else(|| parsed.get("rc_live"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let path = PathBuf::from(rc_path);
+                        if path.exists() {
+                            Command::new(&path)
+                                .args(["--launch-product=league_of_legends", "--launch-patchline=live"])
+                                .spawn()
+                                .map_err(|e| AppError::Custom(format!("Failed to launch League: {}", e)))?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Err(AppError::Custom("Could not launch League of Legends".to_string()))
+        }
+        #[cfg(not(windows))]
+        Err(AppError::Custom("Not supported on this platform".to_string()))
+    }
+
+    // --- Wait Helpers ---
+
+    /// Wait for a process by name to appear (polling every 200ms).
+    pub fn wait_for_process(name: &str, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if Self::is_process_running(name) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        false
+    }
+
+    /// Wait for RC lockfile to appear (polling every 200ms).
+    pub fn wait_for_rc_lockfile(timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if Self::find_rc_lockfile().is_some() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        false
+    }
+
+    /// Wait for RC API to be responsive (not returning 404 on all endpoints).
+    /// This is needed because RC lockfile appears before the HTTP API is ready.
+    pub async fn wait_for_rc_api_ready(&self, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            // Try a simple GET — if it returns anything other than 404, API is ready
+            match self.rc_request(reqwest::Method::GET, "/rso-auth/v1/authorization", None).await {
+                Ok(resp) => {
+                    if !resp.contains("RESOURCE_NOT_FOUND") {
+                        return true;
+                    }
+                }
+                Err(_) => {} // Connection error — RC not ready yet
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        false
+    }
+
+    /// Wait for RSO authorization state to match target (polling every 300ms).
+    pub async fn wait_for_rso_state(&self, authorized: bool, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if self.is_rso_authorized().await == authorized {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        false
     }
 
     // --- Connectivity Probe ---

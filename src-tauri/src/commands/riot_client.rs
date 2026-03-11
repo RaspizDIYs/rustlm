@@ -25,6 +25,14 @@ pub fn start_riot_client() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn restart_league(state: State<'_, AppState>) -> Result<(), String> {
+    RiotClientService::kill_league(false);
+    // Wait a bit for processes to die
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    state.riot_client.launch_league_via_rc().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn probe_connectivity(state: State<'_, AppState>) -> Result<ClientConnectivityStatus, String> {
     Ok(state.riot_client.probe_connectivity().await)
 }

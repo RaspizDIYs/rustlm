@@ -7,7 +7,6 @@ import { ArrowLeft, Bug, Github, MessageCircle, Copy, Check } from "lucide-react
 
 const DEVELOPERS = [
   { name: "@mejaikin", discord: "mejaikin" },
-  { name: "@spellq", discord: "spellq" },
   { name: "@shp1n4t", discord: "shp1n4t" },
 ];
 
@@ -142,7 +141,7 @@ export default function InfoPage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => openUrl("https://discord.gg/lolmanager")}
+          onClick={() => openUrl("https://discord.gg/9wS4DBMDNB")}
         >
           <MessageCircle className="h-4 w-4 mr-1" /> Discord
         </Button>

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::services::accounts_storage::AccountsStorage;
 use crate::services::auto_accept::AutoAcceptService;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub auto_accept: Arc<AutoAcceptService>,
     pub customization: Arc<CustomizationService>,
     pub reveal: Arc<RevealService>,
+    pub login_cancelled: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -36,6 +38,7 @@ impl AppState {
         let auto_accept = Arc::new(AutoAcceptService::new(Arc::clone(&riot_client)));
         let customization = Arc::new(CustomizationService::new(Arc::clone(&riot_client)));
         let reveal = Arc::new(RevealService::new(Arc::clone(&riot_client)));
+        let login_cancelled = Arc::new(AtomicBool::new(false));
 
         logger.info("RustLM starting up...");
 
@@ -50,6 +53,7 @@ impl AppState {
             auto_accept,
             customization,
             reveal,
+            login_cancelled,
         }
     }
 }

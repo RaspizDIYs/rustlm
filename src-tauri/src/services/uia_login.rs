@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use windows::core::*;
@@ -10,12 +12,13 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// Attempt to log in to Riot Client by automating the login form via UI Automation.
 /// This must be called from a COM STA thread (use `spawn_blocking`).
-pub fn login_to_riot_client(username: &str, password: &str, timeout_secs: u64) -> Result<()> {
+/// Pass `cancel` to allow early abort from the UI.
+pub fn login_to_riot_client(username: &str, password: &str, timeout_secs: u64, cancel: Option<&Arc<AtomicBool>>) -> Result<()> {
     unsafe {
         CoInitializeEx(Some(std::ptr::null()), COINIT_APARTMENTTHREADED).ok()?;
     }
 
-    let result = unsafe { do_login(username, password, timeout_secs) };
+    let result = unsafe { do_login(username, password, timeout_secs, cancel) };
 
     unsafe {
         CoUninitialize();
@@ -24,41 +27,47 @@ pub fn login_to_riot_client(username: &str, password: &str, timeout_secs: u64) -
     result
 }
 
-unsafe fn do_login(username: &str, password: &str, timeout_secs: u64) -> Result<()> {
+fn is_cancelled(cancel: Option<&Arc<AtomicBool>>) -> bool {
+    cancel.map_or(false, |c| c.load(Ordering::Relaxed))
+}
+
+unsafe fn do_login(username: &str, password: &str, timeout_secs: u64, cancel: Option<&Arc<AtomicBool>>) -> Result<()> {
     let automation: IUIAutomation =
         CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
 
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
 
     // Find Riot Client window
-    let hwnd = wait_for_riot_client_window(deadline)?;
+    let hwnd = wait_for_riot_client_window(deadline, cancel)?;
 
     // Activate window
     activate_window(hwnd);
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(80));
 
     let element = automation.ElementFromHandle(hwnd)?;
 
+    if is_cancelled(cancel) { return Err(Error::new(E_ABORT, "Login cancelled")); }
+
     // Find login fields with retry
     let (username_el, password_el, sign_in_el) =
-        find_login_elements(&automation, &element, hwnd, deadline)?;
+        find_login_elements(&automation, &element, hwnd, deadline, cancel)?;
 
     // Input username
     set_element_value(&username_el, username)?;
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(Duration::from_millis(20));
 
     // Verify username was set
     verify_value(&username_el, username);
 
     // Input password
     set_element_value(&password_el, password)?;
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(Duration::from_millis(20));
 
     // Try to check "Remember Me" checkbox
     let _ = try_check_remember_me(&automation, &element);
 
     // Click sign in
-    std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(30));
     if let Some(btn) = sign_in_el {
         invoke_button(&btn);
     } else {
@@ -74,10 +83,13 @@ unsafe fn do_login(username: &str, password: &str, timeout_secs: u64) -> Result<
     Ok(())
 }
 
-fn wait_for_riot_client_window(deadline: std::time::Instant) -> Result<HWND> {
+fn wait_for_riot_client_window(deadline: std::time::Instant, cancel: Option<&Arc<AtomicBool>>) -> Result<HWND> {
     let process_names = ["RiotClientUx", "RiotClientUxRender", "Riot Client"];
 
     loop {
+        if is_cancelled(cancel) {
+            return Err(Error::new(E_ABORT, "Login cancelled"));
+        }
         if std::time::Instant::now() > deadline {
             return Err(Error::new(E_FAIL, "Riot Client window not found within timeout"));
         }
@@ -88,34 +100,41 @@ fn wait_for_riot_client_window(deadline: std::time::Instant) -> Result<HWND> {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
 fn find_process_main_window(process_name: &str) -> Option<HWND> {
-    use std::process::Command;
+    // Use native Windows API (CreateToolhelp32Snapshot) to find process PIDs
+    // This handles names with spaces like "Riot Client" without shell quoting issues
+    let exe_name = format!("{}.exe", process_name);
 
-    let output = Command::new("tasklist")
-        .args(["/fi", &format!("imagename eq {}.exe", process_name), "/fo", "csv", "/nh"])
-        .output()
-        .ok()?;
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
+    use windows::Win32::Foundation::CloseHandle;
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    if text.trim().is_empty() || text.contains("INFO: No tasks") {
-        return None;
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                );
+                if name.eq_ignore_ascii_case(&exe_name) {
+                    let pid = entry.th32ProcessID;
+                    let _ = CloseHandle(snapshot);
+                    return find_main_window_for_pid(pid);
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
     }
-
-    // Parse PID from CSV: "name","pid",...
-    let pid: u32 = text.lines()
-        .next()?
-        .split(',')
-        .nth(1)?
-        .trim_matches('"')
-        .parse()
-        .ok()?;
-
-    // Enumerate windows for this PID
-    find_main_window_for_pid(pid)
+    None
 }
 
 struct EnumData {
@@ -168,10 +187,15 @@ unsafe fn find_login_elements(
     root: &IUIAutomationElement,
     hwnd: HWND,
     deadline: std::time::Instant,
+    cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<(IUIAutomationElement, IUIAutomationElement, Option<IUIAutomationElement>)> {
     let mut scan_cycles = 0u32;
+    let mut clicked_sign_in_landing = false;
 
     loop {
+        if is_cancelled(cancel) {
+            return Err(Error::new(E_ABORT, "Login cancelled"));
+        }
         if std::time::Instant::now() > deadline {
             return Err(Error::new(E_FAIL, "Login fields not found within timeout"));
         }
@@ -181,6 +205,17 @@ unsafe fn find_login_elements(
         // Periodic window activation
         if scan_cycles % 10 == 0 {
             activate_window(hwnd);
+        }
+
+        // After some retries, try clicking "Sign in" landing button
+        // (RC sometimes shows a landing page with a "Sign in" button before the actual form)
+        if !clicked_sign_in_landing && scan_cycles >= 5 {
+            if let Some(btn) = find_landing_sign_in_button(automation, root) {
+                invoke_button(&btn);
+                clicked_sign_in_landing = true;
+                std::thread::sleep(Duration::from_millis(300));
+                continue;
+            }
         }
 
         // Try to find username field
@@ -198,13 +233,13 @@ unsafe fn find_login_elements(
                 if let Some((u, p)) = find_edit_controls_fallback(automation, root) {
                     (u, p)
                 } else {
-                    std::thread::sleep(Duration::from_millis(80));
+                    std::thread::sleep(Duration::from_millis(50));
                     continue;
                 }
             }
         };
 
-        // Find sign-in button
+        // Find sign-in button (the submit button on the login form)
         let sign_in = find_sign_in_button(automation, root);
 
         return Ok((username_el, password_el, sign_in));
@@ -266,6 +301,26 @@ unsafe fn find_edit_controls_fallback(
     } else {
         None
     }
+}
+
+/// Find a "Sign in" button on the RC landing page (before the login form appears).
+/// This is broader than find_sign_in_button — it looks for any clickable element
+/// with sign-in text, not just buttons (could be a hyperlink or custom control).
+unsafe fn find_landing_sign_in_button(
+    automation: &IUIAutomation,
+    root: &IUIAutomationElement,
+) -> Option<IUIAutomationElement> {
+    let names = ["Sign in", "Sign In", "Войти", "Log In", "LOG IN", "SIGN IN"];
+
+    for name in &names {
+        let condition = automation
+            .CreatePropertyCondition(UIA_NamePropertyId, &VARIANT::from(BSTR::from(*name)))
+            .ok()?;
+        if let Ok(el) = root.FindFirst(TreeScope_Descendants, &condition) {
+            return Some(el);
+        }
+    }
+    None
 }
 
 unsafe fn find_sign_in_button(
