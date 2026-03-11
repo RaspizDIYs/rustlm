@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -28,7 +28,17 @@ const navItems = [
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const [appVersion, setAppVersion] = useState("0.1.0");
   const pathname = usePathname();
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        setAppVersion(await getVersion());
+      } catch {}
+    })();
+  }, []);
 
   return (
     <aside
@@ -79,7 +89,7 @@ export function Sidebar() {
       {/* Footer */}
       <div className="p-3 border-t border-border">
         {!collapsed && (
-          <div className="text-xs text-muted-foreground">v0.1.0</div>
+          <div className="text-xs text-muted-foreground">v{appVersion}</div>
         )}
       </div>
     </aside>

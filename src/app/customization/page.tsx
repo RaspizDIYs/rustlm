@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,13 +20,18 @@ export default function CustomizationPage() {
   const [skinId, setSkinId] = useState("");
   const [result, setResult] = useState<string | null>(null);
 
+  const showResult = useCallback((msg: string) => {
+    setResult(msg);
+    setTimeout(() => setResult(null), 3000);
+  }, []);
+
   const handleSetStatus = async () => {
     try {
       const { setProfileStatus } = await import("@/lib/tauri");
       const ok = await setProfileStatus(status);
-      setResult(ok ? "Статус установлен" : "Ошибка");
+      showResult(ok ? "Статус установлен" : "Ошибка");
     } catch (e) {
-      setResult(`Ошибка: ${e}`);
+      showResult(`Ошибка: ${e}`);
     }
   };
 
@@ -34,33 +39,33 @@ export default function CustomizationPage() {
     try {
       const { setProfileAvailability } = await import("@/lib/tauri");
       const ok = await setProfileAvailability(availability);
-      setResult(ok ? "Доступность изменена" : "Ошибка");
+      showResult(ok ? "Доступность изменена" : "Ошибка");
     } catch (e) {
-      setResult(`Ошибка: ${e}`);
+      showResult(`Ошибка: ${e}`);
     }
   };
 
   const handleSetIcon = async () => {
     try {
-      const id = parseInt(iconId);
-      if (isNaN(id)) return;
+      const id = parseInt(iconId, 10);
+      if (isNaN(id) || id < 0) return;
       const { setProfileIcon } = await import("@/lib/tauri");
       const ok = await setProfileIcon(id);
-      setResult(ok ? "Иконка установлена" : "Ошибка");
+      showResult(ok ? "Иконка установлена" : "Ошибка");
     } catch (e) {
-      setResult(`Ошибка: ${e}`);
+      showResult(`Ошибка: ${e}`);
     }
   };
 
   const handleSetBackground = async () => {
     try {
-      const id = parseInt(skinId);
-      if (isNaN(id)) return;
+      const id = parseInt(skinId, 10);
+      if (isNaN(id) || id < 0) return;
       const { setProfileBackground } = await import("@/lib/tauri");
       const ok = await setProfileBackground(id);
-      setResult(ok ? "Фон установлен" : "Ошибка");
+      showResult(ok ? "Фон установлен" : "Ошибка");
     } catch (e) {
-      setResult(`Ошибка: ${e}`);
+      showResult(`Ошибка: ${e}`);
     }
   };
 

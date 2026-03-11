@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -33,9 +33,21 @@ export default function LogsPage() {
     }
   }, []);
 
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     fetchLogs();
   }, [fetchLogs]);
+
+  useEffect(() => {
+    if (autoRefresh) {
+      intervalRef.current = setInterval(fetchLogs, 3000);
+    } else if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+    }
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [autoRefresh, fetchLogs]);
 
   const handleClear = async () => {
     try {
@@ -86,6 +98,13 @@ export default function LogsPage() {
           <Button variant="secondary" size="sm" onClick={fetchLogs}>
             Обновить
           </Button>
+          <Button
+            variant={autoRefresh ? "default" : "secondary"}
+            size="sm"
+            onClick={() => setAutoRefresh(!autoRefresh)}
+          >
+            {autoRefresh ? "Авто ●" : "Авто"}
+          </Button>
           <Button variant="secondary" size="sm" onClick={handleClear}>
             Очистить
           </Button>
@@ -114,7 +133,7 @@ export default function LogsPage() {
 
       <Card>
         <CardContent className="p-0">
-          <ScrollArea className="h-[500px]">
+          <ScrollArea className="h-[calc(100vh-240px)]">
             <div className="p-4 font-mono text-xs space-y-0.5">
               {filteredLines.length === 0 ? (
                 <p className="text-muted-foreground">Логи пусты</p>

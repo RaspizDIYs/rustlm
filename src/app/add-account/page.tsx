@@ -74,10 +74,8 @@ export default function AddAccountPage() {
           </div>
           <div className="space-y-2">
             <label className="text-sm text-muted-foreground">Заметка</label>
-            <textarea
+            <Input
               placeholder="Необязательная заметка"
-              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
-              rows={3}
               value={note}
               onChange={(e) => setNote(e.target.value)}
             />

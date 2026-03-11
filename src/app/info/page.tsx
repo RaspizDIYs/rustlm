@@ -1,11 +1,9 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Bug, Github, MessageCircle, Copy, Check } from "lucide-react";
-
-const APP_VERSION = "0.1.0";
 
 const DEVELOPERS = [
   { name: "@mejaikin", discord: "mejaikin" },
@@ -29,6 +27,16 @@ const CHANGELOG = `## 0.1.0
 export default function InfoPage() {
   const [showChangelog, setShowChangelog] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [appVersion, setAppVersion] = useState("0.1.0");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        setAppVersion(await getVersion());
+      } catch {}
+    })();
+  }, []);
 
   const copyDiscord = useCallback((discord: string, index: number) => {
     navigator.clipboard.writeText(discord);
@@ -83,7 +91,7 @@ export default function InfoPage() {
           RustLM
         </h1>
         <p className="text-muted-foreground">League of Legends Account Manager</p>
-        <p className="text-sm font-medium text-primary">Версия {APP_VERSION}</p>
+        <p className="text-sm font-medium text-primary">Версия {appVersion}</p>
         <Button variant="link" size="sm" onClick={() => setShowChangelog(true)}>
           Показать историю изменений
         </Button>
@@ -120,21 +128,21 @@ export default function InfoPage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => openUrl("https://github.com")}
+          onClick={() => openUrl("https://github.com/RaspizDIYs/rustlm/issues/new")}
         >
           <Bug className="h-4 w-4 mr-1" /> Сообщить о проблеме
         </Button>
         <Button
           variant="outline"
           size="sm"
-          onClick={() => openUrl("https://github.com")}
+          onClick={() => openUrl("https://github.com/RaspizDIYs/rustlm")}
         >
           <Github className="h-4 w-4 mr-1" /> GitHub
         </Button>
         <Button
           variant="outline"
           size="sm"
-          onClick={() => openUrl("https://discord.gg")}
+          onClick={() => openUrl("https://discord.gg/lolmanager")}
         >
           <MessageCircle className="h-4 w-4 mr-1" /> Discord
         </Button>

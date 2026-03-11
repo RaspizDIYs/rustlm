@@ -154,7 +154,7 @@ export default function SpyPage() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
