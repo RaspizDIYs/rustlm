@@ -37,5 +37,12 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/RaspizDIYs/rustlm/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY4N0FBOTM3MjEzRTNBNDQKUldSRU9qNGhONmw2K0M3UHVaYzhtcSs0MlNXQU1SdXd5cm5TVEw0SmhtWHNsR2o3Z1hSZ09zU3oK"
+    }
+  }
 }

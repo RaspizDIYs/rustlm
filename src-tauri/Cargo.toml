@@ -12,7 +12,7 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # Tauri
@@ -27,7 +27,8 @@ tokio = { version = "1", features = ["full"] }
 
 # HTTP + WebSocket
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+native-tls = "0.2"
 futures-util = "0.3"
 
 # Serialization
@@ -57,6 +58,7 @@ anyhow = "1"
 dirs = "6"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+tauri-plugin-updater = "2.10.0"
 
 # Windows-specific
 [target.'cfg(windows)'.dependencies]
@@ -68,4 +70,5 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Com",
+    "Win32_System_Variant",
 ] }

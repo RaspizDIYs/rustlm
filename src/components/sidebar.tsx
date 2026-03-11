@@ -4,15 +4,26 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import {
+  Users,
+  Zap,
+  Palette,
+  Search,
+  Info,
+  Settings,
+  ScrollText,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 
 const navItems = [
-  { href: "/accounts", label: "Аккаунты", icon: "👤" },
-  { href: "/automation", label: "Автоматизация", icon: "⚡" },
-  { href: "/customization", label: "Кастомизация", icon: "🎨" },
-  { href: "/spy", label: "Разведка", icon: "🔍" },
-  { href: "/info", label: "Информация", icon: "ℹ️" },
-  { href: "/settings", label: "Настройки", icon: "⚙️" },
-  { href: "/logs", label: "Логи", icon: "📋" },
+  { href: "/accounts", label: "Аккаунты", icon: Users },
+  { href: "/automation", label: "Автоматизация", icon: Zap },
+  { href: "/customization", label: "Кастомизация", icon: Palette },
+  { href: "/spy", label: "Разведка", icon: Search },
+  { href: "/info", label: "Информация", icon: Info },
+  { href: "/settings", label: "Настройки", icon: Settings },
+  { href: "/logs", label: "Логи", icon: ScrollText },
 ];
 
 export function Sidebar() {
@@ -37,7 +48,7 @@ export function Sidebar() {
           onClick={() => setCollapsed(!collapsed)}
           className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
         >
-          {collapsed ? "▶" : "◀"}
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
         </button>
       </div>
 
@@ -46,6 +57,7 @@ export function Sidebar() {
         {navItems.map((item) => {
           const isActive =
             pathname === item.href || pathname.startsWith(item.href + "/");
+          const Icon = item.icon;
           return (
             <Link
               key={item.href}
@@ -53,11 +65,11 @@ export function Sidebar() {
               className={cn(
                 "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
                 isActive
-                  ? "bg-gradient-to-r from-primary to-purple-500 text-primary-foreground shadow-lg shadow-primary/25"
+                  ? "bg-sidebar-primary text-sidebar-primary-foreground"
                   : "text-sidebar-foreground hover:bg-accent hover:text-foreground"
               )}
             >
-              <span className="text-base flex-shrink-0">{item.icon}</span>
+              <Icon className="h-4 w-4 flex-shrink-0" />
               {!collapsed && <span>{item.label}</span>}
             </Link>
           );

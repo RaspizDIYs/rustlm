@@ -1,1 +1,8 @@
-// Models will be added in phase 1
+pub mod account;
+pub mod automation;
+pub mod champion;
+pub mod league_client;
+pub mod lcu_data;
+pub mod player;
+pub mod rune;
+pub mod settings;
