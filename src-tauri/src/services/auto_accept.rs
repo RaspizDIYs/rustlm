@@ -147,23 +147,57 @@ impl AutoAcceptService {
     }
 
     async fn run_websocket_listener(&self, mut cancel: tokio::sync::watch::Receiver<bool>) {
-        log::info!("[WS] WebSocket listener started");
+        log::info!("[WS] WebSocket listener started, waiting for LCU...");
+
+        // Wait for LCU to become available before attempting any connections
+        let (port, password) = loop {
+            if *cancel.borrow() {
+                log::info!("[WS] WebSocket listener stopped (cancelled while waiting for LCU)");
+                return;
+            }
+            if let Some(auth) = self.riot_client.get_lcu_auth() {
+                // Verify LCU is actually responsive, not just lockfile present
+                if self.riot_client.lcu_get("/lol-service-status/v1/shard-data").await.is_ok() {
+                    log::info!("[WS] LCU is ready (port={}), starting WebSocket connections", auth.0);
+                    break auth;
+                }
+                self.riot_client.invalidate_cache();
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+                _ = cancel.changed() => return,
+            }
+        };
+        // Use the initial auth for first connection, then re-fetch in loop
+        let _ = (port, password);
+
         loop {
             if *cancel.borrow() {
                 log::info!("[WS] WebSocket listener stopped");
                 return;
             }
 
-            // Get LCU auth
+            // Get LCU auth (re-fetch each iteration — port/password can change on reconnect)
             let (port, password) = match self.riot_client.get_lcu_auth() {
-                Some(auth) => {
-                    log::info!("[WS] LCU auth found, port={}", auth.0);
-                    auth
-                }
+                Some(auth) => auth,
                 None => {
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(3)) => continue,
-                        _ = cancel.changed() => return,
+                    // LCU went away — wait for it to come back
+                    log::info!("[WS] LCU disconnected, waiting for reconnect...");
+                    self.riot_client.invalidate_cache();
+                    self.ws_failures.store(0, Ordering::SeqCst);
+                    self.force_polling.store(false, Ordering::SeqCst);
+                    loop {
+                        if let Some(auth) = self.riot_client.get_lcu_auth() {
+                            if self.riot_client.lcu_get("/lol-service-status/v1/shard-data").await.is_ok() {
+                                log::info!("[WS] LCU reconnected (port={})", auth.0);
+                                break auth;
+                            }
+                            self.riot_client.invalidate_cache();
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+                            _ = cancel.changed() => return,
+                        }
                     }
                 }
             };
@@ -808,9 +842,28 @@ impl AutoAcceptService {
     }
 
     async fn run_polling_listener(&self, mut cancel: tokio::sync::watch::Receiver<bool>) {
-        log::info!("[Polling] Polling listener started (fallback)");
-        let mut poll_count: u64 = 0;
-        let mut last_lcu_ok = false;
+        log::info!("[Polling] Polling listener started, waiting for LCU...");
+
+        // Wait for LCU to become available before polling
+        loop {
+            if *cancel.borrow() {
+                log::info!("[Polling] Polling listener stopped (cancelled while waiting for LCU)");
+                return;
+            }
+            if let Some(auth) = self.riot_client.get_lcu_auth() {
+                if self.riot_client.lcu_get("/lol-service-status/v1/shard-data").await.is_ok() {
+                    log::info!("[Polling] LCU is ready (port={}), starting polling", auth.0);
+                    break;
+                }
+                self.riot_client.invalidate_cache();
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+                _ = cancel.changed() => return,
+            }
+        }
+
+        let mut last_lcu_ok = true;
 
         loop {
             if *cancel.borrow() {
@@ -827,14 +880,13 @@ impl AutoAcceptService {
                 }
             }
 
-            poll_count += 1;
-
             // Check LCU connectivity
             let lcu_auth = self.riot_client.get_lcu_auth();
             if lcu_auth.is_none() {
-                if last_lcu_ok || poll_count == 1 {
-                    log::warn!("[Polling] LCU not connected (no lockfile/auth). Waiting...");
+                if last_lcu_ok {
+                    log::warn!("[Polling] LCU disconnected. Waiting for reconnect...");
                     last_lcu_ok = false;
+                    self.riot_client.invalidate_cache();
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(3)) => continue,
@@ -843,7 +895,7 @@ impl AutoAcceptService {
             }
 
             if !last_lcu_ok {
-                log::info!("[Polling] LCU connected, polling active");
+                log::info!("[Polling] LCU reconnected, polling active");
                 last_lcu_ok = true;
             }
 

@@ -1,6 +1,6 @@
 [package]
 name = "rustlm"
-version = "0.1.7"
+version = "0.1.8"
 description = "League of Legends Account Manager"
 authors = ["RaspizDIYs"]
 license = "MIT"

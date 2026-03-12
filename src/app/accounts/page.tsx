@@ -65,6 +65,7 @@ export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loginInProgress, setLoginInProgress] = useState<string | null>(null);
+  const [loginProgress, setLoginProgress] = useState<string>("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [connectivity, setConnectivity] = useState<ClientConnectivityStatus | null>(null);
   const [autoAcceptEnabled, setAutoAcceptEnabled] = useState(false);
@@ -130,9 +131,18 @@ export default function AccountsPage() {
     };
     window.addEventListener("autoAcceptSync", onAutoAcceptSync);
 
+    // Listen for login progress events from backend
+    let unlistenProgress: (() => void) | undefined;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<string>("login-progress", (event) => {
+        setLoginProgress(event.payload);
+      }).then((fn) => { unlistenProgress = fn; });
+    });
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
       window.removeEventListener("autoAcceptSync", onAutoAcceptSync);
+      unlistenProgress?.();
     };
   }, [fetchAccounts, pollConnectivity]);
 
@@ -463,19 +473,24 @@ export default function AccountsPage() {
                         <TableCell>
                           <div className="flex gap-1">
                             {loginInProgress === account.Username ? (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={async () => {
-                                  try {
-                                    const { cancelLogin } = await import("@/lib/tauri");
-                                    await cancelLogin();
-                                  } catch {}
-                                }}
-                              >
-                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                                Отмена
-                              </Button>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={async () => {
+                                    try {
+                                      const { cancelLogin } = await import("@/lib/tauri");
+                                      await cancelLogin();
+                                    } catch {}
+                                  }}
+                                >
+                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                  Отмена
+                                </Button>
+                                {loginProgress && (
+                                  <span className="text-xs text-muted-foreground">{loginProgress}</span>
+                                )}
+                              </div>
                             ) : (
                               <Button
                                 variant="default"
@@ -483,6 +498,7 @@ export default function AccountsPage() {
                                 disabled={loginInProgress !== null}
                                 onClick={async () => {
                                   setLoginInProgress(account.Username);
+                                  setLoginProgress("");
                                   setLoginError(null);
                                   try {
                                     const { loginToAccount, detectServer, getAccountInfo, saveAccount } = await import("@/lib/tauri");
@@ -535,6 +551,7 @@ export default function AccountsPage() {
                                     }
                                   } finally {
                                     setLoginInProgress(null);
+                                    setLoginProgress("");
                                   }
                                 }}
                               >

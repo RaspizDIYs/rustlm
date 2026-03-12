@@ -545,6 +545,18 @@ impl RiotClientService {
 
     // --- Account Info ---
 
+    /// Fetch the latest Data Dragon version (e.g. "15.5.1") for CDN URLs.
+    /// Falls back to None if the request fails.
+    async fn fetch_ddragon_version(&self) -> Option<String> {
+        let resp = self.http_client
+            .get("https://ddragon.leagueoflegends.com/api/versions.json")
+            .send()
+            .await
+            .ok()?;
+        let versions: Vec<String> = resp.json().await.ok()?;
+        versions.into_iter().next()
+    }
+
     pub async fn get_account_info(
         &self,
     ) -> Result<Option<AccountInfo>, AppError> {
@@ -626,10 +638,11 @@ impl RiotClientService {
             }
         }
 
-        // Get avatar URL
+        // Get avatar URL (fetch latest DDragon version so new icons resolve correctly)
+        let ddragon_version = self.fetch_ddragon_version().await.unwrap_or_else(|| "14.1.1".to_string());
         let avatar_url = format!(
-            "https://ddragon.leagueoflegends.com/cdn/14.1.1/img/profileicon/{}.png",
-            profile_icon_id
+            "https://ddragon.leagueoflegends.com/cdn/{}/img/profileicon/{}.png",
+            ddragon_version, profile_icon_id
         );
 
         // Get Riot ID
@@ -917,26 +930,27 @@ impl RiotClientService {
 
     // --- Wait Helpers ---
 
-    /// Wait for a process by name to appear (polling every 200ms).
-    pub fn wait_for_process(name: &str, timeout: Duration) -> bool {
+    /// Wait for a process by name to appear (async, polling every 200ms).
+    pub async fn wait_for_process(name: &str, timeout: Duration) -> bool {
+        let name = name.to_string();
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            if Self::is_process_running(name) {
+            if Self::is_process_running(&name) {
                 return true;
             }
-            std::thread::sleep(Duration::from_millis(200));
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         false
     }
 
-    /// Wait for RC lockfile to appear (polling every 200ms).
-    pub fn wait_for_rc_lockfile(timeout: Duration) -> bool {
+    /// Wait for RC lockfile to appear (async, polling every 200ms).
+    pub async fn wait_for_rc_lockfile(timeout: Duration) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
             if Self::find_rc_lockfile().is_some() {
                 return true;
             }
-            std::thread::sleep(Duration::from_millis(200));
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         false
     }
@@ -970,6 +984,46 @@ impl RiotClientService {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
         false
+    }
+
+    // --- Login Phase Detection ---
+
+    /// Detect what phase the login system is currently in.
+    /// This allows the algorithm to resume from any point after failures or cold starts.
+    pub async fn detect_login_phase(&self) -> LoginPhase {
+        // Check if League is already running with LCU available
+        if Self::is_league_running() {
+            if self.get_lcu_auth().is_some() {
+                return LoginPhase::LeagueRunning;
+            }
+        }
+
+        // Check if RC is running at all
+        let rc_running = Self::is_riot_client_running();
+        if !rc_running {
+            return LoginPhase::Nothing;
+        }
+
+        // RC process exists — check lockfile
+        let lockfile = Self::find_rc_lockfile();
+        if lockfile.is_none() {
+            return LoginPhase::RcStarting;
+        }
+
+        // Lockfile exists — check if API is responsive
+        match self.rc_request(reqwest::Method::GET, "/rso-auth/v1/authorization", None).await {
+            Ok(resp) => {
+                if resp.contains("RESOURCE_NOT_FOUND") {
+                    return LoginPhase::RcWaitingForApi;
+                }
+                // API is responsive — check authorization
+                if self.is_rso_authorized().await {
+                    return LoginPhase::Authenticated;
+                }
+                LoginPhase::RcReady
+            }
+            Err(_) => LoginPhase::RcWaitingForApi,
+        }
     }
 
     // --- Connectivity Probe ---
@@ -1015,6 +1069,24 @@ pub struct AccountInfo {
     pub puuid: String,
     pub summoner_level: i32,
     pub server: String,
+}
+
+/// Describes the current phase of the Riot Client login lifecycle.
+/// Used to determine what the login algorithm should do next.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub enum LoginPhase {
+    /// Nothing is running — need to start RC from scratch
+    Nothing,
+    /// RC process is spawned but lockfile doesn't exist yet
+    RcStarting,
+    /// RC lockfile exists but API returns 404 (still initializing)
+    RcWaitingForApi,
+    /// RC API is responsive, ready for login
+    RcReady,
+    /// User is already RSO-authorized
+    Authenticated,
+    /// League Client is running with LCU available
+    LeagueRunning,
 }
 
 fn platform_to_server(platform: &str) -> String {
