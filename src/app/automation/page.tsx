@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { RunePageEditor } from "@/components/rune-page-editor";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { RunePage, RunePathModel, AutomationSettings } from "@/lib/tauri";
 
 const DDRAGON = "https://ddragon.leagueoflegends.com";
@@ -90,6 +91,12 @@ export default function AutomationPage() {
 
   useEffect(() => {
     loadData();
+    // Sync auto-accept state when toggled from tray
+    const onAutoAcceptSync = (e: Event) => {
+      setAutoAcceptEnabled((e as CustomEvent<boolean>).detail);
+    };
+    window.addEventListener("autoAcceptSync", onAutoAcceptSync);
+    return () => window.removeEventListener("autoAcceptSync", onAutoAcceptSync);
   }, [loadData]);
 
   const saveSettings = useCallback(async (overrides: Partial<AutomationSettings>) => {
@@ -108,8 +115,9 @@ export default function AutomationPage() {
   const handleToggleAutoAccept = async (enabled: boolean) => {
     setAutoAcceptEnabled(enabled);
     try {
-      const { setAutoAcceptEnabled: setEnabled } = await import("@/lib/tauri");
+      const { setAutoAcceptEnabled: setEnabled, refreshTray } = await import("@/lib/tauri");
       await setEnabled(enabled);
+      await refreshTray().catch(() => {});
     } catch (e) {
       console.error("Toggle auto-accept failed:", e);
     }
@@ -170,8 +178,86 @@ export default function AutomationPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground">
-        Загрузка данных Data Dragon...
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-8 w-48" />
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-5 w-9 rounded-full" />
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          {/* Champion pick/ban skeleton */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="h-5 w-32" />
+                  <Skeleton className="h-5 w-9 rounded-full" />
+                  <Skeleton className="h-5 w-9 rounded-full" />
+                </div>
+                <div className="flex gap-1">
+                  <Skeleton className="h-8 w-14 rounded-md" />
+                  <Skeleton className="h-8 w-14 rounded-md" />
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Skeleton className="h-9 w-full rounded-md" />
+              <div className="grid grid-cols-6 gap-1.5">
+                {Array.from({ length: 18 }).map((_, i) => (
+                  <Skeleton key={i} className="aspect-square rounded-md" />
+                ))}
+              </div>
+              <div className="flex gap-4">
+                <Skeleton className="h-5 w-20" />
+                <Skeleton className="h-5 w-20" />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Summoner spells skeleton */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <Skeleton className="h-5 w-44" />
+                <Skeleton className="h-5 w-9 rounded-full" />
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-1.5">
+                {Array.from({ length: 11 }).map((_, i) => (
+                  <Skeleton key={i} className="w-10 h-10 rounded-md" />
+                ))}
+              </div>
+              <div className="flex gap-4">
+                <Skeleton className="h-5 w-16" />
+                <Skeleton className="h-5 w-16" />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Rune pages skeleton */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="h-5 w-9 rounded-full" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-8 w-16 rounded-md" />
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 w-full rounded-lg" />
+            ))}
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -289,7 +375,7 @@ export default function AutomationPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-4 gap-2">
+            <div className="flex flex-wrap gap-1.5">
               {Object.entries(spells).map(([name, key]) => {
                 const imgName = SPELL_IMAGE_MAP[key] || "SummonerFlash";
                 const isSpell1 = selectedSpell1 === key;
@@ -299,7 +385,7 @@ export default function AutomationPage() {
                     key={key}
                     title={name}
                     onClick={() => handleSelectSpell(key)}
-                    className={`rounded-md overflow-hidden border-2 transition-colors ${
+                    className={`rounded-md overflow-hidden border-2 transition-colors w-10 h-10 ${
                       isSpell1
                         ? "border-primary"
                         : isSpell2
@@ -310,7 +396,7 @@ export default function AutomationPage() {
                     <img
                       src={`${DDRAGON}/cdn/${version}/img/spell/${imgName}.png`}
                       alt={name}
-                      className="w-full aspect-square object-cover"
+                      className="w-full h-full object-cover"
                       loading="lazy"
                     />
                   </button>

@@ -4,8 +4,19 @@
 
 @custom-variant dark (&:is(.dark *));
 
-body {
+html, body {
   overflow: hidden;
+  background: transparent !important;
+}
+
+/* Titlebar */
+.titlebar {
+  background: var(--color-sidebar);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.titlebar-button {
+  -webkit-app-region: no-drag;
 }
 
 /* Custom scrollbar */

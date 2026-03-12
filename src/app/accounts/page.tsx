@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -22,8 +21,29 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Download, Upload, Loader2, Lock, ArrowUpDown } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil } from "lucide-react";
 import type { AccountRecord, ClientConnectivityStatus } from "@/lib/tauri";
+
+const SERVERS = [
+  { code: "EUW", name: "EU West" },
+  { code: "EUNE", name: "EU Nordic & East" },
+  { code: "NA", name: "North America" },
+  { code: "KR", name: "Korea" },
+  { code: "RU", name: "Russia" },
+  { code: "TR", name: "Turkey" },
+  { code: "BR", name: "Brazil" },
+  { code: "JP", name: "Japan" },
+  { code: "LAN", name: "Latin America North" },
+  { code: "LAS", name: "Latin America South" },
+  { code: "OCE", name: "Oceania" },
+];
 
 const RANK_ORDER: Record<string, number> = {
   IRON: 1, BRONZE: 2, SILVER: 3, GOLD: 4, PLATINUM: 5,
@@ -56,13 +76,27 @@ export default function AccountsPage() {
   const [dialogPassword, setDialogPassword] = useState("");
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("default");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addUsername, setAddUsername] = useState("");
+  const [addPassword, setAddPassword] = useState("");
+  const [addNote, setAddNote] = useState("");
+  const [addServer, setAddServer] = useState("");
+  const [addSaving, setAddSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [editAccount, setEditAccount] = useState<AccountRecord | null>(null);
+  const [editUsername, setEditUsername] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [editServer, setEditServer] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAccounts = useCallback(async () => {
     try {
-      const { loadAccounts } = await import("@/lib/tauri");
+      const { loadAccounts, refreshTray } = await import("@/lib/tauri");
       const data = await loadAccounts();
       setAccounts(data);
+      await refreshTray().catch(() => {});
     } catch {
       // Not running in Tauri
     } finally {
@@ -89,8 +123,16 @@ export default function AccountsPage() {
       loadSetting("HideLogins", false).then((v) => setHideLogins(v as boolean)).catch(() => {});
     });
     pollRef.current = setInterval(pollConnectivity, 5000);
+
+    // Sync auto-accept state when toggled from tray
+    const onAutoAcceptSync = (e: Event) => {
+      setAutoAcceptEnabled((e as CustomEvent<boolean>).detail);
+    };
+    window.addEventListener("autoAcceptSync", onAutoAcceptSync);
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      window.removeEventListener("autoAcceptSync", onAutoAcceptSync);
     };
   }, [fetchAccounts, pollConnectivity]);
 
@@ -161,8 +203,9 @@ export default function AccountsPage() {
   const handleToggleAutoAccept = async (enabled: boolean) => {
     setAutoAcceptEnabled(enabled);
     try {
-      const { setAutoAcceptEnabled: setEnabled } = await import("@/lib/tauri");
+      const { setAutoAcceptEnabled: setEnabled, refreshTray } = await import("@/lib/tauri");
       await setEnabled(enabled);
+      await refreshTray().catch(() => {});
     } catch (e) {
       console.error("Toggle auto-accept failed:", e);
     }
@@ -218,6 +261,76 @@ export default function AccountsPage() {
     }
   };
 
+  const openEditDialog = (account: AccountRecord) => {
+    setEditAccount(account);
+    setEditUsername(account.Username);
+    setEditPassword("");
+    setEditNote(account.Note);
+    setEditServer(account.Server);
+  };
+
+  const handleAddSubmit = async () => {
+    if (!addUsername || !addPassword) return;
+    setAddSaving(true);
+    try {
+      const { protectPassword, saveAccount } = await import("@/lib/tauri");
+      const encryptedPassword = await protectPassword(addPassword);
+      await saveAccount({
+        Username: addUsername,
+        EncryptedPassword: encryptedPassword,
+        Note: addNote,
+        CreatedAt: new Date().toISOString(),
+        AvatarUrl: "",
+        SummonerName: "",
+        Rank: "",
+        RankDisplay: "",
+        RiotId: "",
+        RankIconUrl: "",
+        Server: addServer,
+      });
+      setAddOpen(false);
+      setAddUsername("");
+      setAddPassword("");
+      setAddNote("");
+      setAddServer("");
+      await fetchAccounts();
+    } catch (e) {
+      console.error("Add failed:", e);
+    } finally {
+      setAddSaving(false);
+    }
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editAccount || !editUsername) return;
+    setEditSaving(true);
+    try {
+      const { protectPassword, saveAccount, deleteAccount: delAcc } = await import("@/lib/tauri");
+      const encryptedPassword = editPassword
+        ? await protectPassword(editPassword)
+        : editAccount.EncryptedPassword;
+
+      // If username changed, delete the old record first
+      if (editUsername !== editAccount.Username) {
+        await delAcc(editAccount.Username);
+      }
+
+      await saveAccount({
+        ...editAccount,
+        Username: editUsername,
+        EncryptedPassword: encryptedPassword,
+        Note: editNote,
+        Server: editServer,
+      });
+      setEditAccount(null);
+      await fetchAccounts();
+    } catch (e) {
+      console.error("Edit failed:", e);
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {loginError && (
@@ -244,9 +357,7 @@ export default function AccountsPage() {
           <Button variant="outline" size="sm" onClick={handleImport}>
             <Upload className="h-3.5 w-3.5 mr-1" /> Импорт
           </Button>
-          <Link href="/add-account">
-            <Button>Добавить</Button>
-          </Link>
+          <Button onClick={() => setAddOpen(true)}>Добавить</Button>
         </div>
       </div>
 
@@ -374,19 +485,48 @@ export default function AccountsPage() {
                                   setLoginInProgress(account.Username);
                                   setLoginError(null);
                                   try {
-                                    const { loginToAccount, detectServer, saveAccount } = await import("@/lib/tauri");
+                                    const { loginToAccount, detectServer, getAccountInfo, saveAccount } = await import("@/lib/tauri");
                                     await loginToAccount(account.Username, account.EncryptedPassword);
-                                    // Auto-detect server via RC API (available immediately after login)
-                                    try {
-                                      const server = await detectServer();
-                                      if (server && server !== account.Server) {
-                                        const updated = { ...account, Server: server };
+                                    // Fetch account info & server after login (with retries since LCU may not be ready)
+                                    const fetchInfo = async (retries: number): Promise<void> => {
+                                      let updated = { ...account };
+                                      let changed = false;
+                                      try {
+                                        const server = await detectServer();
+                                        if (server && server !== updated.Server) {
+                                          updated = { ...updated, Server: server };
+                                          changed = true;
+                                        }
+                                      } catch { /* non-critical */ }
+                                      try {
+                                        const info = await getAccountInfo();
+                                        if (info) {
+                                          updated = {
+                                            ...updated,
+                                            SummonerName: info.summoner_name || updated.SummonerName,
+                                            RiotId: info.riot_id || updated.RiotId,
+                                            Rank: info.rank || updated.Rank,
+                                            RankDisplay: info.rank_display || updated.RankDisplay,
+                                            AvatarUrl: info.avatar_url || updated.AvatarUrl,
+                                          };
+                                          changed = true;
+                                        } else if (retries > 0) {
+                                          await new Promise((r) => setTimeout(r, 3000));
+                                          return fetchInfo(retries - 1);
+                                        }
+                                      } catch {
+                                        if (retries > 0) {
+                                          await new Promise((r) => setTimeout(r, 3000));
+                                          return fetchInfo(retries - 1);
+                                        }
+                                      }
+                                      if (changed) {
                                         await saveAccount(updated);
                                         fetchAccounts();
                                       }
-                                    } catch {
-                                      // Non-critical: server detection failed
-                                    }
+                                    };
+                                    // Run in background so login button unblocks immediately
+                                    fetchInfo(3).catch(() => {});
                                   } catch (e) {
                                     const msg = String(e);
                                     if (!msg.includes("cancelled")) {
@@ -402,10 +542,18 @@ export default function AccountsPage() {
                               </Button>
                             )}
                             <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={loginInProgress !== null}
+                              onClick={() => openEditDialog(account)}
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                            <Button
                               variant="destructive"
                               size="sm"
                               disabled={loginInProgress !== null}
-                              onClick={() => handleDelete(account.Username)}
+                              onClick={() => setDeleteTarget(account.Username)}
                             >
                               Удалить
                             </Button>
@@ -507,6 +655,147 @@ export default function AccountsPage() {
             <Button variant="outline" onClick={() => setPasswordDialog(null)}>Отмена</Button>
             <Button onClick={handlePasswordSubmit} disabled={!dialogPassword.trim()}>
               {passwordDialog?.mode === "export" ? "Экспорт" : "Импорт"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add account dialog */}
+      <Dialog open={addOpen} onOpenChange={(open) => { if (!open) setAddOpen(false); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Добавить аккаунт</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Логин</label>
+              <Input
+                placeholder="Введите логин"
+                value={addUsername}
+                onChange={(e) => setAddUsername(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Пароль</label>
+              <Input
+                type="password"
+                placeholder="Введите пароль"
+                value={addPassword}
+                onChange={(e) => setAddPassword(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Сервер</label>
+              <Select value={addServer} onValueChange={(v) => v && setAddServer(v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите сервер" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SERVERS.map((s) => (
+                    <SelectItem key={s.code} value={s.code}>
+                      {s.code} — {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Заметка</label>
+              <Input
+                placeholder="Необязательная заметка"
+                value={addNote}
+                onChange={(e) => setAddNote(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddOpen(false)}>Отмена</Button>
+            <Button onClick={handleAddSubmit} disabled={addSaving || !addUsername || !addPassword}>
+              {addSaving ? "Сохранение..." : "Добавить"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <DialogContent className="sm:max-w-xs">
+          <DialogHeader>
+            <DialogTitle>Удалить аккаунт?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Аккаунт <span className="font-medium text-foreground">{deleteTarget}</span> будет удалён. Это действие нельзя отменить.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Отмена</Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (deleteTarget) {
+                  await handleDelete(deleteTarget);
+                  setDeleteTarget(null);
+                }
+              }}
+            >
+              Удалить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit account dialog */}
+      <Dialog open={editAccount !== null} onOpenChange={(open) => { if (!open) setEditAccount(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Редактировать аккаунт</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Логин</label>
+              <Input
+                value={editUsername}
+                onChange={(e) => setEditUsername(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Новый пароль</label>
+              <Input
+                type="password"
+                placeholder="Оставьте пустым, чтобы не менять"
+                value={editPassword}
+                onChange={(e) => setEditPassword(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Сервер</label>
+              <Select value={editServer} onValueChange={(v) => v && setEditServer(v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Выберите сервер" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SERVERS.map((s) => (
+                    <SelectItem key={s.code} value={s.code}>
+                      {s.code} — {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Заметка</label>
+              <Input
+                placeholder="Необязательная заметка"
+                value={editNote}
+                onChange={(e) => setEditNote(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditAccount(null)}>Отмена</Button>
+            <Button onClick={handleEditSubmit} disabled={editSaving || !editUsername}>
+              {editSaving ? "Сохранение..." : "Сохранить"}
             </Button>
           </DialogFooter>
         </DialogContent>

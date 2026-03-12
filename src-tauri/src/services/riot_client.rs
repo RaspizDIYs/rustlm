@@ -7,6 +7,10 @@ use std::time::Duration;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x00000008;
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 
@@ -24,6 +28,7 @@ impl RiotClientService {
         let http_client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(10))
+            .http1_only()
             .build()
             .unwrap_or_default();
 
@@ -315,6 +320,8 @@ impl RiotClientService {
     pub fn start_riot_client() -> Result<(), AppError> {
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
+
             // Try RiotClientInstalls.json from %PROGRAMDATA% (primary) or %LOCALAPPDATA% (fallback)
             if let Some(installs_json) = Self::find_installs_json() {
                 let content = fs::read_to_string(&installs_json)?;
@@ -327,6 +334,7 @@ impl RiotClientService {
                         let path = PathBuf::from(rc_path);
                         if path.exists() {
                             Command::new(&path)
+                                .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                                 .spawn()
                                 .map_err(|e| AppError::Custom(format!("Failed to start RC: {}", e)))?;
                             return Ok(());
@@ -344,6 +352,7 @@ impl RiotClientService {
                 let path = PathBuf::from(path_str);
                 if path.exists() {
                     Command::new(&path)
+                        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                         .spawn()
                         .map_err(|e| AppError::Custom(format!("Failed to start RC: {}", e)))?;
                     return Ok(());
@@ -433,10 +442,15 @@ impl RiotClientService {
             .await
             .map_err(|e| AppError::Custom(format!("LCU POST failed: {}", e)))?;
 
+        let status = response.status();
         let text = response
             .text()
             .await
             .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
+
+        if !status.is_success() {
+            return Err(AppError::Custom(format!("LCU POST {} returned {}: {}", endpoint, status, text)));
+        }
 
         Ok(text)
     }
@@ -499,20 +513,32 @@ impl RiotClientService {
         let url = format!("https://127.0.0.1:{}{}", port, endpoint);
         let auth = Self::make_auth_header(&password);
 
+        // Parse body to JSON value and use .json() for proper serialization
+        let json_body: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| AppError::Custom(format!("Invalid JSON body: {}", e)))?;
+
+        log::info!("[LCU] PATCH {} sending: {}", endpoint, body);
+
         let response = self
             .http_client
             .patch(&url)
             .header(AUTHORIZATION, &auth)
-            .header(CONTENT_TYPE, "application/json")
-            .body(body.to_string())
+            .json(&json_body)
             .send()
             .await
             .map_err(|e| AppError::Custom(format!("LCU PATCH failed: {}", e)))?;
 
+        let status = response.status();
         let text = response
             .text()
             .await
             .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
+
+        log::info!("[LCU] PATCH {} -> {} resp={}", endpoint, status, &text[..text.len().min(300)]);
+
+        if !status.is_success() {
+            return Err(AppError::Custom(format!("LCU PATCH {} returned {}: {}", endpoint, status, text)));
+        }
 
         Ok(text)
     }
@@ -861,6 +887,8 @@ impl RiotClientService {
     fn start_league_directly() -> Result<(), AppError> {
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
+
             if let Some(installs_json) = Self::find_installs_json() {
                 let content = fs::read_to_string(&installs_json)?;
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -873,6 +901,7 @@ impl RiotClientService {
                         if path.exists() {
                             Command::new(&path)
                                 .args(["--launch-product=league_of_legends", "--launch-patchline=live"])
+                                .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                                 .spawn()
                                 .map_err(|e| AppError::Custom(format!("Failed to launch League: {}", e)))?;
                             return Ok(());

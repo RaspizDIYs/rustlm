@@ -11,6 +11,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { RunePage, RunePathModel, RuneModel } from "@/lib/tauri";
 
 const DDRAGON = "https://ddragon.leagueoflegends.com";
@@ -136,8 +137,8 @@ export function RunePageEditor({
       key={rune.id}
       onClick={onClick}
       title={rune.name}
-      className={`rounded-full border-2 transition-all ${
-        selected ? "border-primary scale-110" : "border-transparent opacity-60 hover:opacity-100"
+      className={`rounded-full border-2 transition-colors ${
+        selected ? "border-primary" : "border-transparent opacity-60 hover:opacity-100"
       }`}
     >
       <img
@@ -162,131 +163,246 @@ export function RunePageEditor({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl select-none">
         <DialogHeader>
           <DialogTitle>{editPage ? "Редактировать страницу рун" : "Новая страница рун"}</DialogTitle>
         </DialogHeader>
 
-        <Input
-          placeholder="Название страницы"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-
-        <ScrollArea className="max-h-[55vh]">
-          <div className="grid grid-cols-2 gap-6 pr-2">
-            {/* LEFT: Primary Path */}
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs text-muted-foreground mb-2">Основной путь</p>
-                <div className="flex gap-2 justify-center">
-                  {runePaths.map((path) => pathIcon(path, primaryPathId === path.id, () => handleSelectPrimaryPath(path.id)))}
+        {runePaths.length === 0 ? (
+          <div className="space-y-6 py-2">
+            <Skeleton className="h-9 w-full rounded-md" />
+            <div className="grid grid-cols-2 gap-6">
+              {/* Left column skeleton */}
+              <div className="space-y-4">
+                <div>
+                  <Skeleton className="h-3 w-24 mb-2" />
+                  <div className="flex gap-2 justify-center">
+                    {Array.from({ length: 5 }).map((_, i) => (
+                      <Skeleton key={i} className="w-8 h-8 rounded-full" />
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <Skeleton className="h-3 w-28 mb-2" />
+                  <div className="flex gap-2 justify-center">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <Skeleton key={i} className="w-10 h-10 rounded-full" />
+                    ))}
+                  </div>
+                </div>
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex gap-2 justify-center">
+                    {Array.from({ length: 3 }).map((_, j) => (
+                      <Skeleton key={j} className="w-8 h-8 rounded-full" />
+                    ))}
+                  </div>
+                ))}
+              </div>
+              {/* Right column skeleton */}
+              <div className="space-y-4">
+                <div>
+                  <Skeleton className="h-3 w-32 mb-2" />
+                  <div className="flex gap-2 justify-center">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <Skeleton key={i} className="w-8 h-8 rounded-full" />
+                    ))}
+                  </div>
+                </div>
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="flex gap-2 justify-center">
+                    {Array.from({ length: 3 }).map((_, j) => (
+                      <Skeleton key={j} className="w-8 h-8 rounded-full" />
+                    ))}
+                  </div>
+                ))}
+                <div className="pt-2 border-t border-border">
+                  <Skeleton className="h-3 w-12 mb-2" />
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="flex gap-2 justify-center mb-1.5">
+                      {Array.from({ length: 3 }).map((_, j) => (
+                        <Skeleton key={j} className="w-6 h-6 rounded-full" />
+                      ))}
+                    </div>
+                  ))}
                 </div>
               </div>
-
-              {primaryPath && (
-                <>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-2">Ключевой камень</p>
-                    <div className="flex gap-2 justify-center">
-                      {keystones.map((rune) => runeIcon(rune, keystoneId === rune.id, () => setKeystoneId(rune.id), "w-10 h-10"))}
-                    </div>
-                  </div>
-
-                  {primaryRuneSlots.map((slot, i) => (
-                    <div key={`primary-${i}`}>
-                      <div className="flex gap-2 justify-center">
-                        {slot.runes.map((rune) =>
-                          runeIcon(rune, primarySlots[i] === rune.id, () => {
-                            const next = [...primarySlots];
-                            next[i] = rune.id;
-                            setPrimarySlots(next);
-                          })
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </>
-              )}
-
-              {!primaryPath && (
-                <p className="text-sm text-muted-foreground text-center py-8">Выберите основной путь</p>
-              )}
             </div>
+            <div className="flex justify-end gap-2">
+              <Skeleton className="h-9 w-20 rounded-md" />
+              <Skeleton className="h-9 w-24 rounded-md" />
+            </div>
+          </div>
+        ) : (
+          <>
+            <Input
+              className="select-text"
+              placeholder="Название страницы"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
 
-            {/* RIGHT: Secondary Path + Stat Mods */}
-            <div className="space-y-4">
-              {primaryPath ? (
-                <>
+            <ScrollArea className="max-h-[55vh]">
+              <div className="grid grid-cols-2 gap-6 pr-2">
+                {/* LEFT: Primary Path */}
+                <div className="space-y-4">
                   <div>
-                    <p className="text-xs text-muted-foreground mb-2">Дополнительный путь</p>
+                    <p className="text-xs text-muted-foreground mb-2">Основной путь</p>
                     <div className="flex gap-2 justify-center">
-                      {runePaths
-                        .filter((p) => p.id !== primaryPathId)
-                        .map((path) => pathIcon(path, secondaryPathId === path.id, () => handleSelectSecondaryPath(path.id)))}
+                      {runePaths.map((path) => pathIcon(path, primaryPathId === path.id, () => handleSelectPrimaryPath(path.id)))}
                     </div>
                   </div>
 
-                  {secondaryPath && secondaryRuneSlots.map((slot, i) => (
-                    <div key={`secondary-${i}`}>
-                      <div className="flex gap-2 justify-center">
-                        {slot.runes.map((rune) =>
-                          runeIcon(
-                            rune,
-                            secondarySlots.includes(rune.id),
-                            () => handleSecondaryRuneClick(rune, slot.runes)
-                          )
-                        )}
+                  {primaryPath && (
+                    <>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-2">Ключевой камень</p>
+                        <div className="flex gap-2 justify-center">
+                          {keystones.map((rune) => runeIcon(rune, keystoneId === rune.id, () => setKeystoneId(rune.id), "w-10 h-10"))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
 
-                  {!secondaryPath && (
-                    <p className="text-sm text-muted-foreground text-center py-4">Выберите доп. путь</p>
+                      {primaryRuneSlots.map((slot, i) => (
+                        <div key={`primary-${i}`}>
+                          <div className="flex gap-2 justify-center">
+                            {slot.runes.map((rune) =>
+                              runeIcon(rune, primarySlots[i] === rune.id, () => {
+                                const next = [...primarySlots];
+                                next[i] = rune.id;
+                                setPrimarySlots(next);
+                              })
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </>
                   )}
 
-                  {/* Stat Mods */}
-                  {statModRows[0].length > 0 && (
-                    <div className="pt-2 border-t border-border">
-                      <p className="text-xs text-muted-foreground mb-2">Статы</p>
-                      {statModRows.map((row, rowIdx) => (
-                        <div key={`stat-${rowIdx}`} className="flex gap-2 justify-center mb-1.5">
-                          {row.map((mod) => (
-                            <button
-                              key={mod.id}
-                              onClick={() => {
-                                const next = [...statMods];
-                                next[rowIdx] = mod.id;
-                                setStatMods(next);
-                              }}
-                              title={mod.name}
-                              className={`rounded-full border-2 transition-all ${
-                                statMods[rowIdx] === mod.id
-                                  ? "border-primary"
-                                  : "border-transparent opacity-50 hover:opacity-80"
-                              }`}
-                            >
-                              <img src={`${DDRAGON}/cdn/img/${mod.icon}`} alt={mod.name} className="w-6 h-6 rounded-full" />
-                            </button>
+                  {!primaryPath && (
+                    <>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-2">Ключевой камень</p>
+                        <div className="flex gap-2 justify-center">
+                          {Array.from({ length: 4 }).map((_, i) => (
+                            <div key={i} className="w-10 h-10 rounded-full border-2 border-dashed border-muted-foreground/20" />
+                          ))}
+                        </div>
+                      </div>
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <div key={i} className="flex gap-2 justify-center">
+                          {Array.from({ length: 3 }).map((_, j) => (
+                            <div key={j} className="w-8 h-8 rounded-full border-2 border-dashed border-muted-foreground/20" />
                           ))}
                         </div>
                       ))}
-                    </div>
+                    </>
                   )}
-                </>
-              ) : (
-                <p className="text-sm text-muted-foreground text-center py-8">Выберите основной путь</p>
-              )}
-            </div>
-          </div>
-        </ScrollArea>
+                </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
-          <Button onClick={handleSave} disabled={!name.trim() || !primaryPathId}>
-            Сохранить
-          </Button>
-        </DialogFooter>
+                {/* RIGHT: Secondary Path + Stat Mods */}
+                <div className="space-y-4">
+                  {primaryPath ? (
+                    <>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-2">Дополнительный путь</p>
+                        <div className="flex gap-2 justify-center">
+                          {runePaths
+                            .filter((p) => p.id !== primaryPathId)
+                            .map((path) => pathIcon(path, secondaryPathId === path.id, () => handleSelectSecondaryPath(path.id)))}
+                        </div>
+                      </div>
+
+                      {secondaryPath ? secondaryRuneSlots.map((slot, i) => (
+                        <div key={`secondary-${i}`}>
+                          <div className="flex gap-2 justify-center">
+                            {slot.runes.map((rune) =>
+                              runeIcon(
+                                rune,
+                                secondarySlots.includes(rune.id),
+                                () => handleSecondaryRuneClick(rune, slot.runes)
+                              )
+                            )}
+                          </div>
+                        </div>
+                      )) : (
+                        Array.from({ length: 3 }).map((_, i) => (
+                          <div key={i} className="flex gap-2 justify-center">
+                            {Array.from({ length: 3 }).map((_, j) => (
+                              <div key={j} className="w-8 h-8 rounded-full border-2 border-dashed border-muted-foreground/20" />
+                            ))}
+                          </div>
+                        ))
+                      )}
+
+                      {/* Stat Mods */}
+                      {statModRows[0].length > 0 && (
+                        <div className="pt-2 border-t border-border">
+                          <p className="text-xs text-muted-foreground mb-2">Статы</p>
+                          {statModRows.map((row, rowIdx) => (
+                            <div key={`stat-${rowIdx}`} className="flex gap-2 justify-center mb-1.5">
+                              {row.map((mod) => (
+                                <button
+                                  key={mod.id}
+                                  onClick={() => {
+                                    const next = [...statMods];
+                                    next[rowIdx] = mod.id;
+                                    setStatMods(next);
+                                  }}
+                                  title={mod.name}
+                                  className={`rounded-full border-2 transition-all ${
+                                    statMods[rowIdx] === mod.id
+                                      ? "border-primary"
+                                      : "border-transparent opacity-50 hover:opacity-80"
+                                  }`}
+                                >
+                                  <img src={`${DDRAGON}/cdn/img/${mod.icon}`} alt={mod.name} className="w-6 h-6 rounded-full" />
+                                </button>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-2">Дополнительный путь</p>
+                        <div className="flex gap-2 justify-center">
+                          {Array.from({ length: 4 }).map((_, i) => (
+                            <div key={i} className="w-8 h-8 rounded-full border-2 border-dashed border-muted-foreground/20 p-0.5" />
+                          ))}
+                        </div>
+                      </div>
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <div key={i} className="flex gap-2 justify-center">
+                          {Array.from({ length: 3 }).map((_, j) => (
+                            <div key={j} className="w-8 h-8 rounded-full border-2 border-dashed border-muted-foreground/20" />
+                          ))}
+                        </div>
+                      ))}
+                      <div className="pt-2 border-t border-border">
+                        <p className="text-xs text-muted-foreground mb-2">Статы</p>
+                        {Array.from({ length: 3 }).map((_, i) => (
+                          <div key={i} className="flex gap-2 justify-center mb-1.5">
+                            {Array.from({ length: 3 }).map((_, j) => (
+                              <div key={j} className="w-6 h-6 rounded-full border-2 border-dashed border-muted-foreground/20" />
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </ScrollArea>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
+              <Button onClick={handleSave} disabled={!name.trim() || !primaryPathId}>
+                Сохранить
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

@@ -84,7 +84,7 @@ fn default_true() -> bool {
 }
 
 fn default_auto_accept_method() -> String {
-    "Polling".to_string()
+    "WebSocket".to_string()
 }
 
 impl Default for AutomationSettings {
@@ -97,7 +97,7 @@ impl Default for AutomationSettings {
             summoner_spell1: String::new(),
             summoner_spell2: String::new(),
             is_enabled: false,
-            auto_accept_method: "Polling".to_string(),
+            auto_accept_method: "WebSocket".to_string(),
             rune_pages: Vec::new(),
             selected_rune_page_name: String::new(),
             is_pick_delay_enabled: false,

@@ -419,6 +419,11 @@ export async function uninstallLolManager(): Promise<void> {
   return invoke("uninstall_lolmanager");
 }
 
+// Tray
+export async function refreshTray(): Promise<void> {
+  return invoke("refresh_tray");
+}
+
 // Greet (test)
 export async function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });

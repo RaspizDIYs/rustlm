@@ -3,11 +3,10 @@ mod error;
 mod models;
 mod services;
 mod state;
+mod tray;
 
 use state::AppState;
 use tauri::Manager;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -84,15 +83,15 @@ pub fn run() {
             commands::reveal::send_chat_message,
             commands::migration::check_lolmanager_installed,
             commands::migration::uninstall_lolmanager,
+            commands::refresh_tray,
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("rustlm".into()) }))
+                    .build(),
+            )?;
 
             // Load persisted automation settings and set app handle
             let state = app.state::<AppState>();
@@ -102,6 +101,8 @@ pub fn run() {
             let auto_accept = state.auto_accept.clone();
             tauri::async_runtime::spawn(async move {
                 auto_accept.set_app_handle(handle).await;
+                // Start background listeners immediately (champ-select automation is always active)
+                auto_accept.ensure_listeners_started().await;
             });
 
             // Set window icon explicitly (for dev mode where EXE resources aren't embedded)
@@ -110,44 +111,8 @@ pub fn run() {
                 let _ = window.set_icon(app_icon.clone());
             }
 
-            // System tray
-            let show_item = MenuItem::with_id(app, "show", "Показать", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
-
-            let _tray = TrayIconBuilder::new()
-                .icon(app_icon)
-                .menu(&menu)
-                .tooltip("RustLM")
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
-                    }
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                })
-                .build(app)?;
+            // System tray with auto-accept checkbox and accounts submenu
+            tray::setup_tray(app)?;
 
             Ok(())
         })
