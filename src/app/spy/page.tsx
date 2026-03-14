@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -74,6 +74,18 @@ export default function SpyPage() {
   const [loading, setLoading] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [apiStatus, setApiStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    import("@/lib/tauri").then(({ getRevealApiConfig }) => {
+      getRevealApiConfig().then(([savedKey, savedRegion]) => {
+        if (savedKey) {
+          setApiKey(savedKey);
+          setConfigured(true);
+        }
+        if (savedRegion) setRegion(savedRegion);
+      }).catch(() => {});
+    });
+  }, []);
 
   const handleSaveConfig = async () => {
     try {

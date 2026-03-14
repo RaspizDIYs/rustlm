@@ -59,6 +59,26 @@ export async function saveSetting<T>(key: string, value: T): Promise<void> {
   return invoke("save_setting", { key, value });
 }
 
+export async function getAutostartEnabled(): Promise<boolean> {
+  return invoke<boolean>("get_autostart_enabled");
+}
+
+export async function setAutostartEnabled(enabled: boolean): Promise<void> {
+  return invoke("set_autostart_enabled", { enabled });
+}
+
+export async function getAutostartBackground(): Promise<boolean> {
+  return invoke<boolean>("get_autostart_background");
+}
+
+export async function setAutostartBackground(enabled: boolean): Promise<void> {
+  return invoke("set_autostart_background", { enabled });
+}
+
+export async function shouldStartMinimized(): Promise<boolean> {
+  return invoke<boolean>("should_start_minimized");
+}
+
 // Logs
 export async function getLogLines(): Promise<string[]> {
   return invoke<string[]>("get_log_lines");
@@ -353,6 +373,10 @@ export interface PlayerInfo {
   profile_icon_id: number;
   puuid: string;
   ugg_link: string;
+}
+
+export async function getRevealApiConfig(): Promise<[string, string]> {
+  return invoke<[string, string]>("get_reveal_api_config");
 }
 
 export async function setRevealApiConfig(apiKey: string, region: string): Promise<void> {

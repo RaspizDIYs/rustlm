@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RustLM",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "identifier": "com.rustlm.app",
   "build": {
     "frontendDist": "../out",
@@ -14,13 +14,14 @@
       {
         "title": "RustLM - LoL Manager",
         "width": 1200,
-        "height": 800,
+        "height": 550,
         "minWidth": 900,
-        "minHeight": 600,
+        "minHeight": 400,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
-        "transparent": true
+        "transparent": true,
+        "visible": false
       }
     ],
     "security": {

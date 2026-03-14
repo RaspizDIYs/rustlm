@@ -4,6 +4,13 @@ use crate::models::player::PlayerInfo;
 use crate::state::AppState;
 
 #[tauri::command]
+pub async fn get_reveal_api_config(
+    state: State<'_, AppState>,
+) -> Result<(String, String), String> {
+    Ok(state.reveal.get_api_config().await)
+}
+
+#[tauri::command]
 pub async fn set_reveal_api_config(
     api_key: String,
     region: String,

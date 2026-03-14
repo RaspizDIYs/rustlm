@@ -7,16 +7,25 @@ import { loadSetting } from "@/lib/tauri";
 export function Titlebar() {
   const [maximized, setMaximized] = useState(false);
 
-  const checkMaximized = useCallback(async () => {
+  const syncMaximized = useCallback(async () => {
     try {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      setMaximized(await getCurrentWindow().isMaximized());
+      const isMax = await getCurrentWindow().isMaximized();
+      setMaximized(isMax);
+      document.documentElement.toggleAttribute("data-maximized", isMax);
     } catch {}
   }, []);
 
   useEffect(() => {
-    checkMaximized();
-  }, [checkMaximized]);
+    syncMaximized();
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      getCurrentWindow().onResized(() => syncMaximized()).then((fn) => {
+        unlisten = fn;
+      });
+    });
+    return () => unlisten?.();
+  }, [syncMaximized]);
 
   const handleMinimize = async () => {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
@@ -26,8 +35,7 @@ export function Titlebar() {
   const handleMaximize = async () => {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().toggleMaximize();
-    // Small delay to let the window state update
-    setTimeout(checkMaximized, 50);
+    setTimeout(syncMaximized, 50);
   };
 
   const handleClose = async () => {
@@ -41,7 +49,6 @@ export function Titlebar() {
   };
 
   const handleDrag = async (e: React.MouseEvent) => {
-    // Double-click to maximize/restore
     if (e.detail === 2) {
       await handleMaximize();
       return;
@@ -58,11 +65,9 @@ export function Titlebar() {
     >
       {/* Drag region */}
       <div
-        className="flex-1 h-full flex items-center px-2.5 gap-2"
+        className="flex-1 h-full"
         onMouseDown={handleDrag}
-      >
-        <img src="/icon.png" alt="" className="h-4 w-4" draggable={false} />
-      </div>
+      />
 
       {/* Window controls */}
       <div className="flex items-center h-full">
@@ -84,7 +89,7 @@ export function Titlebar() {
         </button>
         <button
           onClick={handleClose}
-          className="titlebar-button h-full w-11 inline-flex items-center justify-center hover:bg-red-500 hover:text-white text-muted-foreground transition-colors rounded-tr-lg"
+          className={`titlebar-button h-full w-11 inline-flex items-center justify-center hover:bg-red-500 hover:text-white text-muted-foreground transition-colors ${maximized ? "" : "rounded-tr-lg"}`}
         >
           <X className="h-3.5 w-3.5" />
         </button>

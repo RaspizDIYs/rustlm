@@ -6,20 +6,35 @@ use tokio::sync::RwLock;
 use crate::error::AppError;
 use crate::models::player::PlayerInfo;
 use crate::services::riot_client::RiotClientService;
+use crate::services::settings::SettingsService;
+
+const REVEAL_API_KEY_SETTING: &str = "RevealApiKey";
+const REVEAL_REGION_SETTING: &str = "RevealRegion";
 
 pub struct RevealService {
     riot_client: Arc<RiotClientService>,
+    settings: Arc<SettingsService>,
     api_key: RwLock<Option<String>>,
     region: RwLock<String>,
     http_client: reqwest::Client,
 }
 
 impl RevealService {
-    pub fn new(riot_client: Arc<RiotClientService>) -> Self {
+    pub fn new(riot_client: Arc<RiotClientService>, settings: Arc<SettingsService>) -> Self {
+        let saved_key: String = settings.load_setting(REVEAL_API_KEY_SETTING, String::new());
+        let saved_region: String = settings.load_setting(REVEAL_REGION_SETTING, "euw1".to_string());
+
+        let api_key = if saved_key.is_empty() {
+            RwLock::new(None)
+        } else {
+            RwLock::new(Some(saved_key))
+        };
+
         Self {
             riot_client,
-            api_key: RwLock::new(None),
-            region: RwLock::new("euw1".to_string()),
+            settings,
+            api_key,
+            region: RwLock::new(saved_region),
             http_client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()
@@ -27,17 +42,17 @@ impl RevealService {
         }
     }
 
-    pub async fn set_api_key(&self, api_key: &str) {
-        *self.api_key.write().await = Some(api_key.to_string());
-    }
-
-    pub async fn set_region(&self, region: &str) {
-        *self.region.write().await = region.to_string();
+    pub async fn get_api_config(&self) -> (String, String) {
+        let key = self.api_key.read().await.clone().unwrap_or_default();
+        let region = self.region.read().await.clone();
+        (key, region)
     }
 
     pub async fn set_api_configuration(&self, api_key: &str, region: &str) {
-        self.set_api_key(api_key).await;
-        self.set_region(region).await;
+        *self.api_key.write().await = if api_key.is_empty() { None } else { Some(api_key.to_string()) };
+        *self.region.write().await = region.to_string();
+        let _ = self.settings.save_setting(REVEAL_API_KEY_SETTING, &api_key.to_string());
+        let _ = self.settings.save_setting(REVEAL_REGION_SETTING, &region.to_string());
     }
 
     fn regional_host(region: &str) -> &'static str {
@@ -159,41 +174,41 @@ impl RevealService {
     }
 
     async fn parse_team_member(&self, member: &serde_json::Value) -> Option<PlayerInfo> {
-        let summoner_id = member.get("summonerId").and_then(|s| s.as_i64())?;
         let champion_id = member.get("championId").and_then(|c| c.as_i64()).unwrap_or(0);
+        let summoner_id = member.get("summonerId").and_then(|s| s.as_i64()).unwrap_or(0);
 
-        // Try to get summoner info from LCU
-        let summoner_resp = self
-            .riot_client
-            .lcu_get(&format!("/lol-summoner/v1/summoners/{}", summoner_id))
-            .await
-            .ok()?;
+        // Read Riot ID and PUUID directly from champ-select data (available since ~patch 12)
+        let mut game_name = member.get("gameName").and_then(|g| g.as_str()).unwrap_or("").to_string();
+        let mut tag_line = member.get("tagLine").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        let mut puuid = member.get("puuid").and_then(|p| p.as_str()).unwrap_or("").to_string();
+        let mut level = 0i32;
+        let mut profile_icon = 0i32;
 
-        let summoner: serde_json::Value = serde_json::from_str(&summoner_resp).ok()?;
+        // LCU summoner lookup for level/icon, and as fallback for Riot ID if missing
+        if summoner_id > 0 {
+            if let Ok(summoner_resp) = self
+                .riot_client
+                .lcu_get(&format!("/lol-summoner/v1/summoners/{}", summoner_id))
+                .await
+            {
+                if let Ok(summoner) = serde_json::from_str::<serde_json::Value>(&summoner_resp) {
+                    if game_name.is_empty() {
+                        game_name = summoner.get("gameName").and_then(|g| g.as_str()).unwrap_or("").to_string();
+                        tag_line = summoner.get("tagLine").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                    }
+                    if puuid.is_empty() {
+                        puuid = summoner.get("puuid").and_then(|p| p.as_str()).unwrap_or("").to_string();
+                    }
+                    level = summoner.get("summonerLevel").and_then(|l| l.as_i64()).unwrap_or(0) as i32;
+                    profile_icon = summoner.get("profileIconId").and_then(|p| p.as_i64()).unwrap_or(0) as i32;
+                }
+            }
+        }
 
-        let game_name = summoner
-            .get("gameName")
-            .and_then(|g| g.as_str())
-            .unwrap_or("")
-            .to_string();
-        let tag_line = summoner
-            .get("tagLine")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string();
-        let puuid = summoner
-            .get("puuid")
-            .and_then(|p| p.as_str())
-            .unwrap_or("")
-            .to_string();
-        let profile_icon = summoner
-            .get("profileIconId")
-            .and_then(|p| p.as_i64())
-            .unwrap_or(0) as i32;
-        let level = summoner
-            .get("summonerLevel")
-            .and_then(|l| l.as_i64())
-            .unwrap_or(0) as i32;
+        // Skip completely unknown players
+        if game_name.is_empty() && puuid.is_empty() {
+            return None;
+        }
 
         // Try to get ranked info
         let mut tier = "Unranked".to_string();

@@ -37,41 +37,96 @@ unsafe fn do_login(username: &str, password: &str, timeout_secs: u64, cancel: Op
 
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
 
-    // Find Riot Client window
-    let hwnd = wait_for_riot_client_window(deadline, cancel)?;
+    let mut hwnd = wait_for_riot_client_window(deadline, cancel)?;
 
-    // Activate window
     activate_window(hwnd);
-    std::thread::sleep(Duration::from_millis(80));
+    std::thread::sleep(Duration::from_millis(100));
 
-    let element = automation.ElementFromHandle(hwnd)?;
+    let mut root = automation.ElementFromHandle(hwnd)?;
 
-    if is_cancelled(cancel) { return Err(Error::new(E_ABORT, "Login cancelled")); }
+    let mut scan_cycles = 0u32;
+    let mut clicked_sign_in_landing = false;
 
-    // Find login fields with retry
-    let (username_el, password_el, sign_in_el) =
-        find_login_elements(&automation, &element, hwnd, deadline, cancel)?;
+    // Step 1: Find login fields (retry loop)
+    // RC may switch windows during startup (splash → loader → login),
+    // so we re-find the window + root element periodically.
+    let (username_el, password_el) = loop {
+        if is_cancelled(cancel) {
+            return Err(Error::new(E_ABORT, "Login cancelled"));
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(Error::new(E_FAIL, "Login timed out — fields not found"));
+        }
 
-    // Input username
-    set_element_value(&username_el, username)?;
+        scan_cycles += 1;
+
+        // Every 10 cycles (~500ms): re-find window handle + refresh root
+        if scan_cycles % 10 == 0 {
+            if let Ok(new_hwnd) = find_riot_client_window() {
+                hwnd = new_hwnd;
+            }
+            activate_window(hwnd);
+            if let Ok(new_root) = automation.ElementFromHandle(hwnd) {
+                root = new_root;
+            }
+        }
+
+        // RC sometimes shows a landing page with a "Sign in" button before the actual form
+        if !clicked_sign_in_landing && scan_cycles >= 5 {
+            if let Some(btn) = find_landing_sign_in_button(&automation, &root) {
+                invoke_button(&btn);
+                clicked_sign_in_landing = true;
+                std::thread::sleep(Duration::from_millis(300));
+                if let Ok(new_root) = automation.ElementFromHandle(hwnd) {
+                    root = new_root;
+                }
+                continue;
+            }
+        }
+
+        if let Some(fields) = try_find_fields(&automation, &root) {
+            break fields;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    // Step 2: Fill username (retry until value sticks, but never re-clear if already set)
+    activate_window(hwnd);
+    let mut username_confirmed = false;
+    for _ in 0..10 {
+        if is_cancelled(cancel) {
+            return Err(Error::new(E_ABORT, "Login cancelled"));
+        }
+        if std::time::Instant::now() > deadline {
+            break; // proceed anyway
+        }
+
+        if !username_confirmed {
+            let _ = set_element_value(&username_el, username);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        if check_value(&username_el, username) {
+            username_confirmed = true;
+            break;
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // Step 3: Fill password (once — username was confirmed or we proceed anyway)
+    let _ = set_element_value(&password_el, password);
     std::thread::sleep(Duration::from_millis(20));
 
-    // Verify username was set
-    verify_value(&username_el, username);
+    // Step 4: Remember me
+    let _ = try_check_remember_me(&automation, &root);
 
-    // Input password
-    set_element_value(&password_el, password)?;
-    std::thread::sleep(Duration::from_millis(20));
-
-    // Try to check "Remember Me" checkbox
-    let _ = try_check_remember_me(&automation, &element);
-
-    // Click sign in
+    // Step 5: Submit
     std::thread::sleep(Duration::from_millis(30));
-    if let Some(btn) = sign_in_el {
+    if let Some(btn) = find_sign_in_button(&automation, &root) {
         invoke_button(&btn);
     } else {
-        // Fallback: send Enter key
         let fg = GetForegroundWindow();
         if fg == hwnd {
             focus_element(&password_el);
@@ -84,8 +139,6 @@ unsafe fn do_login(username: &str, password: &str, timeout_secs: u64, cancel: Op
 }
 
 fn wait_for_riot_client_window(deadline: std::time::Instant, cancel: Option<&Arc<AtomicBool>>) -> Result<HWND> {
-    let process_names = ["RiotClientUx", "RiotClientUxRender", "Riot Client"];
-
     loop {
         if is_cancelled(cancel) {
             return Err(Error::new(E_ABORT, "Login cancelled"));
@@ -94,14 +147,23 @@ fn wait_for_riot_client_window(deadline: std::time::Instant, cancel: Option<&Arc
             return Err(Error::new(E_FAIL, "Riot Client window not found within timeout"));
         }
 
-        for name in &process_names {
-            if let Some(hwnd) = find_process_main_window(name) {
-                return Ok(hwnd);
-            }
+        if let Ok(hwnd) = find_riot_client_window() {
+            return Ok(hwnd);
         }
 
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Single non-blocking attempt to find the RC window.
+fn find_riot_client_window() -> Result<HWND> {
+    let process_names = ["RiotClientUx", "RiotClientUxRender", "Riot Client"];
+    for name in &process_names {
+        if let Some(hwnd) = find_process_main_window(name) {
+            return Ok(hwnd);
+        }
+    }
+    Err(Error::new(E_FAIL, "RC window not found"))
 }
 
 fn find_process_main_window(process_name: &str) -> Option<HWND> {
@@ -182,68 +244,29 @@ unsafe fn activate_window(hwnd: HWND) {
     let _ = SetForegroundWindow(hwnd);
 }
 
-unsafe fn find_login_elements(
+/// Single scan for username + password fields. Returns None if not found.
+unsafe fn try_find_fields(
     automation: &IUIAutomation,
     root: &IUIAutomationElement,
-    hwnd: HWND,
-    deadline: std::time::Instant,
-    cancel: Option<&Arc<AtomicBool>>,
-) -> Result<(IUIAutomationElement, IUIAutomationElement, Option<IUIAutomationElement>)> {
-    let mut scan_cycles = 0u32;
-    let mut clicked_sign_in_landing = false;
+) -> Option<(IUIAutomationElement, IUIAutomationElement)> {
+    let username_el = find_element_by_ids(automation, root, &["username", "login"])
+        .or_else(|| find_element_by_names(automation, root, &["username", "Login", "Email", "Адрес электронной почты", "Имя пользователя"]));
 
-    loop {
-        if is_cancelled(cancel) {
-            return Err(Error::new(E_ABORT, "Login cancelled"));
-        }
-        if std::time::Instant::now() > deadline {
-            return Err(Error::new(E_FAIL, "Login fields not found within timeout"));
-        }
+    let password_el = find_element_by_ids(automation, root, &["password"])
+        .or_else(|| find_element_by_names(automation, root, &["password", "Пароль", "Password"]));
 
-        scan_cycles += 1;
-
-        // Periodic window activation
-        if scan_cycles % 10 == 0 {
-            activate_window(hwnd);
-        }
-
-        // After some retries, try clicking "Sign in" landing button
-        // (RC sometimes shows a landing page with a "Sign in" button before the actual form)
-        if !clicked_sign_in_landing && scan_cycles >= 5 {
-            if let Some(btn) = find_landing_sign_in_button(automation, root) {
-                invoke_button(&btn);
-                clicked_sign_in_landing = true;
-                std::thread::sleep(Duration::from_millis(300));
-                continue;
-            }
-        }
-
-        // Try to find username field
-        let username_el = find_element_by_ids(automation, root, &["username", "login"])
-            .or_else(|| find_element_by_names(automation, root, &["username", "Login", "Email", "Адрес электронной почты", "Имя пользователя"]));
-
-        // Try to find password field
-        let password_el = find_element_by_ids(automation, root, &["password"])
-            .or_else(|| find_element_by_names(automation, root, &["password", "Пароль", "Password"]));
-
-        // If direct search failed, try edit controls fallback
-        let (username_el, password_el) = match (username_el, password_el) {
-            (Some(u), Some(p)) => (u, p),
-            _ => {
-                if let Some((u, p)) = find_edit_controls_fallback(automation, root) {
-                    (u, p)
-                } else {
-                    std::thread::sleep(Duration::from_millis(50));
-                    continue;
-                }
-            }
-        };
-
-        // Find sign-in button (the submit button on the login form)
-        let sign_in = find_sign_in_button(automation, root);
-
-        return Ok((username_el, password_el, sign_in));
+    match (username_el, password_el) {
+        (Some(u), Some(p)) => Some((u, p)),
+        _ => find_edit_controls_fallback(automation, root),
     }
+}
+
+/// Check if the element's current value matches expected. Non-blocking.
+unsafe fn check_value(element: &IUIAutomationElement, expected: &str) -> bool {
+    let Ok(pattern_obj) = element.GetCurrentPattern(UIA_ValuePatternId) else { return false };
+    let Ok(value_pattern) = pattern_obj.cast::<IUIAutomationValuePattern>() else { return false };
+    let Ok(current) = value_pattern.CurrentValue() else { return false };
+    current.to_string() == expected
 }
 
 unsafe fn find_element_by_ids(
@@ -350,22 +373,21 @@ unsafe fn find_sign_in_button(
 }
 
 unsafe fn set_element_value(element: &IUIAutomationElement, value: &str) -> Result<()> {
-    // Try ValuePattern first
+    // Try ValuePattern first (programmatic set)
     let pattern_obj = element.GetCurrentPattern(UIA_ValuePatternId);
     if let Ok(pattern_obj) = pattern_obj {
-        let value_pattern: IUIAutomationValuePattern = pattern_obj.cast()?;
-        // Clear first
-        value_pattern.SetValue(&BSTR::from(""))?;
-        std::thread::sleep(Duration::from_millis(30));
-        value_pattern.SetValue(&BSTR::from(value))?;
-        return Ok(());
+        if let Ok(value_pattern) = pattern_obj.cast::<IUIAutomationValuePattern>() {
+            value_pattern.SetValue(&BSTR::from(""))?;
+            std::thread::sleep(Duration::from_millis(30));
+            value_pattern.SetValue(&BSTR::from(value))?;
+            return Ok(());
+        }
     }
 
     // Fallback: focus and use keyboard
     focus_element(element);
     std::thread::sleep(Duration::from_millis(50));
 
-    // Select all and type
     send_key_combo(VK_CONTROL, VK_A);
     std::thread::sleep(Duration::from_millis(30));
 
@@ -375,26 +397,6 @@ unsafe fn set_element_value(element: &IUIAutomationElement, value: &str) -> Resu
     }
 
     Ok(())
-}
-
-unsafe fn verify_value(element: &IUIAutomationElement, expected: &str) {
-    let pattern_obj = element.GetCurrentPattern(UIA_ValuePatternId);
-    if let Ok(pattern_obj) = pattern_obj {
-        if let Ok(value_pattern) = pattern_obj.cast::<IUIAutomationValuePattern>() {
-            for _ in 0..2 {
-                if let Ok(current) = value_pattern.CurrentValue() {
-                    if current.to_string() == expected {
-                        return;
-                    }
-                }
-                // Retry
-                let _ = value_pattern.SetValue(&BSTR::from(""));
-                std::thread::sleep(Duration::from_millis(30));
-                let _ = value_pattern.SetValue(&BSTR::from(expected));
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-    }
 }
 
 unsafe fn try_check_remember_me(

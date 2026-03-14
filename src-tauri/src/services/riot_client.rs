@@ -77,12 +77,15 @@ impl RiotClientService {
     }
 
     pub fn find_lcu_lockfile() -> Option<LockfileInfo> {
-        // Try common League Client install paths
         let candidates = Self::enumerate_lcu_lockfile_candidates();
 
         for path in candidates {
             if let Some(info) = Self::parse_lockfile(&path) {
-                return Some(info);
+                // Guard against stale lockfiles left by force-killed League (/F taskkill).
+                // The file persists on disk but the process is dead — same check as RC lockfile.
+                if Self::is_pid_alive(info.pid) {
+                    return Some(info);
+                }
             }
         }
         None
@@ -301,18 +304,13 @@ impl RiotClientService {
                 .creation_flags(CREATE_NO_WINDOW)
                 .output();
             if include_riot_client {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/IM", "Riot Client.exe"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output();
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/IM", "RiotClientUx.exe"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output();
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/IM", "RiotClientServices.exe"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output();
+                // Kill the entire process tree for each RC process
+                for name in &["Riot Client.exe", "RiotClientUx.exe", "RiotClientServices.exe", "RiotClientCrashHandler.exe", "RiotClientUxRender.exe"] {
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/T", "/IM", name])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .output();
+                }
             }
         }
     }
@@ -545,18 +543,6 @@ impl RiotClientService {
 
     // --- Account Info ---
 
-    /// Fetch the latest Data Dragon version (e.g. "15.5.1") for CDN URLs.
-    /// Falls back to None if the request fails.
-    async fn fetch_ddragon_version(&self) -> Option<String> {
-        let resp = self.http_client
-            .get("https://ddragon.leagueoflegends.com/api/versions.json")
-            .send()
-            .await
-            .ok()?;
-        let versions: Vec<String> = resp.json().await.ok()?;
-        versions.into_iter().next()
-    }
-
     pub async fn get_account_info(
         &self,
     ) -> Result<Option<AccountInfo>, AppError> {
@@ -638,11 +624,10 @@ impl RiotClientService {
             }
         }
 
-        // Get avatar URL (fetch latest DDragon version so new icons resolve correctly)
-        let ddragon_version = self.fetch_ddragon_version().await.unwrap_or_else(|| "14.1.1".to_string());
+        // Get avatar URL from CommunityDragon (DDragon is missing many newer icon IDs)
         let avatar_url = format!(
-            "https://ddragon.leagueoflegends.com/cdn/{}/img/profileicon/{}.png",
-            ddragon_version, profile_icon_id
+            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/{}.jpg",
+            profile_icon_id
         );
 
         // Get Riot ID
@@ -714,6 +699,27 @@ impl RiotClientService {
         endpoint: &str,
         body: Option<&str>,
     ) -> Result<String, AppError> {
+        self.rc_request_impl(method, endpoint, body, true).await
+    }
+
+    /// Silent variant — no logging of non-2xx responses.
+    /// Use for polling loops (is_rso_authorized, wait_for_rc_api_ready) to avoid log spam.
+    async fn rc_request_silent(
+        &self,
+        method: reqwest::Method,
+        endpoint: &str,
+        body: Option<&str>,
+    ) -> Result<String, AppError> {
+        self.rc_request_impl(method, endpoint, body, false).await
+    }
+
+    async fn rc_request_impl(
+        &self,
+        method: reqwest::Method,
+        endpoint: &str,
+        body: Option<&str>,
+        log_errors: bool,
+    ) -> Result<String, AppError> {
         let lockfile = Self::find_rc_lockfile()
             .ok_or_else(|| AppError::Custom("RC lockfile not found".to_string()))?;
 
@@ -741,8 +747,7 @@ impl RiotClientService {
             .await
             .map_err(|e| AppError::Custom(format!("RC response read failed: {}", e)))?;
 
-        // Only log non-200 responses to reduce noise
-        if !status.is_success() {
+        if log_errors && !status.is_success() {
             eprintln!("[RC_API] {} → {} | {}", endpoint, status.as_u16(),
                 if text.len() > 200 { &text[..200] } else { &text });
         }
@@ -761,7 +766,7 @@ impl RiotClientService {
     /// Check if a user is currently authorized via RSO (Riot Sign-On).
     pub async fn is_rso_authorized(&self) -> bool {
         let resp = match self
-            .rc_request(reqwest::Method::GET, "/rso-auth/v1/authorization", None)
+            .rc_request_silent(reqwest::Method::GET, "/rso-auth/v1/authorization", None)
             .await
         {
             Ok(r) => r,
@@ -876,18 +881,22 @@ impl RiotClientService {
     /// Launch League of Legends via RC product launcher API.
     /// Tries multiple endpoints since Riot changes them between versions.
     pub async fn launch_league_via_rc(&self) -> Result<(), AppError> {
-        // List of endpoints to try (in order of likelihood)
         let endpoints = [
-            ("/product-launcher/v1/products/league_of_legends/patchlines/live", "POST"),
-            ("/product-launcher/v1/products/league_of_legends/patchlines/live/launch", "POST"),
-            ("/product-launcher/v1/launch", "POST"),
+            "/product-launcher/v1/products/league_of_legends/patchlines/live",
+            "/product-launcher/v1/products/league_of_legends/patchlines/live/launch",
+            "/product-launcher/v1/launch",
         ];
 
         let body = r#"{"productId":"league_of_legends","patchlineId":"live"}"#;
 
-        for (endpoint, _) in &endpoints {
+        for endpoint in &endpoints {
             match self.rc_request(reqwest::Method::POST, endpoint, Some(body)).await {
                 Ok(r) if !r.contains("errorCode") => return Ok(()),
+                Ok(r) if r.contains("eula_not_accepted") => {
+                    // EULA not accepted — RC will show prompt, League cannot launch yet.
+                    // This is not a routing error, stop trying other endpoints.
+                    return Err(AppError::Custom("eula_not_accepted".to_string()));
+                }
                 _ => continue,
             }
         }
@@ -961,7 +970,7 @@ impl RiotClientService {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
             // Try a simple GET — if it returns anything other than 404, API is ready
-            match self.rc_request(reqwest::Method::GET, "/rso-auth/v1/authorization", None).await {
+            match self.rc_request_silent(reqwest::Method::GET, "/rso-auth/v1/authorization", None).await {
                 Ok(resp) => {
                     if !resp.contains("RESOURCE_NOT_FOUND") {
                         return true;

@@ -337,10 +337,10 @@ impl DataDragonService {
         )
     }
 
-    pub fn get_profile_icon_url(version: &str, profile_icon_id: i32) -> String {
+    pub fn get_profile_icon_url(_version: &str, profile_icon_id: i32) -> String {
         format!(
-            "{}/cdn/{}/img/profileicon/{}.png",
-            DDRAGON_BASE, version, profile_icon_id
+            "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/{}.jpg",
+            profile_icon_id
         )
     }
 }

@@ -4,6 +4,8 @@ import { Sidebar } from "@/components/sidebar";
 import { Titlebar } from "@/components/titlebar";
 import { LolManagerCleanupDialog } from "@/components/lolmanager-cleanup-dialog";
 import { TrayEventHandler } from "@/components/tray-event-handler";
+import { UpdateCheckDialog } from "@/components/update-check-dialog";
+import { WindowInit } from "@/components/window-init";
 import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
 
@@ -22,7 +24,7 @@ export default function RootLayout({
   return (
     <html lang="ru" className={cn("dark", "font-sans", geist.variable)}>
       <body className="h-screen bg-transparent">
-        <div className="window-frame flex flex-col h-full rounded-lg border border-border bg-background overflow-hidden shadow-2xl">
+        <div className="window-frame flex flex-col h-full rounded-lg ring-1 ring-inset ring-border/30 bg-background overflow-hidden shadow-2xl">
           <Titlebar />
           <div className="flex flex-1 min-h-0">
             <Sidebar />
@@ -31,6 +33,8 @@ export default function RootLayout({
         </div>
         <LolManagerCleanupDialog />
         <TrayEventHandler />
+        <UpdateCheckDialog />
+        <WindowInit />
       </body>
     </html>
   );

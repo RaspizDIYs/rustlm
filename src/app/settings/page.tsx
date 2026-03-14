@@ -18,6 +18,8 @@ export default function SettingsPage() {
   const [autoAcceptMethod, setAutoAcceptMethod] = useState("Polling");
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [minimizeToTray, setMinimizeToTray] = useState(false);
+  const [autostart, setAutostart] = useState(false);
+  const [autostartBackground, setAutostartBackground] = useState(false);
 
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState<{ version: string; body?: string } | null>(null);
@@ -26,17 +28,21 @@ export default function SettingsPage() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const { loadSetting } = await import("@/lib/tauri");
-      const [hide, method, update, tray] = await Promise.all([
+      const { loadSetting, getAutostartEnabled, getAutostartBackground } = await import("@/lib/tauri");
+      const [hide, method, update, tray, autostartVal, bgVal] = await Promise.all([
         loadSetting("HideLogins", false),
         loadSetting("AutoAcceptMethod", "Polling"),
         loadSetting("AutoUpdate", true),
         loadSetting("MinimizeToTray", false),
+        getAutostartEnabled(),
+        getAutostartBackground(),
       ]);
       setHideLogins(hide as boolean);
       setAutoAcceptMethod(method as string);
       setAutoUpdate(update as boolean);
       setMinimizeToTray(tray as boolean);
+      setAutostart(autostartVal);
+      setAutostartBackground(bgVal);
     } catch {
       // Not in Tauri
     }
@@ -115,6 +121,35 @@ export default function SettingsPage() {
                 }}
               />
             </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">Запускать вместе с Windows</span>
+              <Switch
+                checked={autostart}
+                onCheckedChange={async (v) => {
+                  setAutostart(v);
+                  if (!v) setAutostartBackground(false);
+                  try {
+                    const { setAutostartEnabled } = await import("@/lib/tauri");
+                    await setAutostartEnabled(v);
+                  } catch {}
+                }}
+              />
+            </div>
+            {autostart && (
+              <div className="flex items-center justify-between pl-4">
+                <span className="text-sm text-muted-foreground">Запускать в фоне</span>
+                <Switch
+                  checked={autostartBackground}
+                  onCheckedChange={async (v) => {
+                    setAutostartBackground(v);
+                    try {
+                      const { setAutostartBackground } = await import("@/lib/tauri");
+                      await setAutostartBackground(v);
+                    } catch {}
+                  }}
+                />
+              </div>
+            )}
           </CardContent>
         </Card>
 

@@ -11,6 +11,13 @@ pub async fn set_auto_accept_enabled(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.auto_accept.set_enabled_arc(enabled).await;
+    let mut settings: AutomationSettings = state.settings.load_setting(
+        AUTOMATION_SETTINGS_KEY,
+        AutomationSettings::default(),
+    );
+    settings.is_enabled = enabled;
+    state.settings.save_setting(AUTOMATION_SETTINGS_KEY, &settings)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

@@ -19,6 +19,13 @@ html, body {
   -webkit-app-region: no-drag;
 }
 
+/* Remove rounded corners, border and shadow when window is maximized */
+html[data-maximized] .window-frame {
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

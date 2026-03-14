@@ -4,51 +4,12 @@ import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Bug, Github, MessageCircle, Copy, Check } from "lucide-react";
+import { CHANGELOG } from "@/lib/changelog";
 
 const DEVELOPERS = [
   { name: "@mejaikin", discord: "mejaikin" },
   { name: "@shp1n4t", discord: "shp1n4t" },
 ];
-
-const CHANGELOG = `## 0.1.7
-- Исправлена автоматизация чемп-селекта: авто-бан и авто-пик теперь работают
-- Двухшаговый подход: hover → проверка → lock-in → проверка
-- Автоматический повтор при неудаче через WS-события
-- Проверка доступности чемпиона перед пиком
-- Кастомный тайтлбар с кнопками управления окном
-- Системный трей с быстрым доступом к авто-принятию и аккаунтам
-- Skeleton-загрузка на странице автоматизации
-- Исправлено дублирование логов
-
-## 0.1.6
-- Исправлена работа авто-обновлений
-- Добавлен тихий режим установки обновлений
-
-## 0.1.3
-- Исправлено мелькание консоли при работе приложения
-- Предложение удалить старый LolManager при первом запуске
-
-## 0.1.2
-- Автоопределение сервера через Riot Client API
-- Улучшения интерфейса и стабильности
-
-## 0.1.1
-- Шифрованный экспорт/импорт аккаунтов
-- Сохранение настроек между сессиями
-- Улучшения интерфейса
-
-## 0.1.0
-- Начальная версия RustLM
-- Полный переход на Tauri v2 + Next.js + shadcn/ui
-- Хранилище аккаунтов с DPAPI шифрованием
-- Автоматический вход через UIA
-- Авто-принятие матча (WebSocket / Polling)
-- Авто-пик чемпиона, бана, заклинаний, рун
-- Редактор страниц рун
-- Кастомизация профиля (статус, иконка, фон, challenges)
-- Spy-режим через Riot API
-- Совместимость с данными WPF-версии
-`;
 
 export default function InfoPage() {
   const [showChangelog, setShowChangelog] = useState(false);
