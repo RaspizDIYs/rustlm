@@ -10,6 +10,7 @@ export interface AccountRecord {
   Rank: string;
   RankDisplay: string;
   RiotId: string;
+  Puuid: string;
   RankIconUrl: string;
   Server: string;
 }
@@ -143,6 +144,16 @@ export async function getAccountInfo(): Promise<AccountInfo | null> {
   return invoke<AccountInfo | null>("get_account_info");
 }
 
+export interface LcuProfileRefreshResult {
+  updated: boolean;
+  matchedUsername: string | null;
+  message: string;
+}
+
+export async function refreshAccountProfileFromLcu(): Promise<LcuProfileRefreshResult> {
+  return invoke<LcuProfileRefreshResult>("refresh_account_profile_from_lcu");
+}
+
 export async function lcuGet(endpoint: string): Promise<string> {
   return invoke<string>("lcu_get", { endpoint });
 }
@@ -157,6 +168,10 @@ export async function invalidateLcuCache(): Promise<void> {
 
 export async function detectServer(): Promise<string> {
   return invoke<string>("detect_server");
+}
+
+export async function getAuthorizedRiotLoginUsername(): Promise<string> {
+  return invoke<string>("get_authorized_riot_login_username");
 }
 
 // Data Dragon
@@ -325,8 +340,8 @@ export async function getAutomationSettings(): Promise<AutomationSettings> {
 }
 
 // Login
-export async function loginToAccount(username: string, password: string): Promise<void> {
-  return invoke("login_to_account", { username, password });
+export async function loginToAccount(username: string): Promise<void> {
+  return invoke("login_to_account", { username });
 }
 
 export async function cancelLogin(): Promise<void> {
@@ -448,7 +463,158 @@ export async function refreshTray(): Promise<void> {
   return invoke("refresh_tray");
 }
 
+// GoodLuck Integration
+export interface GoodLuckUser {
+  user_id: string;
+  display_name: string;
+  avatar_url: string;
+  riot_accounts: GoodLuckRiotAccount[];
+  local_avatar_path?: string | null;
+}
+
+export interface SyncResult {
+  created: number;
+  updated: number;
+  skipped: number;
+}
+
+export async function goodluckLogin(): Promise<void> {
+  return invoke("goodluck_login");
+}
+
+export async function goodluckHandleCallback(
+  code: string,
+  callbackState: string
+): Promise<GoodLuckUser> {
+  return invoke<GoodLuckUser>("goodluck_handle_callback", {
+    code,
+    callbackState,
+  });
+}
+
+export async function goodluckGetUser(): Promise<GoodLuckUser | null> {
+  return invoke<GoodLuckUser | null>("goodluck_get_user");
+}
+
+export async function goodluckRefreshProfile(): Promise<GoodLuckUser> {
+  return invoke<GoodLuckUser>("goodluck_refresh_profile");
+}
+
+export async function goodluckIsConnected(): Promise<boolean> {
+  return invoke<boolean>("goodluck_is_connected");
+}
+
+export async function goodluckLogout(): Promise<void> {
+  return invoke("goodluck_logout");
+}
+
+export async function goodluckSyncAccounts(): Promise<SyncResult> {
+  return invoke<SyncResult>("goodluck_sync_accounts");
+}
+
+export interface SyncAccountData {
+  riot_id: string;
+  server: string;
+  rank: string;
+  summoner_name: string;
+}
+
+export async function goodluckDeleteServerData(): Promise<void> {
+  return invoke("goodluck_delete_server_data");
+}
+
+export async function goodluckGetSyncedAccounts(): Promise<SyncAccountData[]> {
+  return invoke<SyncAccountData[]>("goodluck_get_synced_accounts");
+}
+
+export interface GoodLuckRiotAccount {
+  riot_id: string;
+  server: string;
+  rank: string;
+}
+
+export async function goodluckGetProfileAccounts(): Promise<GoodLuckRiotAccount[]> {
+  return invoke<GoodLuckRiotAccount[]>("goodluck_get_profile_accounts");
+}
+
+export interface GlImportResult {
+  imported: number;
+  updated: number;
+  skipped: number;
+  updated_pairs: [string, string][];
+}
+
+export async function goodluckImportProfileAccounts(
+  riotAccounts: GoodLuckRiotAccount[]
+): Promise<GlImportResult> {
+  return invoke<GlImportResult>("goodluck_import_profile_accounts", { riotAccounts });
+}
+
 // Greet (test)
 export async function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });
+}
+
+// --- Cloud Sync ---
+
+export type SyncStatus =
+  | { type: "Idle" }
+  | { type: "Syncing" }
+  | { type: "Success"; lastSynced: string }
+  | { type: "Error"; message: string }
+  | { type: "Disconnected" };
+
+export async function cloudSync(): Promise<void> {
+  return invoke("cloud_sync");
+}
+
+export async function cloudNotifyChange(): Promise<void> {
+  return invoke("cloud_notify_change");
+}
+
+export async function cloudPush(): Promise<void> {
+  return invoke("cloud_push");
+}
+
+export async function cloudPull(): Promise<number> {
+  return invoke<number>("cloud_pull");
+}
+
+export async function cloudGetStatus(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("cloud_get_status");
+}
+
+export async function cloudTotpSessionActive(): Promise<boolean> {
+  return invoke<boolean>("cloud_totp_session_active");
+}
+
+export async function cloudDeleteData(): Promise<void> {
+  return invoke("cloud_delete_data");
+}
+
+// --- TOTP 2FA ---
+
+export interface TotpSetupInfo {
+  secret: string;
+  otpauthUri: string;
+}
+
+export async function totpGetStatus(): Promise<boolean> {
+  return invoke<boolean>("totp_get_status");
+}
+
+export async function totpSetup(): Promise<TotpSetupInfo> {
+  return invoke<TotpSetupInfo>("totp_setup");
+}
+
+export async function totpConfirmSetup(code: string): Promise<string[]> {
+  return invoke<string[]>("totp_confirm_setup", { code });
+}
+
+export async function totpDisable(code: string): Promise<void> {
+  return invoke("totp_disable", { code });
+}
+
+export async function totpValidate(code: string): Promise<void> {
+  return invoke("totp_validate", { code });
 }

@@ -75,17 +75,39 @@ export default function SpyPage() {
   const [configured, setConfigured] = useState(false);
   const [apiStatus, setApiStatus] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadRevealConfig = useCallback(() => {
     import("@/lib/tauri").then(({ getRevealApiConfig }) => {
       getRevealApiConfig().then(([savedKey, savedRegion]) => {
         if (savedKey) {
           setApiKey(savedKey);
           setConfigured(true);
+        } else {
+          setApiKey("");
+          setConfigured(false);
         }
         if (savedRegion) setRegion(savedRegion);
       }).catch(() => {});
     });
   }, []);
+
+  useEffect(() => {
+    loadRevealConfig();
+  }, [loadRevealConfig]);
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void (async () => {
+      const { isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      const { listen } = await import("@tauri-apps/api/event");
+      un = await listen("cloud-sync-complete", () => {
+        loadRevealConfig();
+      });
+    })();
+    return () => {
+      un?.();
+    };
+  }, [loadRevealConfig]);
 
   const handleSaveConfig = async () => {
     try {

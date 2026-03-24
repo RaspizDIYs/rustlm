@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RustLM",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "identifier": "com.rustlm.app",
   "build": {
     "frontendDist": "../out",
@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "RustLM - LoL Manager",
-        "width": 1200,
-        "height": 550,
+        "width": 1100,
+        "height": 680,
         "minWidth": 900,
-        "minHeight": 400,
+        "minHeight": 640,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
@@ -30,8 +30,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -41,6 +41,11 @@
     ]
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["rustlm"]
+      }
+    },
     "updater": {
       "endpoints": [
         "https://github.com/RaspizDIYs/rustlm/releases/latest/download/latest.json"

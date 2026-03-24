@@ -9,6 +9,7 @@ use crate::error::AppError;
 use crate::models::account::{
     AccountRecord, EncryptedExportData, ExportAccountRecord, LegacyExportAccountRecord,
 };
+use crate::services::crypto::{dpapi_protect, dpapi_unprotect};
 
 pub struct AccountsStorage {
     accounts_path: PathBuf,
@@ -87,6 +88,62 @@ impl AccountsStorage {
         Ok(())
     }
 
+    pub fn load_all_with_passwords(&self) -> Vec<(AccountRecord, String)> {
+        self.load_all()
+            .into_iter()
+            .map(|a| {
+                let password = self.unprotect(&a.encrypted_password).unwrap_or_default();
+                (a, password)
+            })
+            .collect()
+    }
+
+    pub fn import_from_cloud(
+        &self,
+        cloud_accounts: Vec<crate::models::account::CloudAccountData>,
+    ) -> Result<usize, AppError> {
+        let mut accounts = self.load_all();
+        let mut imported = 0usize;
+
+        for ca in cloud_accounts {
+            let encrypted_password = self.protect(&ca.password)?;
+            if let Some(existing) = accounts.iter_mut().find(|a| a.username == ca.username) {
+                existing.encrypted_password = encrypted_password;
+                existing.note = ca.note;
+                existing.avatar_url = ca.avatar_url;
+                existing.summoner_name = ca.summoner_name;
+                existing.rank = ca.rank;
+                existing.rank_display = ca.rank_display;
+                existing.riot_id = ca.riot_id;
+                existing.puuid = ca.puuid;
+                existing.rank_icon_url = ca.rank_icon_url;
+                existing.server = ca.server;
+            } else {
+                accounts.push(AccountRecord {
+                    username: ca.username,
+                    encrypted_password,
+                    note: ca.note,
+                    created_at: ca.created_at,
+                    avatar_url: ca.avatar_url,
+                    summoner_name: ca.summoner_name,
+                    rank: ca.rank,
+                    rank_display: ca.rank_display,
+                    riot_id: ca.riot_id,
+                    puuid: ca.puuid,
+                    rank_icon_url: ca.rank_icon_url,
+                    server: ca.server,
+                    is_selected: false,
+                });
+                imported += 1;
+            }
+        }
+
+        self.write_to_disk(&accounts)?;
+        let mut cache = self.cached_accounts.lock().unwrap();
+        *cache = Some(accounts);
+        Ok(imported)
+    }
+
     pub fn protect(&self, plain: &str) -> Result<String, AppError> {
         if plain.is_empty() {
             return Ok(String::new());
@@ -130,6 +187,7 @@ impl AccountsStorage {
                     rank: a.rank.clone(),
                     rank_display: a.rank_display.clone(),
                     riot_id: a.riot_id.clone(),
+                    puuid: a.puuid.clone(),
                     rank_icon_url: a.rank_icon_url.clone(),
                 }
             })
@@ -202,6 +260,7 @@ impl AccountsStorage {
                         rank: String::new(),
                         rank_display: String::new(),
                         riot_id: String::new(),
+                        puuid: String::new(),
                         rank_icon_url: String::new(),
                     })
                     .collect()
@@ -224,6 +283,7 @@ impl AccountsStorage {
                 rank: record.rank,
                 rank_display: record.rank_display,
                 riot_id: record.riot_id,
+                puuid: record.puuid,
                 rank_icon_url: record.rank_icon_url,
                 server: String::new(),
                 is_selected: false,
@@ -266,91 +326,6 @@ impl AccountsStorage {
         fs::write(&self.accounts_path, content)?;
         Ok(())
     }
-}
-
-// --- DPAPI (Windows only) ---
-
-#[cfg(windows)]
-fn dpapi_protect(data: &[u8]) -> Result<String, AppError> {
-    use windows::Win32::Security::Cryptography::*;
-
-    unsafe {
-        let input_blob = CRYPT_INTEGER_BLOB {
-            cbData: data.len() as u32,
-            pbData: data.as_ptr() as *mut u8,
-        };
-        let mut output_blob = CRYPT_INTEGER_BLOB::default();
-
-        CryptProtectData(
-            &input_blob,
-            None,
-            None,
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output_blob,
-        )
-        .map_err(|e| AppError::Custom(format!("DPAPI Protect failed: {}", e)))?;
-
-        let protected = std::slice::from_raw_parts(
-            output_blob.pbData,
-            output_blob.cbData as usize,
-        )
-        .to_vec();
-
-        Ok(BASE64.encode(&protected))
-    }
-}
-
-#[cfg(not(windows))]
-fn dpapi_protect(data: &[u8]) -> Result<String, AppError> {
-    // Fallback: base64 encode (not secure, but allows compilation on non-Windows)
-    Ok(BASE64.encode(data))
-}
-
-#[cfg(windows)]
-fn dpapi_unprotect(encrypted_b64: &str) -> Result<String, AppError> {
-    use windows::Win32::Security::Cryptography::*;
-
-    let protected_bytes = BASE64
-        .decode(encrypted_b64)
-        .map_err(|e| AppError::Custom(format!("Base64 decode failed: {}", e)))?;
-
-    unsafe {
-        let input_blob = CRYPT_INTEGER_BLOB {
-            cbData: protected_bytes.len() as u32,
-            pbData: protected_bytes.as_ptr() as *mut u8,
-        };
-        let mut output_blob = CRYPT_INTEGER_BLOB::default();
-
-        CryptUnprotectData(
-            &input_blob,
-            None,
-            None,
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output_blob,
-        )
-        .map_err(|e| AppError::Custom(format!("DPAPI Unprotect failed: {}", e)))?;
-
-        let decrypted = std::slice::from_raw_parts(
-            output_blob.pbData,
-            output_blob.cbData as usize,
-        )
-        .to_vec();
-
-        String::from_utf8(decrypted)
-            .map_err(|e| AppError::Custom(format!("UTF-8 decode failed: {}", e)))
-    }
-}
-
-#[cfg(not(windows))]
-fn dpapi_unprotect(encrypted_b64: &str) -> Result<String, AppError> {
-    let bytes = BASE64
-        .decode(encrypted_b64)
-        .map_err(|e| AppError::Custom(format!("Base64 decode failed: {}", e)))?;
-    String::from_utf8(bytes).map_err(|e| AppError::Custom(format!("UTF-8 decode failed: {}", e)))
 }
 
 // --- AES-256-CBC encryption (for export/import) ---

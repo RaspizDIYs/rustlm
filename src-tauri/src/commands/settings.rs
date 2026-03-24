@@ -1,5 +1,6 @@
 use tauri::State;
 
+use crate::commands::accounts::trigger_cloud_sync;
 use crate::state::AppState;
 
 #[cfg(windows)]
@@ -78,6 +79,7 @@ pub fn set_autostart_background(enabled: bool, state: State<AppState>) -> Result
         .settings
         .save_setting(AUTOSTART_BG_KEY, &enabled)
         .map_err(|e| e.to_string())?;
+    trigger_cloud_sync(&state);
     // Re-write registry entry if autostart is currently on
     #[cfg(windows)]
     if read_autostart() {
@@ -114,7 +116,9 @@ pub fn save_setting(
     state
         .settings
         .save_setting(key, &value)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    trigger_cloud_sync(&state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -132,5 +136,7 @@ pub fn save_update_settings(
     state
         .settings
         .save_update_settings(&settings)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    trigger_cloud_sync(&state);
+    Ok(())
 }

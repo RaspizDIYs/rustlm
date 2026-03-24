@@ -12,20 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-const SERVERS = [
-  { code: "EUW", name: "EU West" },
-  { code: "EUNE", name: "EU Nordic & East" },
-  { code: "NA", name: "North America" },
-  { code: "KR", name: "Korea" },
-  { code: "RU", name: "Russia" },
-  { code: "TR", name: "Turkey" },
-  { code: "BR", name: "Brazil" },
-  { code: "JP", name: "Japan" },
-  { code: "LAN", name: "Latin America North" },
-  { code: "LAS", name: "Latin America South" },
-  { code: "OCE", name: "Oceania" },
-];
+import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
 
 export default function AddAccountPage() {
   const router = useRouter();
@@ -51,6 +38,7 @@ export default function AddAccountPage() {
         Rank: "",
         RankDisplay: "",
         RiotId: "",
+        Puuid: "",
         RankIconUrl: "",
         Server: server,
       });
@@ -99,7 +87,7 @@ export default function AddAccountPage() {
           <div className="space-y-2">
             <label className="text-sm text-muted-foreground">Сервер</label>
             <Select value={server} onValueChange={(v) => v && setServer(v)}>
-              <SelectTrigger>
+              <SelectTrigger className="w-full">
                 <SelectValue placeholder="Выберите сервер" />
               </SelectTrigger>
               <SelectContent>

@@ -23,7 +23,7 @@ export function Titlebar() {
       getCurrentWindow().onResized(() => syncMaximized()).then((fn) => {
         unlisten = fn;
       });
-    });
+    }).catch(() => {});
     return () => unlisten?.();
   }, [syncMaximized]);
 

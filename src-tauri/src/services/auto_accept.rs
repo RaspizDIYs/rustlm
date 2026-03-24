@@ -80,6 +80,10 @@ impl AutoAcceptService {
         self.enabled.load(Ordering::SeqCst)
     }
 
+    pub fn set_enabled_flag_only(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+    }
+
     async fn emit_event(&self, event: &str, payload: &str) {
         if let Some(handle) = self.app_handle.lock().await.as_ref() {
             let _ = handle.emit(event, payload.to_string());

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -229,12 +231,20 @@ impl DataDragonService {
             let mut lanes = Vec::new();
             for tag in &info.tags {
                 match tag.as_str() {
-                    "Fighter" | "Tank" => {
+                    "Tank" => {
                         if !lanes.contains(&"TOP".to_string()) {
                             lanes.push("TOP".to_string());
                         }
                     }
-                    "Assassin" | "Fighter" => {
+                    "Fighter" => {
+                        if !lanes.contains(&"TOP".to_string()) {
+                            lanes.push("TOP".to_string());
+                        }
+                        if !lanes.contains(&"JUNGLE".to_string()) {
+                            lanes.push("JUNGLE".to_string());
+                        }
+                    }
+                    "Assassin" => {
                         if !lanes.contains(&"JUNGLE".to_string()) {
                             lanes.push("JUNGLE".to_string());
                         }

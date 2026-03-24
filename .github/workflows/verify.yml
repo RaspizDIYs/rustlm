@@ -1,0 +1,40 @@
+# PR/master: Next build + cargo check для прод и для goodluck-test (test.gltournament.ru).
+# Публичные релизы не трогает — см. release.yml.
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: verify
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Next.js build
+        run: npm run build
+
+      - name: Cargo check (prod — gltournament.ru)
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Cargo check (goodluck-test — test.gltournament.ru)
+        run: cargo check --manifest-path src-tauri/Cargo.toml --features goodluck-test

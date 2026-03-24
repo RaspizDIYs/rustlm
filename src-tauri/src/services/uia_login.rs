@@ -91,9 +91,8 @@ unsafe fn do_login(username: &str, password: &str, timeout_secs: u64, cancel: Op
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    // Step 2: Fill username (retry until value sticks, but never re-clear if already set)
+    // Step 2: Fill username (retry until value sticks)
     activate_window(hwnd);
-    let mut username_confirmed = false;
     for _ in 0..10 {
         if is_cancelled(cancel) {
             return Err(Error::new(E_ABORT, "Login cancelled"));
@@ -102,13 +101,10 @@ unsafe fn do_login(username: &str, password: &str, timeout_secs: u64, cancel: Op
             break; // proceed anyway
         }
 
-        if !username_confirmed {
-            let _ = set_element_value(&username_el, username);
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let _ = set_element_value(&username_el, username);
+        std::thread::sleep(Duration::from_millis(50));
 
         if check_value(&username_el, username) {
-            username_confirmed = true;
             break;
         }
 

@@ -93,4 +93,27 @@ impl SettingsService {
         fs::write(&self.settings_path, content)?;
         Ok(())
     }
+
+    pub fn export_settings_json_map(&self) -> serde_json::Map<String, Value> {
+        let cache = self.cache.lock().unwrap();
+        cache
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    pub fn replace_settings_json_map(
+        &self,
+        map: serde_json::Map<String, Value>,
+    ) -> Result<(), AppError> {
+        let mut new_cache: HashMap<String, Value> = HashMap::new();
+        for (k, v) in map {
+            new_cache.insert(k, v);
+        }
+        {
+            let mut cache = self.cache.lock().unwrap();
+            *cache = new_cache;
+        }
+        self.flush()
+    }
 }

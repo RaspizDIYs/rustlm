@@ -1,5 +1,6 @@
 use tauri::State;
 
+use crate::commands::accounts::trigger_cloud_sync;
 use crate::models::player::PlayerInfo;
 use crate::state::AppState;
 
@@ -17,6 +18,7 @@ pub async fn set_reveal_api_config(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state.reveal.set_api_configuration(&api_key, &region).await;
+    trigger_cloud_sync(&state);
     Ok(())
 }
 

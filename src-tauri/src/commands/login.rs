@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, State};
 
+use crate::commands::accounts::{spawn_post_login_lcu_refresh, trigger_cloud_sync};
 use crate::services::file_logger::FileLogger;
 use crate::services::riot_client::{LoginPhase, RiotClientService};
 use crate::state::AppState;
@@ -29,7 +30,6 @@ pub fn cancel_login(state: State<'_, AppState>) {
 #[tauri::command]
 pub async fn login_to_account(
     username: String,
-    password: String,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -38,11 +38,22 @@ pub async fn login_to_account(
     let logger: &FileLogger = &state.logger;
     logger.login_flow("START", Some(&format!("user={}", username)));
 
-    // 1. Decrypt password
+    // 1. Look up encrypted password from storage (never exposed to frontend)
+    let account = state
+        .accounts
+        .load_all()
+        .into_iter()
+        .find(|a| a.username == username)
+        .ok_or_else(|| "Аккаунт не найден".to_string())?;
+
+    if account.encrypted_password.is_empty() {
+        return Err("Аккаунт не активирован — введите данные для входа".to_string());
+    }
+
     emit_progress(&app, "Расшифровка пароля...");
     let plain_password = state
         .accounts
-        .unprotect(&password)
+        .unprotect(&account.encrypted_password)
         .map_err(|e| {
             logger.login_flow("ERROR", Some(&format!("unprotect failed: {}", e)));
             e.to_string()
@@ -223,11 +234,6 @@ async fn finalize_login(
         logger.login_flow("LAUNCH", Some("launching League of Legends..."));
         match rc.launch_league_via_rc().await {
             Ok(_) => {}
-            Err(e) if e.to_string().contains("eula_not_accepted") => {
-                // EULA needs to be accepted in RC — not a login failure,
-                // RC window will show the prompt.
-                logger.login_flow("LAUNCH", Some("EULA not accepted, RC will prompt user"));
-            }
             Err(e) => {
                 logger.login_flow("LAUNCH", Some(&format!("launch failed: {}", e)));
             }
@@ -235,6 +241,9 @@ async fn finalize_login(
     }
 
     logger.login_flow("DONE", Some("login complete"));
+    rc.invalidate_cache();
+    trigger_cloud_sync(state);
+    spawn_post_login_lcu_refresh(app.clone());
     Ok(())
 }
 

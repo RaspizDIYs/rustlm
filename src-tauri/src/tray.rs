@@ -106,11 +106,15 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
         "auto_accept" => {
             let state = app.state::<AppState>();
             let new_enabled = !state.auto_accept.is_enabled();
-            let auto_accept = state.auto_accept.clone();
+            let app_handle = app.clone();
             tauri::async_runtime::spawn(async move {
-                auto_accept.set_enabled_arc(new_enabled).await;
+                let state = app_handle.state::<AppState>();
+                if let Err(e) =
+                    crate::commands::auto_accept::apply_auto_accept_enabled(&state, new_enabled).await
+                {
+                    log::error!("[Tray] persist auto-accept: {}", e);
+                }
             });
-            // Notify frontend to sync UI
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.emit("auto-accept-changed", new_enabled);
             }

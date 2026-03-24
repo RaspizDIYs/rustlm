@@ -1,20 +1,33 @@
+# Публичный релиз только прод: gltournament.ru (Cargo без --features goodluck-test).
+# Тестовый сервер test.gltournament.ru — локально: npm run tauri:dev:test / tauri:build:test.
 name: Release
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Уже существующий тег на GitHub (например v0.1.14)'
+        required: true
+        default: 'v0.1.14'
+        type: string
 
 jobs:
   release:
     permissions:
       contents: write
     runs-on: windows-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -26,13 +39,35 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      - name: npm cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Next.js build cache
+        uses: actions/cache@v5
+        with:
+          path: .next/cache
+          key: ${{ runner.os }}-next-${{ hashFiles('package-lock.json', 'next.config.ts') }}
+          restore-keys: |
+            ${{ runner.os }}-next-
+
       - name: Install frontend dependencies
         run: npm ci
 
       - name: Extract version from tag
         id: version
         shell: bash
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            T="${{ github.event.inputs.tag }}"
+          else
+            T="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${T#v}" >> $GITHUB_OUTPUT
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6.1
@@ -41,6 +76,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          projectPath: src-tauri
+          args: --config tauri.ci-updater.json
           tagName: v__VERSION__
           releaseName: 'RustLM v__VERSION__'
           releaseBody: |

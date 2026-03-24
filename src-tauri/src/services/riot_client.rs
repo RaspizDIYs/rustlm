@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -630,8 +632,20 @@ impl RiotClientService {
             profile_icon_id
         );
 
-        // Get Riot ID
-        let riot_id = self.get_riot_id().await.unwrap_or_default();
+        // Riot ID: current-summoner sometimes has gameName+tagLine before chat is ready
+        let mut riot_id = Self::riot_id_from_summoner_json(&summoner);
+        if riot_id.is_empty() {
+            riot_id = self.get_riot_id().await.unwrap_or_default();
+        }
+        if riot_id.is_empty() {
+            for _ in 0..6 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                riot_id = self.get_riot_id().await.unwrap_or_default();
+                if !riot_id.is_empty() {
+                    break;
+                }
+            }
+        }
 
         // Detect server/region
         let server = self.detect_server().await.unwrap_or_default();
@@ -673,6 +687,82 @@ impl RiotClientService {
         }
 
         Ok(String::new())
+    }
+
+    /// Riot login username for the current RC/LCU session (email / login name), if exposed by APIs.
+    pub async fn get_authorized_riot_login_username(&self) -> Result<String, AppError> {
+        fn pick_username_fields(obj: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+            for key in ["username", "loginUsername", "accountName", "userName"] {
+                if let Some(s) = obj.get(key).and_then(|x| x.as_str()) {
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        return Some(t.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        fn parse_from_auth_json(v: &serde_json::Value) -> Option<String> {
+            use serde_json::Value;
+            let obj = v.as_object()?;
+            pick_username_fields(obj).or_else(|| {
+                for child in [
+                    "authorization",
+                    "session",
+                    "sessionCredentials",
+                    "credentials",
+                    "account",
+                    "user",
+                    "login",
+                ] {
+                    if let Some(Value::Object(sub)) = obj.get(child) {
+                        if let Some(u) = pick_username_fields(sub) {
+                            return Some(u);
+                        }
+                    }
+                }
+                None
+            })
+        }
+
+        if let Ok(resp) = self
+            .rc_request_silent(reqwest::Method::GET, "/rso-auth/v1/authorization", None)
+            .await
+        {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp) {
+                if let Some(u) = parse_from_auth_json(&v) {
+                    return Ok(u);
+                }
+            }
+        }
+
+        if let Ok(text) = self.lcu_get("/lol-login/v1/session").await {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(u) = parse_from_auth_json(&v) {
+                    return Ok(u);
+                }
+            }
+        }
+
+        Ok(String::new())
+    }
+
+    fn riot_id_from_summoner_json(summoner: &serde_json::Value) -> String {
+        let game_name = summoner
+            .get("gameName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if game_name.is_empty() {
+            return String::new();
+        }
+        let tag_line = summoner
+            .get("tagLine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        format!("{}#{}", game_name, tag_line)
     }
 
     async fn get_riot_id(&self) -> Result<String, AppError> {
@@ -756,75 +846,64 @@ impl RiotClientService {
     }
 
     /// Logout current account via RC API.
-    /// Tries DELETE on both v1 and v2 endpoints — ignores individual errors.
     pub async fn logout_via_rc(&self) -> Result<(), AppError> {
-        let _ = self.rc_request(reqwest::Method::DELETE, "/rso-auth/v1/authorization", None).await;
-        let _ = self.rc_request(reqwest::Method::DELETE, "/rso-auth/v2/authorizations", None).await;
+        let _ = self.rc_request_silent(reqwest::Method::DELETE, "/rso-auth/v2/authorizations", None).await;
+        let _ = self.rc_request_silent(reqwest::Method::DELETE, "/rso-auth/v1/authorization", None).await;
+        let _ = self.rc_request_silent(reqwest::Method::PUT, "/rso-auth/v1/session/credentials", Some(r#"{"username":"","password":"","persistLogin":false}"#)).await;
         Ok(())
     }
 
     /// Check if a user is currently authorized via RSO (Riot Sign-On).
     pub async fn is_rso_authorized(&self) -> bool {
-        let resp = match self
-            .rc_request_silent(reqwest::Method::GET, "/rso-auth/v1/authorization", None)
-            .await
-        {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
-
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
-            if json.get("errorCode").is_some() {
-                return false;
-            }
-            if json.get("isAuthorized").and_then(|v| v.as_bool()) == Some(true) {
-                return true;
-            }
-            if let Some(auth) = json.get("authorization") {
-                if auth.get("accessToken").and_then(|v| v.as_str()).is_some() {
+        for ep in ["/rso-auth/v2/authorizations", "/rso-auth/v1/authorization"] {
+            let resp = match self.rc_request_silent(reqwest::Method::GET, ep, None).await {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
+                if json.get("errorCode").is_some() {
+                    continue;
+                }
+                if json.get("isAuthorized").and_then(|v| v.as_bool()) == Some(true) {
                     return true;
                 }
-            }
-            if json.get("authorized").and_then(|v| v.as_bool()) == Some(true) {
-                return true;
-            }
-            if json.get("subject").and_then(|v| v.as_str()).map(|s| !s.is_empty()) == Some(true) {
-                return true;
-            }
-            if json.get("currentAccountId").and_then(|v| v.as_u64()).is_some() {
-                return true;
+                if let Some(auth) = json.get("authorization") {
+                    if auth.get("accessToken").and_then(|v| v.as_str()).is_some() {
+                        return true;
+                    }
+                }
+                if json.get("authorized").and_then(|v| v.as_bool()) == Some(true) {
+                    return true;
+                }
+                if json.get("subject").and_then(|v| v.as_str()).map(|s| !s.is_empty()) == Some(true) {
+                    return true;
+                }
+                if json.get("currentAccountId").and_then(|v| v.as_u64()).is_some() {
+                    return true;
+                }
             }
         }
         false
     }
 
     /// Initialize RSO session — required before login_via_rc can work.
-    /// POST /rso-auth/v2/authorizations creates the RSO session.
     pub async fn init_rso_session(&self) -> Result<(), AppError> {
         let body = r#"{"clientId":"riot-client","trustLevels":["always_trusted"]}"#;
-        let resp = self
-            .rc_request(reqwest::Method::POST, "/rso-auth/v2/authorizations", Some(body))
-            .await?;
-
-        eprintln!("[RSO_INIT] v2 response: {}",
-            if resp.len() > 300 { &resp[..300] } else { &resp });
-
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
-            if json.get("errorCode").is_some() {
-                // v2 failed, try v1
-                let resp_v1 = self
-                    .rc_request(reqwest::Method::POST, "/rso-auth/v1/authorization", Some(body))
-                    .await?;
-                eprintln!("[RSO_INIT] v1 response: {}",
-                    if resp_v1.len() > 300 { &resp_v1[..300] } else { &resp_v1 });
-                if let Ok(json_v1) = serde_json::from_str::<serde_json::Value>(&resp_v1) {
-                    if let Some(ec) = json_v1.get("errorCode").and_then(|v| v.as_str()) {
-                        return Err(AppError::Custom(format!("RSO session init failed: {}", ec)));
+        for ep in ["/rso-auth/v2/authorizations", "/rso-auth/v1/authorization"] {
+            match self.rc_request_silent(reqwest::Method::POST, ep, Some(body)).await {
+                Ok(resp) => {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
+                        if json.get("errorCode").is_none() {
+                            return Ok(());
+                        }
+                    } else {
+                        return Ok(());
                     }
                 }
+                Err(_) => continue,
             }
         }
-        Ok(())
+        Err(AppError::Custom("RSO session init failed on all endpoints".to_string()))
     }
 
     /// Login via RC API using credentials (no UIA needed).
@@ -964,19 +1043,13 @@ impl RiotClientService {
         false
     }
 
-    /// Wait for RC API to be responsive (not returning 404 on all endpoints).
-    /// This is needed because RC lockfile appears before the HTTP API is ready.
+    /// Wait for RC API to be responsive.
     pub async fn wait_for_rc_api_ready(&self, timeout: Duration) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            // Try a simple GET — if it returns anything other than 404, API is ready
-            match self.rc_request_silent(reqwest::Method::GET, "/rso-auth/v1/authorization", None).await {
-                Ok(resp) => {
-                    if !resp.contains("RESOURCE_NOT_FOUND") {
-                        return true;
-                    }
-                }
-                Err(_) => {} // Connection error — RC not ready yet
+            match self.rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None).await {
+                Ok(resp) if !resp.contains("RESOURCE_NOT_FOUND") && !resp.is_empty() => return true,
+                _ => {}
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -1019,19 +1092,15 @@ impl RiotClientService {
             return LoginPhase::RcStarting;
         }
 
-        // Lockfile exists — check if API is responsive
-        match self.rc_request(reqwest::Method::GET, "/rso-auth/v1/authorization", None).await {
-            Ok(resp) => {
-                if resp.contains("RESOURCE_NOT_FOUND") {
-                    return LoginPhase::RcWaitingForApi;
-                }
-                // API is responsive — check authorization
+        // Lockfile exists — check if API is responsive via lightweight endpoint
+        match self.rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None).await {
+            Ok(resp) if !resp.contains("RESOURCE_NOT_FOUND") && !resp.is_empty() => {
                 if self.is_rso_authorized().await {
                     return LoginPhase::Authenticated;
                 }
                 LoginPhase::RcReady
             }
-            Err(_) => LoginPhase::RcWaitingForApi,
+            _ => LoginPhase::RcWaitingForApi,
         }
     }
 

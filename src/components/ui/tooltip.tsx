@@ -21,8 +21,16 @@ function Tooltip({ ...props }: TooltipPrimitive.Root.Props) {
   return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
 }
 
-function TooltipTrigger({ ...props }: TooltipPrimitive.Trigger.Props) {
-  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
+function TooltipTrigger(
+  props: TooltipPrimitive.Trigger.Props & { nativeButton?: boolean }
+) {
+  const { nativeButton: _nativeButton, ...rest } = props
+  return (
+    <TooltipPrimitive.Trigger
+      data-slot="tooltip-trigger"
+      {...(rest as TooltipPrimitive.Trigger.Props)}
+    />
+  )
 }
 
 function TooltipContent({

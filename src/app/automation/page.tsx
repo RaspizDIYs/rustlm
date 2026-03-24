@@ -9,6 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { RunePageEditor } from "@/components/rune-page-editor";
 import { Skeleton } from "@/components/ui/skeleton";
+import { X } from "lucide-react";
+import { AutoAcceptSwitch } from "@/components/auto-accept-provider";
+import { WithTooltip } from "@/components/ui/with-tooltip";
 import type { RunePage, RunePathModel, AutomationSettings } from "@/lib/tauri";
 
 const DDRAGON = "https://ddragon.leagueoflegends.com";
@@ -27,8 +30,6 @@ const SPELL_IMAGE_MAP: Record<string, string> = {
   "13": "SummonerMana",
 };
 
-type SelectionMode = "pick" | "ban";
-
 export default function AutomationPage() {
   const [champions, setChampions] = useState<Record<string, string>>({});
   const [spells, setSpells] = useState<Record<string, string>>({});
@@ -39,7 +40,6 @@ export default function AutomationPage() {
   const [loading, setLoading] = useState(true);
 
   // Automation settings
-  const [autoAcceptEnabled, setAutoAcceptEnabled] = useState(false);
   const [autoPickEnabled, setAutoPickEnabled] = useState(true);
   const [autoBanEnabled, setAutoBanEnabled] = useState(true);
   const [autoSpellsEnabled, setAutoSpellsEnabled] = useState(true);
@@ -49,7 +49,6 @@ export default function AutomationPage() {
   const [selectedSpell1, setSelectedSpell1] = useState("");
   const [selectedSpell2, setSelectedSpell2] = useState("");
   const [selectedRunePage, setSelectedRunePage] = useState("");
-  const [selectionMode, setSelectionMode] = useState<SelectionMode>("pick");
   const [runeEditorOpen, setRuneEditorOpen] = useState(false);
   const [editingRunePage, setEditingRunePage] = useState<RunePage | null>(null);
 
@@ -58,13 +57,12 @@ export default function AutomationPage() {
   const loadData = useCallback(async () => {
     try {
       const tauri = await import("@/lib/tauri");
-      const [ver, champs, sp, pages, paths, enabled, settings] = await Promise.all([
+      const [ver, champs, sp, pages, paths, settings] = await Promise.all([
         tauri.getDdragonVersion(),
         tauri.getChampions(),
         tauri.getSummonerSpells(),
         tauri.loadRunePages(),
         tauri.getRunePaths(),
-        tauri.isAutoAcceptEnabled(),
         tauri.getAutomationSettings(),
       ]);
       setVersion(ver);
@@ -72,11 +70,14 @@ export default function AutomationPage() {
       setSpells(sp);
       setRunePages(pages);
       setRunePaths(paths);
-      setAutoAcceptEnabled(enabled);
-      if (settings.PickChampion1) setSelectedPick(settings.PickChampion1);
-      if (settings.BanChampion) setSelectedBan(settings.BanChampion);
-      if (settings.Spell1Id) setSelectedSpell1(String(settings.Spell1Id));
-      if (settings.Spell2Id) setSelectedSpell2(String(settings.Spell2Id));
+      setSelectedPick(settings.PickChampion1 ?? "");
+      setSelectedBan(settings.BanChampion ?? "");
+      setSelectedSpell1(
+        settings.Spell1Id != null ? String(settings.Spell1Id) : ""
+      );
+      setSelectedSpell2(
+        settings.Spell2Id != null ? String(settings.Spell2Id) : ""
+      );
       if (settings.SelectedRunePageName) setSelectedRunePage(settings.SelectedRunePageName);
       if (settings.AutoPickEnabled !== undefined) setAutoPickEnabled(settings.AutoPickEnabled);
       if (settings.AutoBanEnabled !== undefined) setAutoBanEnabled(settings.AutoBanEnabled);
@@ -91,12 +92,21 @@ export default function AutomationPage() {
 
   useEffect(() => {
     loadData();
-    // Sync auto-accept state when toggled from tray
-    const onAutoAcceptSync = (e: Event) => {
-      setAutoAcceptEnabled((e as CustomEvent<boolean>).detail);
+  }, [loadData]);
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void (async () => {
+      const { isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      const { listen } = await import("@tauri-apps/api/event");
+      un = await listen("cloud-sync-complete", () => {
+        void loadData();
+      });
+    })();
+    return () => {
+      un?.();
     };
-    window.addEventListener("autoAcceptSync", onAutoAcceptSync);
-    return () => window.removeEventListener("autoAcceptSync", onAutoAcceptSync);
   }, [loadData]);
 
   const saveSettings = useCallback(async (overrides: Partial<AutomationSettings>) => {
@@ -112,25 +122,65 @@ export default function AutomationPage() {
     }, 300);
   }, []);
 
-  const handleToggleAutoAccept = async (enabled: boolean) => {
-    setAutoAcceptEnabled(enabled);
-    try {
-      const { setAutoAcceptEnabled: setEnabled, refreshTray } = await import("@/lib/tauri");
-      await setEnabled(enabled);
-      await refreshTray().catch(() => {});
-    } catch (e) {
-      console.error("Toggle auto-accept failed:", e);
-    }
-  };
-
   const handleSelectChampion = (displayName: string) => {
-    if (selectionMode === "pick") {
+    if (!autoPickEnabled && !autoBanEnabled) return;
+
+    if (autoPickEnabled && !autoBanEnabled) {
       setSelectedPick(displayName);
-      saveSettings({ PickChampion1: displayName });
+      setSelectedBan("");
+      saveSettings({
+        PickChampion1: displayName,
+        BanChampion: null,
+        BanChampionId: null,
+      });
+      return;
+    }
+
+    if (!autoPickEnabled && autoBanEnabled) {
+      setSelectedBan(displayName);
+      saveSettings({ BanChampion: displayName });
+      return;
+    }
+
+    if (!selectedPick || (selectedPick && selectedBan)) {
+      setSelectedPick(displayName);
+      setSelectedBan("");
+      saveSettings({
+        PickChampion1: displayName,
+        BanChampion: null,
+        BanChampionId: null,
+      });
     } else {
+      if (displayName === selectedPick) return;
       setSelectedBan(displayName);
       saveSettings({ BanChampion: displayName });
     }
+  };
+
+  const clearPick = () => {
+    setSelectedPick("");
+    saveSettings({
+      PickChampion1: null,
+      PickChampion1Id: null,
+    });
+  };
+
+  const clearBan = () => {
+    setSelectedBan("");
+    saveSettings({
+      BanChampion: null,
+      BanChampionId: null,
+    });
+  };
+
+  const clearSpell1 = () => {
+    setSelectedSpell1("");
+    saveSettings({ Spell1Id: null });
+  };
+
+  const clearSpell2 = () => {
+    setSelectedSpell2("");
+    saveSettings({ Spell2Id: null });
   };
 
   const handleSelectSpell = (spellKey: string) => {
@@ -182,13 +232,10 @@ export default function AutomationPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <Skeleton className="h-8 w-48" />
-          <div className="flex items-center gap-2">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-5 w-9 rounded-full" />
-          </div>
+          <AutoAcceptSwitch />
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-1">
           {/* Champion pick/ban skeleton */}
           <Card>
             <CardHeader>
@@ -198,18 +245,17 @@ export default function AutomationPage() {
                   <Skeleton className="h-5 w-9 rounded-full" />
                   <Skeleton className="h-5 w-9 rounded-full" />
                 </div>
-                <div className="flex gap-1">
-                  <Skeleton className="h-8 w-14 rounded-md" />
-                  <Skeleton className="h-8 w-14 rounded-md" />
-                </div>
+                <div className="w-8" />
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <Skeleton className="h-9 w-full rounded-md" />
-              <div className="grid grid-cols-6 gap-1.5">
-                {Array.from({ length: 18 }).map((_, i) => (
-                  <Skeleton key={i} className="aspect-square rounded-md" />
-                ))}
+              <div className="h-52 md:h-56 lg:h-60 xl:h-64 min-h-52 overflow-hidden">
+                <div className="grid justify-start gap-2 grid-cols-[repeat(auto-fill,3.5rem)]">
+                  {Array.from({ length: 18 }).map((_, i) => (
+                    <Skeleton key={i} className="h-14 w-14 shrink-0 rounded-md" />
+                  ))}
+                </div>
               </div>
               <div className="flex gap-4">
                 <Skeleton className="h-5 w-20" />
@@ -266,21 +312,15 @@ export default function AutomationPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Автоматизация</h1>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">Авто-принятие</span>
-          <Switch
-            checked={autoAcceptEnabled}
-            onCheckedChange={handleToggleAutoAccept}
-          />
-        </div>
+        <AutoAcceptSwitch />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-1">
         {/* Champion pick/ban */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base flex items-center justify-between">
-              <div className="flex items-center gap-3">
+            <CardTitle className="text-base flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-3">
                 <span>Выбор чемпиона</span>
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs text-muted-foreground font-normal">Пик</span>
@@ -297,22 +337,6 @@ export default function AutomationPage() {
                   />
                 </div>
               </div>
-              <div className="flex gap-1">
-                <Button
-                  variant={selectionMode === "pick" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setSelectionMode("pick")}
-                >
-                  Пик
-                </Button>
-                <Button
-                  variant={selectionMode === "ban" ? "destructive" : "outline"}
-                  size="sm"
-                  onClick={() => setSelectionMode("ban")}
-                >
-                  Бан
-                </Button>
-              </div>
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -321,45 +345,91 @@ export default function AutomationPage() {
               value={champSearch}
               onChange={(e) => setChampSearch(e.target.value)}
             />
-            <ScrollArea className="h-48">
-              <div className="grid grid-cols-6 gap-1.5">
+            <ScrollArea className="h-52 md:h-56 lg:h-60 xl:h-64 min-h-52">
+              <div className="grid justify-start gap-2 grid-cols-[repeat(auto-fill,3.5rem)] auto-rows-[3.5rem]">
                 {filteredChampions.map(([displayName, englishName]) => {
-                  const isSelected = selectionMode === "pick"
-                    ? selectedPick === displayName
-                    : selectedBan === displayName;
+                  const isPick = autoPickEnabled && selectedPick === displayName;
+                  const isBan = autoBanEnabled && selectedBan === displayName;
                   return (
-                    <button
-                      key={englishName}
-                      title={displayName}
-                      onClick={() => handleSelectChampion(displayName)}
-                      className={`relative rounded-md overflow-hidden border-2 transition-colors ${
-                        isSelected
-                          ? selectionMode === "pick" ? "border-primary" : "border-destructive"
-                          : "border-transparent hover:border-muted-foreground/30"
-                      }`}
-                    >
-                      <img
-                        src={`${DDRAGON}/cdn/${version}/img/champion/${englishName}.png`}
-                        alt={displayName}
-                        className="w-full aspect-square object-cover"
-                        loading="lazy"
-                      />
-                    </button>
+                    <WithTooltip key={englishName} label={displayName}>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectChampion(displayName)}
+                        className={`relative h-14 w-14 shrink-0 overflow-hidden rounded-md border-2 p-0 transition-colors ${
+                          isPick
+                            ? "border-primary"
+                            : isBan
+                              ? "border-destructive"
+                              : "border-transparent hover:border-muted-foreground/30"
+                        }`}
+                      >
+                        <img
+                          src={`${DDRAGON}/cdn/${version}/img/champion/${englishName}.png`}
+                          alt={displayName}
+                          className="h-full w-full object-cover"
+                          loading="lazy"
+                        />
+                      </button>
+                    </WithTooltip>
                   );
                 })}
               </div>
             </ScrollArea>
 
-            <div className="flex gap-4 text-sm">
-              <div>
-                <span className="text-muted-foreground">Пик: </span>
-                <Badge variant="secondary">{selectedPick || "—"}</Badge>
+            {(autoPickEnabled || autoBanEnabled) ? (
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+                {autoPickEnabled ? (
+                  <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+                    <span className="flex items-center px-2.5 py-1 text-xs font-bold text-muted-foreground">
+                      Пик
+                    </span>
+                    {selectedPick ? (
+                      <>
+                        <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
+                        <div className="flex items-center gap-1.5 px-2.5 py-1">
+                          <span className="text-foreground">{selectedPick}</span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                            aria-label="Сбросить пик"
+                            onClick={clearPick}
+                          >
+                            <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                          </Button>
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+                {autoBanEnabled ? (
+                  <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+                    <span className="flex items-center px-2.5 py-1 text-xs font-bold text-muted-foreground">
+                      Бан
+                    </span>
+                    {selectedBan ? (
+                      <>
+                        <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
+                        <div className="flex items-center gap-1.5 px-2.5 py-1">
+                          <span className="text-foreground">{selectedBan}</span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                            aria-label="Сбросить бан"
+                            onClick={clearBan}
+                          >
+                            <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                          </Button>
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
-              <div>
-                <span className="text-muted-foreground">Бан: </span>
-                <Badge variant="outline">{selectedBan || "—"}</Badge>
-              </div>
-            </div>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -381,40 +451,79 @@ export default function AutomationPage() {
                 const isSpell1 = selectedSpell1 === key;
                 const isSpell2 = selectedSpell2 === key;
                 return (
-                  <button
-                    key={key}
-                    title={name}
-                    onClick={() => handleSelectSpell(key)}
-                    className={`rounded-md overflow-hidden border-2 transition-colors w-10 h-10 ${
-                      isSpell1
-                        ? "border-primary"
-                        : isSpell2
-                          ? "border-blue-400"
-                          : "border-transparent hover:border-muted-foreground/30"
-                    }`}
-                  >
-                    <img
-                      src={`${DDRAGON}/cdn/${version}/img/spell/${imgName}.png`}
-                      alt={name}
-                      className="w-full h-full object-cover"
-                      loading="lazy"
-                    />
-                  </button>
+                  <WithTooltip key={key} label={name}>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectSpell(key)}
+                      className={`rounded-md overflow-hidden border-2 transition-colors w-10 h-10 ${
+                        isSpell1
+                          ? "border-primary"
+                          : isSpell2
+                            ? "border-blue-400"
+                            : "border-transparent hover:border-muted-foreground/30"
+                      }`}
+                    >
+                      <img
+                        src={`${DDRAGON}/cdn/${version}/img/spell/${imgName}.png`}
+                        alt={name}
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
+                    </button>
+                  </WithTooltip>
                 );
               })}
             </div>
-            <div className="flex gap-4 text-sm">
-              <div>
-                <span className="text-muted-foreground">D: </span>
-                <Badge variant="secondary">
-                  {selectedSpell1 ? Object.entries(spells).find(([, k]) => k === selectedSpell1)?.[0] || "—" : "—"}
-                </Badge>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+                <span className="flex items-center px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-muted-foreground">
+                  D
+                </span>
+                {selectedSpell1 ? (
+                  <>
+                    <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
+                    <div className="flex items-center gap-1.5 px-2.5 py-1">
+                      <span className="text-foreground">
+                        {Object.entries(spells).find(([, k]) => k === selectedSpell1)?.[0] || "—"}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                        aria-label="Сбросить заклинание D"
+                        onClick={clearSpell1}
+                      >
+                        <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                      </Button>
+                    </div>
+                  </>
+                ) : null}
               </div>
-              <div>
-                <span className="text-muted-foreground">F: </span>
-                <Badge variant="secondary">
-                  {selectedSpell2 ? Object.entries(spells).find(([, k]) => k === selectedSpell2)?.[0] || "—" : "—"}
-                </Badge>
+              <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+                <span className="flex items-center px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-muted-foreground">
+                  F
+                </span>
+                {selectedSpell2 ? (
+                  <>
+                    <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
+                    <div className="flex items-center gap-1.5 px-2.5 py-1">
+                      <span className="text-foreground">
+                        {Object.entries(spells).find(([, k]) => k === selectedSpell2)?.[0] || "—"}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                        aria-label="Сбросить заклинание F"
+                        onClick={clearSpell2}
+                      >
+                        <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                      </Button>
+                    </div>
+                  </>
+                ) : null}
               </div>
             </div>
           </CardContent>

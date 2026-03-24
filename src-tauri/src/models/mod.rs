@@ -1,5 +1,6 @@
 pub mod account;
 pub mod automation;
+pub mod goodluck;
 pub mod champion;
 pub mod league_client;
 pub mod lcu_data;

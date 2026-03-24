@@ -81,3 +81,14 @@ pub async fn detect_server(state: State<'_, AppState>) -> Result<String, String>
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn get_authorized_riot_login_username(
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .riot_client
+        .get_authorized_riot_login_username()
+        .await
+        .map_err(|e| e.to_string())
+}

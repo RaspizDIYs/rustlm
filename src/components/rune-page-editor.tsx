@@ -12,6 +12,11 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { RunePage, RunePathModel, RuneModel } from "@/lib/tauri";
 
 const DDRAGON = "https://ddragon.leagueoflegends.com";
@@ -133,32 +138,45 @@ export function RunePageEditor({
   };
 
   const runeIcon = (rune: RuneModel, selected: boolean, onClick: () => void, size = "w-8 h-8") => (
-    <button
-      key={rune.id}
-      onClick={onClick}
-      title={rune.name}
-      className={`rounded-full border-2 transition-colors ${
-        selected ? "border-primary" : "border-transparent opacity-60 hover:opacity-100"
-      }`}
-    >
-      <img
-        src={`${DDRAGON}/cdn/img/${rune.icon}`}
-        alt={rune.name}
-        className={`${size} rounded-full`}
+    <Tooltip key={rune.id}>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            onClick={onClick}
+            className={`rounded-full border-2 transition-colors ${
+              selected ? "border-primary" : "border-transparent opacity-60 hover:opacity-100"
+            }`}
+          >
+            <img
+              src={`${DDRAGON}/cdn/img/${rune.icon}`}
+              alt={rune.name}
+              className={`${size} rounded-full`}
+            />
+          </button>
+        }
       />
-    </button>
+      <TooltipContent side="top">{rune.name}</TooltipContent>
+    </Tooltip>
   );
 
   const pathIcon = (path: RunePathModel, selected: boolean, onClick: () => void) => (
-    <button
-      key={path.id}
-      onClick={onClick}
-      className={`rounded-full border-2 p-0.5 transition-all ${
-        selected ? "border-primary" : "border-transparent opacity-50 hover:opacity-80"
-      }`}
-    >
-      <img src={`${DDRAGON}/cdn/img/${path.icon}`} alt={path.name} className="w-8 h-8" title={path.name} />
-    </button>
+    <Tooltip key={path.id}>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            onClick={onClick}
+            className={`rounded-full border-2 p-0.5 transition-all ${
+              selected ? "border-primary" : "border-transparent opacity-50 hover:opacity-80"
+            }`}
+          >
+            <img src={`${DDRAGON}/cdn/img/${path.icon}`} alt={path.name} className="w-8 h-8" />
+          </button>
+        }
+      />
+      <TooltipContent side="top">{path.name}</TooltipContent>
+    </Tooltip>
   );
 
   return (
@@ -340,22 +358,28 @@ export function RunePageEditor({
                           {statModRows.map((row, rowIdx) => (
                             <div key={`stat-${rowIdx}`} className="flex gap-2 justify-center mb-1.5">
                               {row.map((mod) => (
-                                <button
-                                  key={mod.id}
-                                  onClick={() => {
-                                    const next = [...statMods];
-                                    next[rowIdx] = mod.id;
-                                    setStatMods(next);
-                                  }}
-                                  title={mod.name}
-                                  className={`rounded-full border-2 transition-all ${
-                                    statMods[rowIdx] === mod.id
-                                      ? "border-primary"
-                                      : "border-transparent opacity-50 hover:opacity-80"
-                                  }`}
-                                >
-                                  <img src={`${DDRAGON}/cdn/img/${mod.icon}`} alt={mod.name} className="w-6 h-6 rounded-full" />
-                                </button>
+                                <Tooltip key={mod.id}>
+                                  <TooltipTrigger
+                                    render={
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const next = [...statMods];
+                                          next[rowIdx] = mod.id;
+                                          setStatMods(next);
+                                        }}
+                                        className={`rounded-full border-2 transition-all ${
+                                          statMods[rowIdx] === mod.id
+                                            ? "border-primary"
+                                            : "border-transparent opacity-50 hover:opacity-80"
+                                        }`}
+                                      >
+                                        <img src={`${DDRAGON}/cdn/img/${mod.icon}`} alt={mod.name} className="w-6 h-6 rounded-full" />
+                                      </button>
+                                    }
+                                  />
+                                  <TooltipContent side="top">{mod.name}</TooltipContent>
+                                </Tooltip>
                               ))}
                             </div>
                           ))}

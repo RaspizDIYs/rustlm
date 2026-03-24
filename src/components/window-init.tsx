@@ -8,15 +8,14 @@ export function WindowInit() {
         if (!minimized) {
           import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
             getCurrentWindow().show().catch(() => {});
-          });
+          }).catch(() => {});
         }
       }).catch(() => {
-        // fallback: always show
         import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
           getCurrentWindow().show().catch(() => {});
-        });
+        }).catch(() => {});
       });
-    });
+    }).catch(() => {});
   }, []);
   return null;
 }

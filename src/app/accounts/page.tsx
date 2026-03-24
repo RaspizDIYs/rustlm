@@ -12,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
+import { AutoAcceptSwitch } from "@/components/auto-accept-provider";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -28,22 +28,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil } from "lucide-react";
-import type { AccountRecord, ClientConnectivityStatus } from "@/lib/tauri";
-
-const SERVERS = [
-  { code: "EUW", name: "EU West" },
-  { code: "EUNE", name: "EU Nordic & East" },
-  { code: "NA", name: "North America" },
-  { code: "KR", name: "Korea" },
-  { code: "RU", name: "Russia" },
-  { code: "TR", name: "Turkey" },
-  { code: "BR", name: "Brazil" },
-  { code: "JP", name: "Japan" },
-  { code: "LAN", name: "Latin America North" },
-  { code: "LAS", name: "Latin America South" },
-  { code: "OCE", name: "Oceania" },
-];
+import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X } from "lucide-react";
+import { WithTooltip } from "@/components/ui/with-tooltip";
+import type { AccountRecord, ClientConnectivityStatus, GoodLuckRiotAccount } from "@/lib/tauri";
+import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
+import { toast } from "sonner";
 
 const RANK_ORDER: Record<string, number> = {
   IRON: 1, BRONZE: 2, SILVER: 3, GOLD: 4, PLATINUM: 5,
@@ -68,7 +57,6 @@ export default function AccountsPage() {
   const [loginProgress, setLoginProgress] = useState<string>("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [connectivity, setConnectivity] = useState<ClientConnectivityStatus | null>(null);
-  const [autoAcceptEnabled, setAutoAcceptEnabled] = useState(false);
   const [hideLogins, setHideLogins] = useState(false);
   const [passwordDialog, setPasswordDialog] = useState<{
     mode: "export" | "import";
@@ -90,6 +78,13 @@ export default function AccountsPage() {
   const [editNote, setEditNote] = useState("");
   const [editServer, setEditServer] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [glImportOpen, setGlImportOpen] = useState(false);
+  const [glImportList, setGlImportList] = useState<GoodLuckRiotAccount[]>([]);
+  const [glImportChecked, setGlImportChecked] = useState<Record<number, boolean>>({});
+  const [glImportLoading, setGlImportLoading] = useState(false);
+  const [glImportSaving, setGlImportSaving] = useState(false);
+  const [glImportError, setGlImportError] = useState<string | null>(null);
+  const [lcuProfileRefreshing, setLcuProfileRefreshing] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAccounts = useCallback(async () => {
@@ -97,13 +92,27 @@ export default function AccountsPage() {
       const { loadAccounts, refreshTray } = await import("@/lib/tauri");
       const data = await loadAccounts();
       setAccounts(data);
-      await refreshTray().catch(() => {});
+      await refreshTray().catch(() => { });
     } catch {
       // Not running in Tauri
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const schedulePullFromLcu = useCallback((toastOnUpdate: boolean) => {
+    void (async () => {
+      const { invalidateLcuCache } = await import("@/lib/tauri");
+      const { pullProfileFromLcuAfterLogin } = await import("@/lib/post-login-sync");
+      try {
+        await invalidateLcuCache();
+      } catch { }
+      await pullProfileFromLcuAfterLogin(fetchAccounts, {
+        retries: 25,
+        toastOnUpdate,
+      }).catch(() => { });
+    })();
+  }, [fetchAccounts]);
 
   const pollConnectivity = useCallback(async () => {
     try {
@@ -118,31 +127,59 @@ export default function AccountsPage() {
   useEffect(() => {
     fetchAccounts();
     pollConnectivity();
-    // Load auto-accept state and hide logins setting
-    import("@/lib/tauri").then(({ isAutoAcceptEnabled, loadSetting }) => {
-      isAutoAcceptEnabled().then(setAutoAcceptEnabled).catch(() => {});
-      loadSetting("HideLogins", false).then((v) => setHideLogins(v as boolean)).catch(() => {});
+    import("@/lib/tauri").then(({ loadSetting }) => {
+      loadSetting("HideLogins", false).then((v) => setHideLogins(v as boolean)).catch(() => { });
     });
     pollRef.current = setInterval(pollConnectivity, 5000);
 
-    // Sync auto-accept state when toggled from tray
-    const onAutoAcceptSync = (e: Event) => {
-      setAutoAcceptEnabled((e as CustomEvent<boolean>).detail);
-    };
-    window.addEventListener("autoAcceptSync", onAutoAcceptSync);
-
-    // Listen for login progress events from backend
     let unlistenProgress: (() => void) | undefined;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<string>("login-progress", (event) => {
+    let unlistenGlAuth: (() => void) | undefined;
+    void (async () => {
+      const { isTauri } = await import("@tauri-apps/api/core");
+      if (!isTauri()) return;
+      const { listen } = await import("@tauri-apps/api/event");
+      unlistenProgress = await listen<string>("login-progress", (event) => {
         setLoginProgress(event.payload);
-      }).then((fn) => { unlistenProgress = fn; });
-    });
+      });
+      await listen("cloud-sync-complete", () => {
+        fetchAccounts();
+      });
+      unlistenGlAuth = await listen<import("@/lib/tauri").GoodLuckUser>(
+        "goodluck-auth-success",
+        async (event) => {
+          const user = event.payload;
+          if (user.riot_accounts && user.riot_accounts.length > 0) {
+            try {
+              const { goodluckImportProfileAccounts } = await import("@/lib/tauri");
+              const result = await goodluckImportProfileAccounts(user.riot_accounts);
+              if (result.imported > 0 || result.updated > 0) {
+                fetchAccounts();
+              }
+              if (result.updated > 0) {
+                const pairs = result.updated_pairs
+                  .map(([old, next]) => `${old} → ${next}`)
+                  .join(", ");
+                toast.info(`GoodLuck: обновлено ${result.updated} аккаунт(а): ${pairs}`);
+              }
+              if (result.imported > 0) {
+                toast.success(`GoodLuck: импортировано ${result.imported} новых аккаунт(а)`);
+              }
+            } catch { }
+          }
+        },
+      );
+    })();
+
+    const onAccountsReload = () => {
+      void fetchAccounts();
+    };
+    window.addEventListener("rustlm-accounts-reload", onAccountsReload);
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
-      window.removeEventListener("autoAcceptSync", onAutoAcceptSync);
       unlistenProgress?.();
+      unlistenGlAuth?.();
+      window.removeEventListener("rustlm-accounts-reload", onAccountsReload);
     };
   }, [fetchAccounts, pollConnectivity]);
 
@@ -210,17 +247,6 @@ export default function AccountsPage() {
     }
   };
 
-  const handleToggleAutoAccept = async (enabled: boolean) => {
-    setAutoAcceptEnabled(enabled);
-    try {
-      const { setAutoAcceptEnabled: setEnabled, refreshTray } = await import("@/lib/tauri");
-      await setEnabled(enabled);
-      await refreshTray().catch(() => {});
-    } catch (e) {
-      console.error("Toggle auto-accept failed:", e);
-    }
-  };
-
   const handleImport = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -258,7 +284,10 @@ export default function AccountsPage() {
       } else {
         const { importAccounts } = await import("@/lib/tauri");
         const count = await importAccounts(passwordDialog.path, dialogPassword);
-        if (count > 0) await fetchAccounts();
+        if (count > 0) {
+          await fetchAccounts();
+          schedulePullFromLcu(false);
+        }
         setPasswordDialog(null);
       }
     } catch (e) {
@@ -273,7 +302,8 @@ export default function AccountsPage() {
 
   const openEditDialog = (account: AccountRecord) => {
     setEditAccount(account);
-    setEditUsername(account.Username);
+    // For GoodLuck-imported accounts, clear the gl: placeholder so user enters real login
+    setEditUsername(account.Username.startsWith("gl:") ? "" : account.Username);
     setEditPassword("");
     setEditNote(account.Note);
     setEditServer(account.Server);
@@ -295,6 +325,7 @@ export default function AccountsPage() {
         Rank: "",
         RankDisplay: "",
         RiotId: "",
+        Puuid: "",
         RankIconUrl: "",
         Server: addServer,
       });
@@ -304,10 +335,71 @@ export default function AccountsPage() {
       setAddNote("");
       setAddServer("");
       await fetchAccounts();
+      schedulePullFromLcu(true);
     } catch (e) {
       console.error("Add failed:", e);
     } finally {
       setAddSaving(false);
+    }
+  };
+
+  const fetchGlProfileRiotAccounts = useCallback(async () => {
+    setGlImportLoading(true);
+    setGlImportError(null);
+    try {
+      const { goodluckRefreshProfile, goodluckGetProfileAccounts } = await import("@/lib/tauri");
+      await goodluckRefreshProfile();
+      const list = await goodluckGetProfileAccounts();
+      setGlImportList(list);
+      const next: Record<number, boolean> = {};
+      for (let i = 0; i < list.length; i++) next[i] = false;
+      setGlImportChecked(next);
+    } catch (e) {
+      setGlImportError(String(e));
+      setGlImportList([]);
+      setGlImportChecked({});
+    } finally {
+      setGlImportLoading(false);
+    }
+  }, []);
+
+  const openGlImportDialog = () => {
+    setGlImportOpen(true);
+    setGlImportList([]);
+    setGlImportChecked({});
+    setGlImportError(null);
+    void fetchGlProfileRiotAccounts();
+  };
+
+  const handleGlImportSubmit = async () => {
+    const picked = glImportList.filter((_, i) => glImportChecked[i]);
+    if (picked.length === 0) return;
+    setGlImportSaving(true);
+    setGlImportError(null);
+    try {
+      const { goodluckImportProfileAccounts } = await import("@/lib/tauri");
+      const result = await goodluckImportProfileAccounts(picked);
+      setGlImportOpen(false);
+      await fetchAccounts();
+      schedulePullFromLcu(false);
+
+      const parts: string[] = [];
+      if (result.imported > 0) parts.push(`${result.imported} новых`);
+      if (result.updated > 0) parts.push(`${result.updated} обновлено`);
+      if (result.skipped > 0) parts.push(`${result.skipped} пропущено`);
+
+      if (result.updated > 0) {
+        const pairs = result.updated_pairs.map(([old, next]) => `${old} → ${next}`).join(", ");
+        toast.info(`Обновлены аккаунты со сменой ника: ${pairs}`);
+      } else if (result.imported > 0) {
+        toast.success(`Импорт из GoodLuck: ${parts.join(", ")}`);
+      } else {
+        toast(`Все аккаунты уже в списке (${result.skipped} пропущено)`);
+      }
+    } catch (e) {
+      setGlImportError(String(e));
+    } finally {
+      setGlImportSaving(false);
     }
   };
 
@@ -320,7 +412,6 @@ export default function AccountsPage() {
         ? await protectPassword(editPassword)
         : editAccount.EncryptedPassword;
 
-      // If username changed, delete the old record first
       if (editUsername !== editAccount.Username) {
         await delAcc(editAccount.Username);
       }
@@ -334,6 +425,7 @@ export default function AccountsPage() {
       });
       setEditAccount(null);
       await fetchAccounts();
+      schedulePullFromLcu(true);
     } catch (e) {
       console.error("Edit failed:", e);
     } finally {
@@ -342,266 +434,334 @@ export default function AccountsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="flex min-h-0 min-w-0 flex-col gap-4">
       {loginError && (
-        <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+        <div className="shrink-0 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           {loginError}
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold">Аккаунты</h1>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Автопринятие</span>
-            <Switch
-              checked={autoAcceptEnabled}
-              onCheckedChange={handleToggleAutoAccept}
-            />
-          </div>
+      <div className="sticky top-0 z-10 flex shrink-0 flex-col gap-3 border-b border-border/60 bg-background/95 pb-3 backdrop-blur-sm sm:flex-row sm:items-start sm:justify-between sm:border-0 sm:bg-transparent sm:pb-0 sm:backdrop-blur-none">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+          <h1 className="shrink-0 text-2xl font-bold">Аккаунты</h1>
+          <AutoAcceptSwitch />
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download className="h-3.5 w-3.5 mr-1" /> Экспорт
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-md border border-input shadow-xs">
+            <WithTooltip label="Экспорт аккаунтов в файл">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-none border-0 shadow-none"
+                onClick={handleExport}
+              >
+                <Download className="h-3.5 w-3.5" />
+              </Button>
+            </WithTooltip>
+            <div className="w-px shrink-0 bg-border" aria-hidden />
+            <WithTooltip label="Импорт аккаунтов из файла">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-none border-0 shadow-none"
+                onClick={handleImport}
+              >
+                <Upload className="h-3.5 w-3.5" />
+              </Button>
+            </WithTooltip>
+          </div>
+          <Button variant="outline" size="sm" onClick={openGlImportDialog}>
+            <Cloud className="h-3.5 w-3.5 mr-1" /> Из GoodLuck
           </Button>
-          <Button variant="outline" size="sm" onClick={handleImport}>
-            <Upload className="h-3.5 w-3.5 mr-1" /> Импорт
-          </Button>
+          <WithTooltip label="Ник, аватар, ранг из текущей сессии League (клиент должен быть запущен и залогинен)">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={lcuProfileRefreshing}
+              onClick={async () => {
+                setLcuProfileRefreshing(true);
+                try {
+                  const { refreshAccountProfileFromLcu } = await import("@/lib/tauri");
+                  const { notifyCloudAfterGoodluckSession } = await import("@/lib/post-login-sync");
+                  const r = await refreshAccountProfileFromLcu();
+                  await fetchAccounts();
+                  await notifyCloudAfterGoodluckSession();
+                  if (r.updated) toast.success(r.message);
+                  else toast.info(r.message);
+                } catch (e) {
+                  toast.error(String(e));
+                } finally {
+                  setLcuProfileRefreshing(false);
+                }
+              }}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 mr-1 ${lcuProfileRefreshing ? "animate-spin" : ""}`} />{" "}
+              Из клиента
+            </Button>
+          </WithTooltip>
           <Button onClick={() => setAddOpen(true)}>Добавить</Button>
         </div>
       </div>
 
-      {loading ? (
-        <Card>
-          <CardContent className="p-8 text-center text-muted-foreground">
-            Загрузка...
-          </CardContent>
-        </Card>
-      ) : accounts.length === 0 ? (
-        <Card>
-          <CardContent className="p-8 text-center text-muted-foreground">
-            <p>Нет добавленных аккаунтов</p>
-            <p className="text-sm mt-2">
-              Нажмите «Добавить» чтобы начать
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="rounded-xl border border-border overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Логин</TableHead>
-                <TableHead>Заметка</TableHead>
-                <TableHead>
-                  <button
-                    className="flex items-center gap-1 hover:text-foreground transition-colors"
-                    onClick={() => setSortMode((m) => m === "default" ? "rank-desc" : m === "rank-desc" ? "rank-asc" : "default")}
-                  >
-                    Аккаунт
-                    <ArrowUpDown className={`h-3 w-3 ${sortMode !== "default" ? "text-primary" : "opacity-50"}`} />
-                  </button>
-                </TableHead>
-                <TableHead>Сервер</TableHead>
-                <TableHead className="w-[150px]">Действия</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(() => {
-                let sorted = [...accounts];
-                if (sortMode === "rank-desc") {
-                  sorted.sort((a, b) => rankToNumber(b.RankDisplay) - rankToNumber(a.RankDisplay));
-                } else if (sortMode === "rank-asc") {
-                  sorted.sort((a, b) => rankToNumber(a.RankDisplay) - rankToNumber(b.RankDisplay));
-                }
-
-                const servers = new Map<string, AccountRecord[]>();
-                for (const acc of sorted) {
-                  const srv = acc.Server || "Без сервера";
-                  if (!servers.has(srv)) servers.set(srv, []);
-                  servers.get(srv)!.push(acc);
-                }
-
-                const hasMultipleServers = servers.size > 1 || (servers.size === 1 && !servers.has("Без сервера"));
-
-                const rows: React.ReactNode[] = [];
-                for (const [server, group] of servers) {
-                  if (hasMultipleServers) {
-                    rows.push(
-                      <TableRow key={`srv-${server}`}>
-                        <TableCell colSpan={5} className="bg-muted/30 py-1.5 px-3">
-                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                            {server} ({group.length})
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    );
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+        {loading ? (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground">
+              Загрузка...
+            </CardContent>
+          </Card>
+        ) : accounts.length === 0 ? (
+          <Card>
+            <CardContent className="p-8 text-center text-muted-foreground">
+              <p>Нет добавленных аккаунтов</p>
+              <p className="text-sm mt-2">
+                Нажмите «Добавить» чтобы начать
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="rounded-xl border border-border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Логин</TableHead>
+                  <TableHead>Заметка</TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-foreground transition-colors"
+                      onClick={() => setSortMode((m) => m === "default" ? "rank-desc" : m === "rank-desc" ? "rank-asc" : "default")}
+                    >
+                      Аккаунт
+                      <ArrowUpDown className={`h-3 w-3 ${sortMode !== "default" ? "text-primary" : "opacity-50"}`} />
+                    </button>
+                  </TableHead>
+                  <TableHead>Сервер</TableHead>
+                  <TableHead className="w-[168px] min-w-[168px]">Действия</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(() => {
+                  let sorted = [...accounts];
+                  if (sortMode === "rank-desc") {
+                    sorted.sort((a, b) => rankToNumber(b.RankDisplay) - rankToNumber(a.RankDisplay));
+                  } else if (sortMode === "rank-asc") {
+                    sorted.sort((a, b) => rankToNumber(a.RankDisplay) - rankToNumber(b.RankDisplay));
                   }
-                  for (const account of group) {
-                    rows.push(
-                      <TableRow key={account.Username}>
-                        <TableCell className="font-medium">
-                          {hideLogins ? "••••••••" : account.Username}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {account.Note || "—"}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {account.AvatarUrl && (
-                              <img
-                                src={account.AvatarUrl}
-                                alt=""
-                                className="w-8 h-8 rounded-full"
-                                onError={(e) => {
-                                  const img = e.currentTarget;
-                                  img.style.display = "none";
-                                }}
-                              />
-                            )}
-                            <div>
-                              <div className="text-sm">
-                                {account.RiotId || account.SummonerName || "—"}
-                              </div>
-                              {account.RankDisplay && (
-                                <Badge variant="secondary" className="text-xs">
-                                  {account.RankDisplay}
+
+                  const servers = new Map<string, AccountRecord[]>();
+                  for (const acc of sorted) {
+                    const srv = acc.Server || "Без сервера";
+                    if (!servers.has(srv)) servers.set(srv, []);
+                    servers.get(srv)!.push(acc);
+                  }
+
+                  const hasMultipleServers = servers.size > 1 || (servers.size === 1 && !servers.has("Без сервера"));
+
+                  const NO_SERVER_LABEL = "Без сервера";
+                  const serverOrderRank = (name: string): number => {
+                    if (name === NO_SERVER_LABEL) return 3;
+                    const u = name.toUpperCase();
+                    if (u === "RU") return 0;
+                    if (u === "EUW") return 1;
+                    return 2;
+                  };
+                  const serverEntries = [...servers.entries()].sort(([a], [b]) => {
+                    const ra = serverOrderRank(a);
+                    const rb = serverOrderRank(b);
+                    if (ra !== rb) return ra - rb;
+                    return a.localeCompare(b, "ru");
+                  });
+
+                  const rows: React.ReactNode[] = [];
+                  for (const [server, group] of serverEntries) {
+                    if (hasMultipleServers) {
+                      rows.push(
+                        <TableRow key={`srv-${server}`}>
+                          <TableCell colSpan={5} className="bg-muted/30 py-1.5 px-3">
+                            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                              {server} ({group.length})
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    }
+                    for (const account of group) {
+                      const isNotActivated = !account.EncryptedPassword;
+                      const displayUsername = account.Username.startsWith("gl:")
+                        ? account.Username.slice(3)
+                        : account.Username;
+                      rows.push(
+                        <TableRow key={account.Username} className={isNotActivated ? "opacity-70" : ""}>
+                          <TableCell className="font-medium">
+                            <div className="flex items-center gap-2">
+                              <span>{hideLogins ? "••••••••" : displayUsername}</span>
+                              {isNotActivated && (
+                                <Badge variant="outline" className="text-xs text-amber-500 border-amber-500/50">
+                                  Не активирован
                                 </Badge>
                               )}
                             </div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">
-                          {account.Server || "—"}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex gap-1">
-                            {loginInProgress === account.Username ? (
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={async () => {
-                                    try {
-                                      const { cancelLogin } = await import("@/lib/tauri");
-                                      await cancelLogin();
-                                    } catch {}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {account.Note || "—"}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              {account.AvatarUrl && (
+                                <img
+                                  src={account.AvatarUrl}
+                                  alt=""
+                                  className="w-8 h-8 rounded-full"
+                                  onError={(e) => {
+                                    const img = e.currentTarget;
+                                    img.style.display = "none";
                                   }}
-                                >
-                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                                  Отмена
-                                </Button>
-                                {loginProgress && (
-                                  <span className="text-xs text-muted-foreground">{loginProgress}</span>
+                                />
+                              )}
+                              <div>
+                                <div className="text-sm">
+                                  {account.RiotId || account.SummonerName || "—"}
+                                </div>
+                                {account.RankDisplay && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    {account.RankDisplay}
+                                  </Badge>
                                 )}
                               </div>
-                            ) : (
-                              <Button
-                                variant="default"
-                                size="sm"
-                                disabled={loginInProgress !== null}
-                                onClick={async () => {
-                                  setLoginInProgress(account.Username);
-                                  setLoginProgress("");
-                                  setLoginError(null);
-                                  try {
-                                    const { loginToAccount, detectServer, getAccountInfo, saveAccount } = await import("@/lib/tauri");
-                                    await loginToAccount(account.Username, account.EncryptedPassword);
-                                    // Fetch account info & server after login (with retries since LCU may not be ready)
-                                    const fetchInfo = async (retries: number): Promise<void> => {
-                                      let updated = { ...account };
-                                      let changed = false;
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm">
+                            {account.Server || "—"}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-1">
+                              {loginInProgress === account.Username ? (
+                                <>
+                                  <WithTooltip label="Отменить вход">
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      className="h-9 w-9"
+                                      onClick={async () => {
+                                        try {
+                                          const { cancelLogin } = await import("@/lib/tauri");
+                                          await cancelLogin();
+                                        } catch { }
+                                      }}
+                                      aria-label="Отменить вход"
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </Button>
+                                  </WithTooltip>
+                                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+                                  {loginProgress && (
+                                    <span className="max-w-32 truncate text-xs text-muted-foreground">{loginProgress}</span>
+                                  )}
+                                </>
+                              ) : isNotActivated ? (
+                                <WithTooltip label="Активировать — задать пароль Riot">
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-9 w-9 text-amber-600 border-amber-500/50 hover:bg-amber-500/10"
+                                    disabled={loginInProgress !== null}
+                                    aria-label="Активировать"
+                                    onClick={() => openEditDialog(account)}
+                                  >
+                                    <KeyRound className="h-4 w-4" />
+                                  </Button>
+                                </WithTooltip>
+                              ) : (
+                                <WithTooltip label="Войти в аккаунт">
+                                  <Button
+                                    variant="default"
+                                    size="icon"
+                                    className="h-9 w-9"
+                                    disabled={loginInProgress !== null}
+                                    aria-label="Войти"
+                                    onClick={async () => {
+                                      setLoginInProgress(account.Username);
+                                      setLoginProgress("");
+                                      setLoginError(null);
                                       try {
-                                        const server = await detectServer();
-                                        if (server && server !== updated.Server) {
-                                          updated = { ...updated, Server: server };
-                                          changed = true;
+                                        const {
+                                          loginToAccount,
+                                          invalidateLcuCache,
+                                        } = await import("@/lib/tauri");
+                                        await loginToAccount(account.Username);
+                                        try {
+                                          await invalidateLcuCache();
+                                        } catch { }
+                                        const { pullProfileFromLcuAfterLogin } = await import("@/lib/post-login-sync");
+                                        void pullProfileFromLcuAfterLogin(fetchAccounts, {
+                                          retries: 25,
+                                          toastOnUpdate: true,
+                                        }).catch(() => { });
+                                      } catch (e) {
+                                        const msg = String(e);
+                                        if (!msg.includes("cancelled")) {
+                                          setLoginError(`${account.Username}: ${msg}`);
+                                          setTimeout(() => setLoginError(null), 5000);
                                         }
-                                      } catch { /* non-critical */ }
-                                      try {
-                                        const info = await getAccountInfo();
-                                        if (info) {
-                                          updated = {
-                                            ...updated,
-                                            SummonerName: info.summoner_name || updated.SummonerName,
-                                            RiotId: info.riot_id || updated.RiotId,
-                                            Rank: info.rank || updated.Rank,
-                                            RankDisplay: info.rank_display || updated.RankDisplay,
-                                            AvatarUrl: info.avatar_url || updated.AvatarUrl,
-                                          };
-                                          changed = true;
-                                        } else if (retries > 0) {
-                                          await new Promise((r) => setTimeout(r, 3000));
-                                          return fetchInfo(retries - 1);
-                                        }
-                                      } catch {
-                                        if (retries > 0) {
-                                          await new Promise((r) => setTimeout(r, 3000));
-                                          return fetchInfo(retries - 1);
-                                        }
+                                      } finally {
+                                        setLoginInProgress(null);
+                                        setLoginProgress("");
                                       }
-                                      if (changed) {
-                                        await saveAccount(updated);
-                                        fetchAccounts();
-                                      }
-                                    };
-                                    // Run in background so login button unblocks immediately
-                                    fetchInfo(3).catch(() => {});
-                                  } catch (e) {
-                                    const msg = String(e);
-                                    if (!msg.includes("cancelled")) {
-                                      setLoginError(`${account.Username}: ${msg}`);
-                                      setTimeout(() => setLoginError(null), 5000);
-                                    }
-                                  } finally {
-                                    setLoginInProgress(null);
-                                    setLoginProgress("");
-                                  }
-                                }}
-                              >
-                                Войти
-                              </Button>
-                            )}
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={loginInProgress !== null}
-                              onClick={() => openEditDialog(account)}
-                            >
-                              <Pencil className="h-3 w-3" />
-                            </Button>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              disabled={loginInProgress !== null}
-                              onClick={() => setDeleteTarget(account.Username)}
-                            >
-                              Удалить
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
+                                    }}
+                                  >
+                                    <LogIn className="h-4 w-4" />
+                                  </Button>
+                                </WithTooltip>
+                              )}
+                              {!isNotActivated && (
+                                <WithTooltip label="Редактировать аккаунт">
+                                  <Button
+                                    variant="outline"
+                                    size="icon"
+                                    className="h-9 w-9"
+                                    disabled={loginInProgress !== null}
+                                    aria-label="Редактировать"
+                                    onClick={() => openEditDialog(account)}
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </Button>
+                                </WithTooltip>
+                              )}
+                              <WithTooltip label="Удалить аккаунт">
+                                <Button
+                                  variant="destructive"
+                                  size="icon"
+                                  className="h-9 w-9"
+                                  disabled={loginInProgress !== null}
+                                  aria-label="Удалить"
+                                  onClick={() => setDeleteTarget(account.Username)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </WithTooltip>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    }
                   }
-                }
-                return rows;
-              })()}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-      {/* Connection status bar — fixed at bottom */}
+                  return rows;
+                })()}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </div>
       {connectivity && (
-        <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-2 text-sm">
-          <div className="flex items-center gap-2">
+        <div className="sticky bottom-0 z-10 mt-2 flex w-full min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl border border-border bg-card/95 px-4 py-2 text-sm shadow-md backdrop-blur-sm">
+          <div className="flex min-w-0 items-center gap-2">
             <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                connectivity.lcu_http_ok
-                  ? "bg-green-500"
-                  : connectivity.is_riot_client_running
-                    ? "bg-yellow-500"
-                    : "bg-red-500"
-              }`}
+              className={`h-2.5 w-2.5 shrink-0 rounded-full ${connectivity.lcu_http_ok
+                ? "bg-green-500"
+                : connectivity.is_riot_client_running
+                  ? "bg-yellow-500"
+                  : "bg-red-500"
+                }`}
             />
             <span className="text-muted-foreground">
               {connectivity.lcu_http_ok
@@ -611,7 +771,7 @@ export default function AccountsPage() {
                   : "Клиент не запущен"}
             </span>
           </div>
-          <div className="ml-auto flex gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {!connectivity.is_riot_client_running && (
               <Button variant="outline" size="sm" onClick={handleStartRc}>
                 Запустить RC
@@ -681,6 +841,85 @@ export default function AccountsPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={glImportOpen} onOpenChange={(open) => { if (!open) setGlImportOpen(false); }}>
+        <DialogContent className="sm:max-w-md max-h-[85vh] flex flex-col gap-0">
+          <DialogHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+            <DialogTitle className="flex-1">Импорт из GoodLuck</DialogTitle>
+            <WithTooltip label="GET /me — актуальный список Riot с GoodLuck">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1"
+                disabled={glImportLoading || glImportSaving}
+                onClick={() => void fetchGlProfileRiotAccounts()}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${glImportLoading ? "animate-spin" : ""}`} />
+                С сервера
+              </Button>
+            </WithTooltip>
+          </DialogHeader>
+          <div className="space-y-3 overflow-y-auto py-2">
+            {glImportLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Загрузка профиля…
+              </div>
+            ) : glImportList.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {glImportError
+                  ? glImportError
+                  : "В профиле GoodLuck нет Riot-аккаунтов или нужно войти через GoodLuck в сайдбаре."}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {glImportList.map((acc, idx) => (
+                  <label
+                    key={`${acc.riot_id}-${idx}`}
+                    className="flex cursor-pointer items-start gap-2 rounded-md border border-border p-2 text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={Boolean(glImportChecked[idx])}
+                      onChange={(e) =>
+                        setGlImportChecked((prev) => ({ ...prev, [idx]: e.target.checked }))
+                      }
+                    />
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{acc.riot_id || "—"}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {acc.server}
+                        {acc.rank ? ` · ${acc.rank}` : ""}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+            {glImportError && glImportList.length > 0 && (
+              <p className="text-sm text-destructive">{glImportError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGlImportOpen(false)} disabled={glImportSaving}>
+              Закрыть
+            </Button>
+            <Button
+              onClick={handleGlImportSubmit}
+              disabled={
+                glImportSaving ||
+                glImportLoading ||
+                glImportList.length === 0 ||
+                !Object.values(glImportChecked).some(Boolean)
+              }
+            >
+              {glImportSaving ? "Импорт…" : "Импортировать"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Add account dialog */}
       <Dialog open={addOpen} onOpenChange={(open) => { if (!open) setAddOpen(false); }}>
         <DialogContent className="sm:max-w-sm">
@@ -709,7 +948,7 @@ export default function AccountsPage() {
             <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Сервер</label>
               <Select value={addServer} onValueChange={(v) => v && setAddServer(v)}>
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="Выберите сервер" />
                 </SelectTrigger>
                 <SelectContent>
@@ -769,22 +1008,36 @@ export default function AccountsPage() {
       <Dialog open={editAccount !== null} onOpenChange={(open) => { if (!open) setEditAccount(null); }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Редактировать аккаунт</DialogTitle>
+            <DialogTitle>
+              {editAccount && !editAccount.EncryptedPassword ? "Активация аккаунта" : "Редактировать аккаунт"}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
+            {editAccount && !editAccount.EncryptedPassword && editAccount.RiotId && (
+              <div className="rounded-md bg-muted/50 p-3">
+                <div className="text-sm font-medium">{editAccount.RiotId}</div>
+                <div className="text-xs text-muted-foreground">
+                  {editAccount.Server}
+                  {editAccount.RankDisplay && ` · ${editAccount.RankDisplay}`}
+                </div>
+              </div>
+            )}
             <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Логин</label>
               <Input
+                placeholder={editAccount && !editAccount.EncryptedPassword ? "Логин Riot аккаунта" : ""}
                 value={editUsername}
                 onChange={(e) => setEditUsername(e.target.value)}
                 autoFocus
               />
             </div>
             <div className="space-y-1">
-              <label className="text-sm text-muted-foreground">Новый пароль</label>
+              <label className="text-sm text-muted-foreground">
+                {editAccount && !editAccount.EncryptedPassword ? "Пароль" : "Новый пароль"}
+              </label>
               <Input
                 type="password"
-                placeholder="Оставьте пустым, чтобы не менять"
+                placeholder={editAccount && !editAccount.EncryptedPassword ? "Пароль Riot аккаунта" : "Оставьте пустым, чтобы не менять"}
                 value={editPassword}
                 onChange={(e) => setEditPassword(e.target.value)}
               />
@@ -792,7 +1045,7 @@ export default function AccountsPage() {
             <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Сервер</label>
               <Select value={editServer} onValueChange={(v) => v && setEditServer(v)}>
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="Выберите сервер" />
                 </SelectTrigger>
                 <SelectContent>
@@ -815,12 +1068,16 @@ export default function AccountsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditAccount(null)}>Отмена</Button>
-            <Button onClick={handleEditSubmit} disabled={editSaving || !editUsername}>
-              {editSaving ? "Сохранение..." : "Сохранить"}
+            <Button
+              onClick={handleEditSubmit}
+              disabled={editSaving || !editUsername || (editAccount != null && !editAccount.EncryptedPassword && !editPassword)}
+            >
+              {editSaving ? "Сохранение..." : editAccount && !editAccount.EncryptedPassword ? "Активировать" : "Сохранить"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 }

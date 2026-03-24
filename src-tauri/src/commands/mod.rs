@@ -1,7 +1,9 @@
 pub mod accounts;
 pub mod auto_accept;
+pub mod cloud_sync;
 pub mod customization;
 pub mod data_dragon;
+pub mod goodluck;
 pub mod login;
 pub mod logs;
 pub mod migration;
@@ -9,6 +11,7 @@ pub mod reveal;
 pub mod riot_client;
 pub mod rune_pages;
 pub mod settings;
+pub mod totp;
 
 #[tauri::command]
 pub fn greet(name: &str) -> String {

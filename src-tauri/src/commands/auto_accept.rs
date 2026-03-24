@@ -1,24 +1,32 @@
 use tauri::State;
 
+use crate::commands::accounts::trigger_cloud_sync;
 use crate::models::automation::AutomationSettings;
 use crate::state::AppState;
 
 const AUTOMATION_SETTINGS_KEY: &str = "AutomationSettings";
+
+pub async fn apply_auto_accept_enabled(state: &AppState, enabled: bool) -> Result<(), String> {
+    state.auto_accept.set_enabled_arc(enabled).await;
+    let mut s: AutomationSettings = state.settings.load_setting(
+        AUTOMATION_SETTINGS_KEY,
+        AutomationSettings::default(),
+    );
+    s.is_enabled = enabled;
+    state
+        .settings
+        .save_setting(AUTOMATION_SETTINGS_KEY, &s)
+        .map_err(|e| e.to_string())?;
+    trigger_cloud_sync(state);
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn set_auto_accept_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.auto_accept.set_enabled_arc(enabled).await;
-    let mut settings: AutomationSettings = state.settings.load_setting(
-        AUTOMATION_SETTINGS_KEY,
-        AutomationSettings::default(),
-    );
-    settings.is_enabled = enabled;
-    state.settings.save_setting(AUTOMATION_SETTINGS_KEY, &settings)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    apply_auto_accept_enabled(&state, enabled).await
 }
 
 #[tauri::command]
@@ -26,11 +34,25 @@ pub fn is_auto_accept_enabled(state: State<AppState>) -> bool {
     state.auto_accept.is_enabled()
 }
 
+fn normalize_empty_champion_names(settings: &mut AutomationSettings) {
+    for opt in [
+        &mut settings.pick_champion1,
+        &mut settings.pick_champion2,
+        &mut settings.pick_champion3,
+        &mut settings.ban_champion,
+    ] {
+        if matches!(opt.as_deref(), Some("")) {
+            *opt = None;
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn set_automation_settings(
     mut settings: AutomationSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    normalize_empty_champion_names(&mut settings);
     // Resolve champion names → numeric IDs
     resolve_champion_id(&state, &settings.pick_champion1, &mut settings.pick_champion1_id).await;
     resolve_champion_id(&state, &settings.pick_champion2, &mut settings.pick_champion2_id).await;
@@ -48,6 +70,7 @@ pub async fn set_automation_settings(
         .map_err(|e| e.to_string())?;
     // Update in-memory
     state.auto_accept.set_settings(settings).await;
+    trigger_cloud_sync(&state);
     Ok(())
 }
 
@@ -72,6 +95,9 @@ pub fn load_persisted_automation_settings(state: &AppState) {
         AUTOMATION_SETTINGS_KEY,
         AutomationSettings::default(),
     );
+    state
+        .auto_accept
+        .set_enabled_flag_only(settings.is_enabled);
     let auto_accept = state.auto_accept.clone();
     let data_dragon = state.data_dragon.clone();
     tauri::async_runtime::spawn(async move {

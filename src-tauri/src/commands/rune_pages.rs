@@ -1,5 +1,6 @@
 use tauri::State;
 
+use crate::commands::accounts::trigger_cloud_sync;
 use crate::models::rune::{Rune, RunePage, RunePath};
 use crate::services::rune_data::RuneDataService;
 use crate::state::AppState;
@@ -51,15 +52,21 @@ pub fn load_rune_pages(state: State<AppState>) -> Vec<RunePage> {
 
 #[tauri::command]
 pub fn save_rune_page(page: RunePage, state: State<AppState>) -> Result<(), String> {
-    state.rune_pages.save(page).map_err(|e| e.to_string())
+    state.rune_pages.save(page).map_err(|e| e.to_string())?;
+    trigger_cloud_sync(&state);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn save_all_rune_pages(pages: Vec<RunePage>, state: State<AppState>) -> Result<(), String> {
-    state.rune_pages.save_all(&pages).map_err(|e| e.to_string())
+    state.rune_pages.save_all(&pages).map_err(|e| e.to_string())?;
+    trigger_cloud_sync(&state);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn delete_rune_page(page_name: String, state: State<AppState>) -> Result<(), String> {
-    state.rune_pages.delete(&page_name).map_err(|e| e.to_string())
+    state.rune_pages.delete(&page_name).map_err(|e| e.to_string())?;
+    trigger_cloud_sync(&state);
+    Ok(())
 }

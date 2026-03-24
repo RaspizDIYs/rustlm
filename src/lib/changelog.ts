@@ -1,4 +1,69 @@
-export const CHANGELOG = `## 0.1.9
+export const CHANGELOG = `## 0.1.21
+- Облако: debounce-синк после изменений настроек, автоматизации, рун, Reveal, update-settings; полный профиль в payload как и раньше
+- UI: по cloud-sync-complete — перезагрузка страниц автоматизации, настроек (вкл. облако), разведки
+- TOTP: событие cloud-totp-required открывает диалог ввода кода (истечение сессии облака или 403 totp_required); при pull totp_required сбрасывается локальная cloud TOTP-сессия
+- Трей: переключение автопринятия через AppState после рефактора apply_auto_accept_enabled
+
+## 0.1.20
+- Сборка: импорт cloudSync в сайдбаре (фикс TypeScript / CI)
+- Аккаунты: «Войти» и «Удалить» в таблице — иконки с подсказками
+- CI: NEXT_TELEMETRY_DISABLED, кэш .next/cache в release workflow; build без баннера телеметрии Next.js
+- CI: actions/checkout@v6, setup-node@v6, cache@v5 (рантайм Node 24, без deprecation Node 20)
+
+## 0.1.19
+- Облако: фоновый debounce — полный sync (pull+push), emit cloud-sync-complete при успехе; удаление облака под sync_lock, статус Idle и emit после успеха
+- GoodLuck: перед logout — финальный cloud sync; после OAuth — emit cloud-sync-complete только если sync успешен; импорт профиля — дедуп riot_id в одном запросе и trigger_cloud_sync при новых аккаунтах
+- Вход в Riot: фоновый цикл подтягивания профиля из LCU с отменой предыдущей задачи; пост-хуки cloud/GL на фронте после pull из LCU
+- UI: группа экспорт/импорт, подсказки WithTooltip, кнопка «Облако» на аккаунтах; настройки GoodLuck — синк/выход у профиля
+
+## 0.1.18
+- Облачный профиль (аккаунты + настройки + руны), pull/push/sync и сопутствующие правки бэкенда и GoodLuck API
+
+## 0.1.17
+- GoodLuck: is_connected true при наличии сессии (access истёк — обновится через refresh token)
+- Облако: удаление данных с X-TOTP-Session; ответ 403 → totp_required; загрузка — проверка 403
+- Сайдбар: при totp_required на синке — диалог TOTP; после успешного входа GL — авто cloudSync
+- UI: minWidth окна 1120; сайдбар фикс ширины и скролл навигации; аккаунты — sticky панели и перенос кнопок
+
+## 0.1.16
+- Аккаунты: команда refresh_account_profile_from_lcu + кнопка «Из клиента» — ник, аватар, ранг, riot id из LCU
+- После входа (UI и трей) и при добавлении/редактировании/импорте — тот же подтяг профиля из LCU при совпадении сессии
+- Импорт из GoodLuck: перед списком — refresh профиля с сервера; кнопка «С сервера» в диалоге
+- post-login-sync: pullProfileFromLcuAfterLogin; событие rustlm-accounts-reload для обновления списка из трея
+
+## 0.1.14
+- Критично: порядок аккаунтов больше не затирает зашифрованные пароли (save_accounts_order)
+- Память: LocalFree для буферов DPAPI после CryptProtect/CryptUnprotect
+- Гонки: сериализация refresh токена GoodLuck; сериализация cloud sync (push/pull/sync)
+- Синк: стартовый auto-sync маппит сервер для GoodLuck platform
+- API: delete_server_data — ретраи при 401; WEBP-детект (порог >= 12)
+- UI: TotpVerifyDialog сбрасывает код при повторном открытии; deps в sidebar для refreshSyncStatus
+
+## 0.1.13
+- Облако: синхронизация аккаунтов с GoodLuck API (push/pull, дебаунс после изменений)
+- 2FA: TOTP (Google Authenticator), QR в настройках, сессия для защищённых запросов
+- Исправлен старт debounce-loop облака (Tauri async runtime)
+
+## 0.1.12
+- GoodLuck: ретрай sync/profile при 401 после refresh токена; аватар в UI как data URL из кэша (без CORB / приватных URL)
+- GoodLuck: импорт — дедуп только по точному riot_id; пост-логин: invalidate LCU cache на каждом ретрае
+- Riot Client: фаза логина через /riotclient/app-name; logout/is_rso без спама в лог; init RSO тише
+- UI: защита titlebar / window-init / tray от вызова Tauri API без webview (Next в браузере)
+
+## 0.1.11
+- GoodLuck: OAuth PKCE, интеграция в настройках, синхронизация Riot-метаданных, импорт профиля / на сайт
+- GoodLuck: camelCase API, абсолютные URL аватаров, локальный кэш аватара, refresh профиля при старте и кнопка в настройках
+- GoodLuck: маппинг регионов LM → платформа (EUW→EUW1 и т.д.), синк только записей с непустым Riot ID
+- Аккаунты: скрыт карандаш «редактировать» для не активирован (импорт GL); пост-login sync по логину Riot
+- tauri-plugin-opener вместо устаревшего Shell::open; deep link query decode
+
+## 0.1.10
+- UI: подсказки в стиле приложения (Base UI Tooltip) вместо нативных title; общий TooltipProvider
+- UI: селект сервера — шире выпадающий список, перенос длинных названий, триггер на всю ширину в формах аккаунтов
+- UI: тултипы в сайдбаре (GoodLuck, версия), на автоматизации (чемпионы, заклинания), в редакторе рун; исправлено предупреждение React про nativeButton
+- UX: после входа профиль и сервер в списке аккаунтов обновляются только если сессия Riot совпадает с выбранным логином (не затирается другой аккаунт)
+
+## 0.1.9
 - Переработан алгоритм входа: машина состояний на основе detect_login_phase (6 состояний)
 - Вход при запущенных RC+LC ускорен: logout до убийства League, без лишних задержек
 - Исправлено исчезновение окна RC при выходе из аккаунта с запущенной Лигой

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +55,17 @@ impl RevealService {
         *self.region.write().await = region.to_string();
         let _ = self.settings.save_setting(REVEAL_API_KEY_SETTING, &api_key.to_string());
         let _ = self.settings.save_setting(REVEAL_REGION_SETTING, &region.to_string());
+    }
+
+    pub async fn reload_from_settings(&self) {
+        let saved_key: String = self.settings.load_setting(REVEAL_API_KEY_SETTING, String::new());
+        let saved_region: String = self.settings.load_setting(REVEAL_REGION_SETTING, "euw1".to_string());
+        *self.api_key.write().await = if saved_key.is_empty() {
+            None
+        } else {
+            Some(saved_key)
+        };
+        *self.region.write().await = saved_region;
     }
 
     fn regional_host(region: &str) -> &'static str {
