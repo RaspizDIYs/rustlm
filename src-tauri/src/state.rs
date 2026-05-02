@@ -9,6 +9,7 @@ use crate::services::customization::CustomizationService;
 use crate::services::data_dragon::DataDragonService;
 use crate::services::file_logger::FileLogger;
 use crate::services::goodluck_auth::GoodLuckAuthService;
+use crate::services::lol_config::LolConfigService;
 use crate::services::reveal::RevealService;
 use crate::services::riot_client::RiotClientService;
 use crate::services::rune_data::RuneDataService;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub reveal: Arc<RevealService>,
     pub goodluck: Arc<GoodLuckAuthService>,
     pub cloud_sync: Arc<CloudSyncService>,
+    pub lol_config: Arc<LolConfigService>,
     pub login_cancelled: Arc<AtomicBool>,
     pub post_login_lcu_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -51,6 +53,10 @@ impl AppState {
             Arc::clone(&rune_pages),
             Arc::clone(&goodluck),
         ));
+        let lol_config = Arc::new(LolConfigService::new(
+            Arc::clone(&riot_client),
+            Arc::clone(&logger),
+        ));
         let login_cancelled = Arc::new(AtomicBool::new(false));
 
         logger.info("RustLM starting up...");
@@ -68,6 +74,7 @@ impl AppState {
             reveal,
             goodluck,
             cloud_sync,
+            lol_config,
             login_cancelled,
             post_login_lcu_task: Mutex::new(None),
         }

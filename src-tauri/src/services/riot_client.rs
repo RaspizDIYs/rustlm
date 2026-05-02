@@ -293,6 +293,20 @@ impl RiotClientService {
         Self::is_process_running("LeagueClientUx.exe")
     }
 
+    /// Return path to the League of Legends install directory (the folder that
+    /// contains `lockfile`, `Config\`, etc.). Reuses the same candidate list as
+    /// LCU lockfile detection — first hit wins.
+    pub fn find_lol_install_dir() -> Option<PathBuf> {
+        for lockfile_candidate in Self::enumerate_lcu_lockfile_candidates() {
+            if let Some(dir) = lockfile_candidate.parent() {
+                if dir.is_dir() {
+                    return Some(dir.to_path_buf());
+                }
+            }
+        }
+        None
+    }
+
     pub fn kill_league(include_riot_client: bool) {
         #[cfg(windows)]
         {

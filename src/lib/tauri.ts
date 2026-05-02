@@ -618,3 +618,51 @@ export async function totpDisable(code: string): Promise<void> {
 export async function totpValidate(code: string): Promise<void> {
   return invoke("totp_validate", { code });
 }
+
+// --- LoL Config ---
+
+export interface LolConfigStatus {
+  path: string | null;
+  exists: boolean;
+  readonly: boolean;
+  league_running: boolean;
+}
+
+export interface LolConfigPreset {
+  id: string;
+  name: string;
+  created_at: string;
+  source_app_version: string;
+}
+
+export async function lolCfgGetStatus(): Promise<LolConfigStatus> {
+  return invoke<LolConfigStatus>("lol_cfg_get_status");
+}
+
+export async function lolCfgSetReadonly(readonly: boolean): Promise<void> {
+  return invoke("lol_cfg_set_readonly", { readonly });
+}
+
+export async function lolCfgListPresets(): Promise<LolConfigPreset[]> {
+  return invoke<LolConfigPreset[]>("lol_cfg_list_presets");
+}
+
+export async function lolCfgCreatePreset(name: string): Promise<LolConfigPreset> {
+  return invoke<LolConfigPreset>("lol_cfg_create_preset", { name });
+}
+
+export async function lolCfgApplyPreset(id: string): Promise<void> {
+  return invoke("lol_cfg_apply_preset", { id });
+}
+
+export async function lolCfgDeletePreset(id: string): Promise<void> {
+  return invoke("lol_cfg_delete_preset", { id });
+}
+
+export async function lolCfgExportPreset(id: string, path: string): Promise<void> {
+  return invoke("lol_cfg_export_preset", { id, path });
+}
+
+export async function lolCfgImportPreset(path: string): Promise<LolConfigPreset> {
+  return invoke<LolConfigPreset>("lol_cfg_import_preset", { path });
+}

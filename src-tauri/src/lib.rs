@@ -172,6 +172,14 @@ pub fn run() {
             commands::totp::totp_confirm_setup,
             commands::totp::totp_disable,
             commands::totp::totp_validate,
+            commands::lol_config::lol_cfg_get_status,
+            commands::lol_config::lol_cfg_set_readonly,
+            commands::lol_config::lol_cfg_list_presets,
+            commands::lol_config::lol_cfg_create_preset,
+            commands::lol_config::lol_cfg_apply_preset,
+            commands::lol_config::lol_cfg_delete_preset,
+            commands::lol_config::lol_cfg_export_preset,
+            commands::lol_config::lol_cfg_import_preset,
             commands::refresh_tray,
         ])
         .setup(|app| {

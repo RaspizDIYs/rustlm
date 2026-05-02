@@ -1,4 +1,10 @@
-export const CHANGELOG = `## 0.1.21
+export const CHANGELOG = `## 0.3.0
+- Конфиги: новый раздел /configs для управления PersistedSettings.json
+  - Toggle read-only одной кнопкой (защита от перезаписи клиентом)
+  - Сохранение/применение/удаление пресетов настроек
+  - Экспорт и импорт .lolcfg файлов для шаринга
+
+## 0.1.21
 - Облако: debounce-синк после изменений настроек, автоматизации, рун, Reveal, update-settings; полный профиль в payload как и раньше
 - UI: по cloud-sync-complete — перезагрузка страниц автоматизации, настроек (вкл. облако), разведки
 - TOTP: событие cloud-totp-required открывает диалог ввода кода (истечение сессии облака или 403 totp_required); при pull totp_required сбрасывается локальная cloud TOTP-сессия

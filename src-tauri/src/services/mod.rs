@@ -6,6 +6,7 @@ pub mod goodluck_auth;
 pub mod customization;
 pub mod data_dragon;
 pub mod file_logger;
+pub mod lol_config;
 pub mod reveal;
 pub mod riot_client;
 pub mod rune_data;

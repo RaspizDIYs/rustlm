@@ -4,6 +4,7 @@ pub mod cloud_sync;
 pub mod customization;
 pub mod data_dragon;
 pub mod goodluck;
+pub mod lol_config;
 pub mod login;
 pub mod logs;
 pub mod migration;
