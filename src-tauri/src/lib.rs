@@ -98,6 +98,7 @@ pub fn run() {
             commands::accounts::load_accounts,
             commands::accounts::refresh_account_profile_from_lcu,
             commands::accounts::save_account,
+            commands::accounts::set_account_pinned,
             commands::accounts::save_accounts_order,
             commands::accounts::delete_account,
             commands::accounts::protect_password,

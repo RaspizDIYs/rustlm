@@ -118,6 +118,8 @@ impl AccountsStorage {
                 existing.puuid = ca.puuid;
                 existing.rank_icon_url = ca.rank_icon_url;
                 existing.server = ca.server;
+                existing.summoner_level = ca.summoner_level;
+                existing.pinned = ca.pinned;
             } else {
                 accounts.push(AccountRecord {
                     username: ca.username,
@@ -132,6 +134,8 @@ impl AccountsStorage {
                     puuid: ca.puuid,
                     rank_icon_url: ca.rank_icon_url,
                     server: ca.server,
+                    summoner_level: ca.summoner_level,
+                    pinned: ca.pinned,
                     is_selected: false,
                 });
                 imported += 1;
@@ -189,6 +193,8 @@ impl AccountsStorage {
                     riot_id: a.riot_id.clone(),
                     puuid: a.puuid.clone(),
                     rank_icon_url: a.rank_icon_url.clone(),
+                    summoner_level: a.summoner_level,
+                    pinned: a.pinned,
                 }
             })
             .collect();
@@ -262,6 +268,8 @@ impl AccountsStorage {
                         riot_id: String::new(),
                         puuid: String::new(),
                         rank_icon_url: String::new(),
+                        summoner_level: 0,
+                        pinned: false,
                     })
                     .collect()
             } else {
@@ -286,6 +294,8 @@ impl AccountsStorage {
                 puuid: record.puuid,
                 rank_icon_url: record.rank_icon_url,
                 server: String::new(),
+                summoner_level: record.summoner_level,
+                pinned: record.pinned,
                 is_selected: false,
             };
 

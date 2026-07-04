@@ -28,7 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X } from "lucide-react";
+import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff } from "lucide-react";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import type { AccountRecord, ClientConnectivityStatus, GoodLuckRiotAccount } from "@/lib/tauri";
 import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
@@ -193,6 +193,16 @@ export default function AccountsPage() {
     }
   };
 
+  const handleTogglePin = async (account: AccountRecord) => {
+    try {
+      const { setAccountPinned } = await import("@/lib/tauri");
+      await setAccountPinned(account.Username, !account.Pinned);
+      await fetchAccounts();
+    } catch (e) {
+      console.error("Pin toggle failed:", e);
+    }
+  };
+
   const handleKillLeague = async (includeRc: boolean) => {
     try {
       const { killLeague } = await import("@/lib/tauri");
@@ -328,6 +338,8 @@ export default function AccountsPage() {
         Puuid: "",
         RankIconUrl: "",
         Server: addServer,
+        SummonerLevel: 0,
+        Pinned: false,
       });
       setAddOpen(false);
       setAddUsername("");
@@ -536,7 +548,7 @@ export default function AccountsPage() {
                     </button>
                   </TableHead>
                   <TableHead>Сервер</TableHead>
-                  <TableHead className="w-[168px] min-w-[168px]">Действия</TableHead>
+                  <TableHead className="w-[212px] min-w-[212px]">Действия</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -548,14 +560,19 @@ export default function AccountsPage() {
                     sorted.sort((a, b) => rankToNumber(a.RankDisplay) - rankToNumber(b.RankDisplay));
                   }
 
+                  const PINNED_LABEL = "__pinned__";
+                  const pinnedAccounts = sorted.filter((a) => a.Pinned);
+                  const rest = sorted.filter((a) => !a.Pinned);
+
                   const servers = new Map<string, AccountRecord[]>();
-                  for (const acc of sorted) {
+                  for (const acc of rest) {
                     const srv = acc.Server || "Без сервера";
                     if (!servers.has(srv)) servers.set(srv, []);
                     servers.get(srv)!.push(acc);
                   }
 
                   const hasMultipleServers = servers.size > 1 || (servers.size === 1 && !servers.has("Без сервера"));
+                  const showServerHeaders = hasMultipleServers || pinnedAccounts.length > 0;
 
                   const NO_SERVER_LABEL = "Без сервера";
                   const serverOrderRank = (name: string): number => {
@@ -572,14 +589,21 @@ export default function AccountsPage() {
                     return a.localeCompare(b, "ru");
                   });
 
+                  const sections: [string, AccountRecord[]][] =
+                    pinnedAccounts.length > 0
+                      ? [[PINNED_LABEL, pinnedAccounts], ...serverEntries]
+                      : serverEntries;
+
                   const rows: React.ReactNode[] = [];
-                  for (const [server, group] of serverEntries) {
-                    if (hasMultipleServers) {
+                  for (const [server, group] of sections) {
+                    const isPinnedSection = server === PINNED_LABEL;
+                    if (isPinnedSection || showServerHeaders) {
                       rows.push(
                         <TableRow key={`srv-${server}`}>
                           <TableCell colSpan={5} className="bg-muted/30 py-1.5 px-3">
-                            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                              {server} ({group.length})
+                            <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                              {isPinnedSection && <Pin className="h-3 w-3" />}
+                              {isPinnedSection ? "Закреплённые" : server} ({group.length})
                             </span>
                           </TableCell>
                         </TableRow>
@@ -607,16 +631,30 @@ export default function AccountsPage() {
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
-                              {account.AvatarUrl && (
-                                <img
-                                  src={account.AvatarUrl}
-                                  alt=""
-                                  className="w-8 h-8 rounded-full"
-                                  onError={(e) => {
-                                    const img = e.currentTarget;
-                                    img.style.display = "none";
-                                  }}
-                                />
+                              {(account.AvatarUrl || account.SummonerLevel > 0) && (
+                                <div className="relative shrink-0">
+                                  {account.AvatarUrl ? (
+                                    <img
+                                      src={account.AvatarUrl}
+                                      alt=""
+                                      className="w-9 h-9 rounded-full"
+                                      onError={(e) => {
+                                        const img = e.currentTarget;
+                                        img.style.display = "none";
+                                      }}
+                                    />
+                                  ) : (
+                                    <div className="w-9 h-9 rounded-full bg-muted" />
+                                  )}
+                                  {account.SummonerLevel > 0 && (
+                                    <span
+                                      className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground ring-2 ring-background"
+                                      title="Уровень призывателя"
+                                    >
+                                      {account.SummonerLevel}
+                                    </span>
+                                  )}
+                                </div>
                               )}
                               <div>
                                 <div className="text-sm">
@@ -727,6 +765,18 @@ export default function AccountsPage() {
                                   </Button>
                                 </WithTooltip>
                               )}
+                              <WithTooltip label={account.Pinned ? "Открепить" : "Закрепить"}>
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className={`h-9 w-9 ${account.Pinned ? "text-primary border-primary/50" : ""}`}
+                                  disabled={loginInProgress !== null}
+                                  aria-label={account.Pinned ? "Открепить" : "Закрепить"}
+                                  onClick={() => handleTogglePin(account)}
+                                >
+                                  {account.Pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                                </Button>
+                              </WithTooltip>
                               <WithTooltip label="Удалить аккаунт">
                                 <Button
                                   variant="destructive"

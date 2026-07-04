@@ -13,6 +13,8 @@ export interface AccountRecord {
   Puuid: string;
   RankIconUrl: string;
   Server: string;
+  SummonerLevel: number;
+  Pinned: boolean;
 }
 
 // Accounts
@@ -30,6 +32,10 @@ export async function deleteAccount(username: string): Promise<void> {
 
 export async function saveAccountsOrder(accounts: AccountRecord[]): Promise<void> {
   return invoke("save_accounts_order", { accounts });
+}
+
+export async function setAccountPinned(username: string, pinned: boolean): Promise<void> {
+  return invoke("set_account_pinned", { username, pinned });
 }
 
 export async function protectPassword(plain: string): Promise<string> {

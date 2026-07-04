@@ -30,6 +30,10 @@ pub struct AccountRecord {
     pub rank_icon_url: String,
     #[serde(default)]
     pub server: String,
+    #[serde(default)]
+    pub summoner_level: i32,
+    #[serde(default)]
+    pub pinned: bool,
     #[serde(skip)]
     pub is_selected: bool,
 }
@@ -49,6 +53,8 @@ impl Default for AccountRecord {
             puuid: String::new(),
             rank_icon_url: String::new(),
             server: String::new(),
+            summoner_level: 0,
+            pinned: false,
             is_selected: false,
         }
     }
@@ -103,6 +109,10 @@ pub struct ExportAccountRecord {
     pub puuid: String,
     #[serde(default)]
     pub rank_icon_url: String,
+    #[serde(default)]
+    pub summoner_level: i32,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +192,10 @@ pub struct CloudAccountData {
     pub rank_icon_url: String,
     #[serde(default)]
     pub server: String,
+    #[serde(default)]
+    pub summoner_level: i32,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

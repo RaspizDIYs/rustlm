@@ -41,6 +41,8 @@ export default function AddAccountPage() {
         Puuid: "",
         RankIconUrl: "",
         Server: server,
+        SummonerLevel: 0,
+        Pinned: false,
       });
       router.push("/accounts");
     } catch (e) {

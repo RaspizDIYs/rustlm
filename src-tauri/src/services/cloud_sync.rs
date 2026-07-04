@@ -197,6 +197,8 @@ impl CloudSyncService {
                 puuid: record.puuid,
                 rank_icon_url: record.rank_icon_url,
                 server: record.server,
+                summoner_level: record.summoner_level,
+                pinned: record.pinned,
             })
             .collect()
     }

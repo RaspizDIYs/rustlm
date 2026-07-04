@@ -77,6 +77,9 @@ fn merge_account_from_lcu_info(mut acc: AccountRecord, info: &AccountInfo) -> Ac
     if !info.avatar_url.is_empty() {
         acc.avatar_url = info.avatar_url.clone();
     }
+    if info.summoner_level > 0 {
+        acc.summoner_level = info.summoner_level;
+    }
     acc
 }
 
@@ -88,6 +91,7 @@ fn account_profile_fields_changed(before: &AccountRecord, after: &AccountRecord)
         || before.rank != after.rank
         || before.rank_display != after.rank_display
         || before.avatar_url != after.avatar_url
+        || before.summoner_level != after.summoner_level
 }
 
 pub(crate) fn trigger_cloud_sync(state: &AppState) {
@@ -252,6 +256,29 @@ pub fn save_account(account: AccountRecord, state: State<AppState>) -> Result<()
     }
 
     state.accounts.save(to_save).map_err(|e| e.to_string())?;
+    trigger_cloud_sync(&*state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_account_pinned(
+    username: &str,
+    pinned: bool,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let Some(mut account) = state
+        .accounts
+        .load_all()
+        .into_iter()
+        .find(|a| a.username == username)
+    else {
+        return Err(format!("Аккаунт не найден: {username}"));
+    };
+    if account.pinned == pinned {
+        return Ok(());
+    }
+    account.pinned = pinned;
+    state.accounts.save(account).map_err(|e| e.to_string())?;
     trigger_cloud_sync(&*state);
     Ok(())
 }
