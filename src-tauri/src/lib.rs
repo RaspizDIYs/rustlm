@@ -81,7 +81,31 @@ pub fn run() {
             }
         }))
         .manage(app_state)
+        .manage(services::network::NetworkJobs::default())
         .invoke_handler(tauri::generate_handler![
+            commands::network::network_inspect,
+            commands::network::network_run,
+            commands::network::network_select_profile,
+            commands::network::network_cancel,
+            commands::network::network_history,
+            commands::network::network_preview,
+            commands::network::network_apply,
+            commands::network::network_restore,
+            commands::network::network_snapshot,
+            commands::repair::repair_detect_zapret,
+            commands::repair::repair_readiness,
+            commands::repair::repair_data_folder,
+            commands::repair::repair_open_folder,
+            commands::repair::repair_stop_zapret,
+            commands::repair::repair_open_vpn,
+            commands::repair::repair_export_report,
+            commands::repair::repair_restart_zapret,
+            commands::repair::repair_collect_evidence,
+            commands::repair::repair_verify_client,
+            commands::repair::repair_save_journal,
+            commands::network::network_hosts_preview,
+            commands::network::network_hosts_apply,
+            commands::network::network_hosts_restore,
             commands::greet,
             commands::settings::load_setting,
             commands::settings::save_setting,
@@ -186,7 +210,13 @@ pub fn run() {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
-                    .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("rustlm".into()) }))
+                    .clear_targets()
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::Folder {
+                            path: services::repair_paths::root()?.join("logs"),
+                            file_name: Some("rustlm".into()),
+                        },
+                    ))
                     .build(),
             )?;
 
@@ -203,9 +233,7 @@ pub fn run() {
             });
 
             state.cloud_sync.set_app_handle(app.handle().clone());
-            state
-                .cloud_sync
-                .start_debounce_loop(&app.handle().clone());
+            state.cloud_sync.start_debounce_loop(&app.handle().clone());
 
             let gl_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -224,7 +252,9 @@ pub fn run() {
                             .filter(|a| !a.riot_id.trim().is_empty())
                             .map(|a| crate::models::goodluck::SyncAccountData {
                                 riot_id: a.riot_id,
-                                server: commands::goodluck::map_lm_server_for_goodluck_platform(&a.server),
+                                server: commands::goodluck::map_lm_server_for_goodluck_platform(
+                                    &a.server,
+                                ),
                                 rank: a.rank,
                                 summoner_name: a.summoner_name,
                             })

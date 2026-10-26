@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { openRepairFolder, exportRepairReport } from "@/lib/repair";
+import { RepairError } from "@/components/repair-error";
 
 const LOG_FILTERS = ["LOGIN", "HTTP", "UI", "PROC", "INFO", "WARN", "ERROR"] as const;
 
@@ -19,6 +21,7 @@ const LOG_COLORS: Record<string, string> = {
 
 export default function LogsPage() {
   const [logLines, setLogLines] = useState<string[]>([]);
+  const [error,setError] = useState("");
   const [filters, setFilters] = useState<Record<string, boolean>>(
     Object.fromEntries(LOG_FILTERS.map((f) => [f, true]))
   );
@@ -94,7 +97,9 @@ export default function LogsPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Логи</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={() => {void openRepairFolder().catch((e) => setError(String(e)));}}>Открыть папку</Button>
+          <Button variant="secondary" size="sm" onClick={() => {void exportRepairReport().catch((e) => setError(String(e)));}}>Отчёт разработчику</Button>
           <Button variant="secondary" size="sm" onClick={fetchLogs}>
             Обновить
           </Button>
@@ -113,7 +118,7 @@ export default function LogsPage() {
           </Button>
         </div>
       </div>
-
+      {error && <RepairError error={error} />}
       <div className="flex gap-3 flex-wrap">
         {LOG_FILTERS.map((filter) => (
           <label

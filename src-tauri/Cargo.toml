@@ -28,7 +28,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-deep-link = "2"
 
 # Async
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
 
 # HTTP + WebSocket
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }

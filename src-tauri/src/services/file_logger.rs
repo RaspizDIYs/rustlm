@@ -16,9 +16,9 @@ pub struct FileLogger {
 
 impl FileLogger {
     pub fn new() -> Self {
-        let base_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("LolManager");
+        let base_dir = super::repair_paths::root()
+            .unwrap_or_else(|_| std::env::temp_dir().join("RustLM/Repair Tools"))
+            .join("logs");
 
         fs::create_dir_all(&base_dir).ok();
 
@@ -52,10 +52,7 @@ impl FileLogger {
         let truncated = response
             .map(|r| if r.len() > 100 { &r[..100] } else { r })
             .unwrap_or("");
-        let msg = format!(
-            "🌐 {} {} → {} {}",
-            method, url, status_code, truncated
-        );
+        let msg = format!("🌐 {} {} → {} {}", method, url, status_code, truncated);
         self.write_log("HTTP", &msg);
     }
 

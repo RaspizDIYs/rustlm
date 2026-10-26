@@ -38,9 +38,10 @@ fn pick_account_index_for_lcu(
     }
     let r = info.riot_id.trim();
     if !r.is_empty() {
-        if let Some(i) = accounts.iter().position(|a| {
-            !a.riot_id.trim().is_empty() && a.riot_id.eq_ignore_ascii_case(r)
-        }) {
+        if let Some(i) = accounts
+            .iter()
+            .position(|a| !a.riot_id.trim().is_empty() && a.riot_id.eq_ignore_ascii_case(r))
+        {
             return Some(i);
         }
     }
@@ -113,8 +114,9 @@ pub async fn refresh_account_profile_from_lcu_inner(
         return Ok(LcuProfileRefreshResult {
             updated: false,
             matched_username: None,
-            message: "LCU не отвечает или нет данных призывателя (запусти клиент и войди в аккаунт)"
-                .to_string(),
+            message:
+                "LCU не отвечает или нет данных призывателя (запусти клиент и войди в аккаунт)"
+                    .to_string(),
         });
     };
 
@@ -157,7 +159,17 @@ pub async fn refresh_account_profile_from_lcu_inner(
         });
     }
 
-    state.accounts.save(merged).map_err(|e| e.to_string())?;
+    if !state
+        .accounts
+        .update_existing(merged)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(LcuProfileRefreshResult {
+            updated: false,
+            matched_username: None,
+            message: "Аккаунт удалён; фоновое обновление пропущено".into(),
+        });
+    }
     trigger_cloud_sync(state);
     Ok(LcuProfileRefreshResult {
         updated: true,
@@ -266,7 +278,7 @@ pub fn set_account_pinned(
     pinned: bool,
     state: State<AppState>,
 ) -> Result<(), String> {
-    let Some(mut account) = state
+    let Some(account) = state
         .accounts
         .load_all()
         .into_iter()
@@ -277,8 +289,10 @@ pub fn set_account_pinned(
     if account.pinned == pinned {
         return Ok(());
     }
-    account.pinned = pinned;
-    state.accounts.save(account).map_err(|e| e.to_string())?;
+    state
+        .accounts
+        .set_pinned(username, pinned)
+        .map_err(|e| e.to_string())?;
     trigger_cloud_sync(&*state);
     Ok(())
 }
@@ -288,24 +302,9 @@ pub fn save_accounts_order(
     accounts: Vec<AccountRecord>,
     state: State<AppState>,
 ) -> Result<(), String> {
-    // Frontend sends accounts with masked passwords ("***").
-    // Restore real encrypted passwords from current storage before writing.
-    let current = state.accounts.load_all();
-    let restored: Vec<AccountRecord> = accounts
-        .into_iter()
-        .map(|mut a| {
-            if a.encrypted_password == "***" || a.encrypted_password.is_empty() {
-                if let Some(existing) = current.iter().find(|c| c.username == a.username) {
-                    a.encrypted_password = existing.encrypted_password.clone();
-                }
-            }
-            a
-        })
-        .collect();
-
     state
         .accounts
-        .save_accounts(restored)
+        .save_accounts(accounts)
         .map_err(|e| e.to_string())?;
     trigger_cloud_sync(&*state);
     Ok(())
@@ -332,11 +331,7 @@ pub fn export_accounts(
 ) -> Result<(), String> {
     state
         .accounts
-        .export_accounts(
-            path,
-            password,
-            selected_usernames.as_deref(),
-        )
+        .export_accounts(path, password, selected_usernames.as_deref())
         .map_err(|e| e.to_string())
 }
 

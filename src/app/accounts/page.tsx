@@ -127,11 +127,14 @@ export default function AccountsPage() {
   const [matchesLoading, setMatchesLoading] = useState<string | null>(null);
   const [matchesError, setMatchesError] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const accountsRequest = useRef(0);
 
   const fetchAccounts = useCallback(async () => {
+    const request = ++accountsRequest.current;
     try {
       const { loadAccounts, refreshTray } = await import("@/lib/tauri");
       const data = await loadAccounts();
+      if (request !== accountsRequest.current) return;
       setAccounts(data);
       await refreshTray().catch(() => { });
     } catch {
@@ -210,6 +213,7 @@ export default function AccountsPage() {
 
     let unlistenProgress: (() => void) | undefined;
     let unlistenGlAuth: (() => void) | undefined;
+    let unlistenCloud: (() => void) | undefined;
     void (async () => {
       const { isTauri } = await import("@tauri-apps/api/core");
       if (!isTauri()) return;
@@ -217,7 +221,7 @@ export default function AccountsPage() {
       unlistenProgress = await listen<string>("login-progress", (event) => {
         setLoginProgress(event.payload);
       });
-      await listen("cloud-sync-complete", () => {
+      unlistenCloud = await listen("cloud-sync-complete", () => {
         fetchAccounts();
       });
       unlistenGlAuth = await listen<import("@/lib/tauri").GoodLuckUser>(
@@ -255,17 +259,19 @@ export default function AccountsPage() {
       if (pollRef.current) clearInterval(pollRef.current);
       unlistenProgress?.();
       unlistenGlAuth?.();
+      unlistenCloud?.();
       window.removeEventListener("rustlm-accounts-reload", onAccountsReload);
     };
   }, [fetchAccounts, pollConnectivity]);
 
   const handleDelete = async (username: string) => {
+    ++accountsRequest.current;
     try {
       const { deleteAccount } = await import("@/lib/tauri");
       await deleteAccount(username);
       await fetchAccounts();
     } catch (e) {
-      console.error("Delete failed:", e);
+      toast.error(`Не удалось удалить аккаунт: ${String(e)}`);
     }
   };
 
@@ -466,7 +472,7 @@ export default function AccountsPage() {
     setGlImportError(null);
     try {
       const { goodluckImportProfileAccounts } = await import("@/lib/tauri");
-      const result = await goodluckImportProfileAccounts(picked);
+      const result = await goodluckImportProfileAccounts(picked, true);
       setGlImportOpen(false);
       await fetchAccounts();
       schedulePullFromLcu(false);
@@ -1153,7 +1159,7 @@ export default function AccountsPage() {
             <DialogTitle>Удалить аккаунт?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Аккаунт <span className="font-medium text-foreground">{deleteTarget}</span> будет удалён. Это действие нельзя отменить.
+            Аккаунт <span className="font-medium text-foreground">{deleteTarget}</span> будет удалён из LM. Автоимпорт больше не добавит его обратно; вернуть можно вручную.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>Отмена</Button>

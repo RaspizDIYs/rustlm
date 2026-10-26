@@ -585,9 +585,9 @@ export interface GlImportResult {
 }
 
 export async function goodluckImportProfileAccounts(
-  riotAccounts: GoodLuckRiotAccount[]
+  riotAccounts: GoodLuckRiotAccount[], restoreRemoved = false
 ): Promise<GlImportResult> {
-  return invoke<GlImportResult>("goodluck_import_profile_accounts", { riotAccounts });
+  return invoke<GlImportResult>("goodluck_import_profile_accounts", { riotAccounts, restoreRemoved });
 }
 
 // Greet (test)

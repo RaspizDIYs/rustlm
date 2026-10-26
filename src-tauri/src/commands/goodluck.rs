@@ -4,8 +4,9 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::commands::accounts::trigger_cloud_sync;
 use crate::error::AppError;
-use crate::models::account::AccountRecord;
-use crate::models::goodluck::{GlImportResult, GoodLuckRiotAccount, GoodLuckUser, SyncAccountData, SyncResult};
+use crate::models::goodluck::{
+    GlImportResult, GoodLuckRiotAccount, GoodLuckUser, SyncAccountData, SyncResult,
+};
 use crate::state::AppState;
 
 pub async fn run_goodluck_post_login(
@@ -109,12 +110,16 @@ pub async fn goodluck_handle_callback(
 }
 
 #[tauri::command]
-pub async fn goodluck_get_user(state: State<'_, AppState>) -> Result<Option<GoodLuckUser>, AppError> {
+pub async fn goodluck_get_user(
+    state: State<'_, AppState>,
+) -> Result<Option<GoodLuckUser>, AppError> {
     Ok(state.goodluck.get_user())
 }
 
 #[tauri::command]
-pub async fn goodluck_refresh_profile(state: State<'_, AppState>) -> Result<GoodLuckUser, AppError> {
+pub async fn goodluck_refresh_profile(
+    state: State<'_, AppState>,
+) -> Result<GoodLuckUser, AppError> {
     state.goodluck.refresh_profile_from_server().await
 }
 
@@ -178,51 +183,19 @@ pub async fn goodluck_get_profile_accounts(
     Ok(user.riot_accounts)
 }
 
-/// Import Riot accounts from GoodLuck profile.
-/// Dedup by exact riot_id match only — if riot_id already exists locally, skip.
+/// Automatic imports respect local removals; explicit selection can restore an account.
 #[tauri::command]
 pub async fn goodluck_import_profile_accounts(
     state: State<'_, AppState>,
     riot_accounts: Vec<GoodLuckRiotAccount>,
+    restore_removed: Option<bool>,
 ) -> Result<GlImportResult, AppError> {
-    let existing = state.accounts.load_all();
-    let mut existing_riot_ids: std::collections::HashSet<String> = existing
-        .iter()
-        .filter(|a| !a.riot_id.is_empty())
-        .map(|a| a.riot_id.trim().to_lowercase())
-        .collect();
-
-    let mut imported = 0u32;
-    let mut skipped = 0u32;
-
-    for acc in riot_accounts {
-        let gl_rid = acc.riot_id.trim().to_lowercase();
-        if existing_riot_ids.contains(&gl_rid) {
-            skipped += 1;
-            continue;
-        }
-
-        let summoner_name = acc.riot_id.split('#').next().unwrap_or(&acc.riot_id).to_string();
-        let record = AccountRecord {
-            username: format!("gl:{}", acc.riot_id),
-            encrypted_password: String::new(),
-            note: String::from("Импорт из GoodLuck"),
-            riot_id: acc.riot_id,
-            summoner_name,
-            server: acc.server,
-            rank: acc.rank.clone(),
-            rank_display: acc.rank,
-            ..AccountRecord::default()
-        };
-        state.accounts.save(record)?;
-        existing_riot_ids.insert(gl_rid);
-        imported += 1;
-    }
-
+    let (imported, skipped) = state
+        .accounts
+        .import_profiles(riot_accounts, restore_removed.unwrap_or(false))?;
     if imported > 0 {
         trigger_cloud_sync(&*state);
     }
-
     Ok(GlImportResult {
         imported,
         updated: 0,

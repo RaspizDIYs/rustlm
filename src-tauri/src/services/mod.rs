@@ -12,5 +12,9 @@ pub mod riot_client;
 pub mod rune_data;
 pub mod rune_pages_storage;
 pub mod settings;
+pub mod network;
+pub mod network_hosts;
+pub mod repair;
+pub mod repair_paths;
 #[cfg(windows)]
 pub mod uia_login;

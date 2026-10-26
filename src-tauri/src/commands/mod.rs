@@ -23,3 +23,5 @@ pub fn greet(name: &str) -> String {
 pub fn refresh_tray(app: tauri::AppHandle) -> Result<(), String> {
     crate::tray::rebuild_tray_menu(&app).map_err(|e| e.to_string())
 }
+pub mod network;
+pub mod repair;

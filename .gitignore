@@ -29,3 +29,6 @@ next-env.d.ts
 /src-tauri/target/
 /src-tauri/keys/*.key
 src-tauri/.next/
+
+# local application builds
+/artifacts/
