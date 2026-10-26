@@ -45,7 +45,11 @@ impl AppState {
         let rune_pages = Arc::new(RunePagesStorage::new());
         let auto_accept = Arc::new(AutoAcceptService::new(Arc::clone(&riot_client), Arc::clone(&rune_pages)));
         let customization = Arc::new(CustomizationService::new(Arc::clone(&riot_client)));
-        let reveal = Arc::new(RevealService::new(Arc::clone(&riot_client), Arc::clone(&settings)));
+        let reveal = Arc::new(RevealService::new(
+            Arc::clone(&riot_client),
+            Arc::clone(&settings),
+            Arc::clone(&logger),
+        ));
         let goodluck = Arc::new(GoodLuckAuthService::new());
         let cloud_sync = Arc::new(CloudSyncService::new(
             Arc::clone(&accounts),

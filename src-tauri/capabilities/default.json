@@ -14,7 +14,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-show",
     "dialog:default",
-    "shell:default",
+    "shell:allow-open",
     "updater:default"
   ]
 }

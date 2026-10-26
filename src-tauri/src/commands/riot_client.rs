@@ -47,28 +47,6 @@ pub async fn get_account_info(state: State<'_, AppState>) -> Result<Option<Accou
 }
 
 #[tauri::command]
-pub async fn lcu_get(endpoint: String, state: State<'_, AppState>) -> Result<String, String> {
-    state
-        .riot_client
-        .lcu_get(&endpoint)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn lcu_post(
-    endpoint: String,
-    body: String,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    state
-        .riot_client
-        .lcu_post(&endpoint, &body)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub fn invalidate_lcu_cache(state: State<AppState>) {
     state.riot_client.invalidate_cache();
 }

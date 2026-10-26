@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::commands::accounts::trigger_cloud_sync;
-use crate::models::player::PlayerInfo;
+use crate::models::player::{MatchSummary, RevealSnapshot};
 use crate::state::AppState;
 
 #[tauri::command]
@@ -30,10 +30,22 @@ pub async fn test_api_key(
 }
 
 #[tauri::command]
-pub async fn get_teams_info(
-    state: State<'_, AppState>,
-) -> Result<(Vec<PlayerInfo>, Vec<PlayerInfo>), String> {
+pub async fn get_teams_info(state: State<'_, AppState>) -> Result<RevealSnapshot, String> {
     state.reveal.get_teams_info().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_recent_matches(
+    puuid: String,
+    server: String,
+    count: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Vec<MatchSummary>, String> {
+    state
+        .reveal
+        .get_recent_matches(&puuid, &server, count.unwrap_or(5))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
