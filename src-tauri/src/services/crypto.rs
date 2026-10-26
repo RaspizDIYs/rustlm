@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 
 use crate::error::AppError;
 
@@ -37,11 +37,8 @@ pub fn dpapi_protect(data: &[u8]) -> Result<String, AppError> {
         )
         .map_err(|e| AppError::Custom(format!("DPAPI Protect failed: {}", e)))?;
 
-        let protected = std::slice::from_raw_parts(
-            output_blob.pbData,
-            output_blob.cbData as usize,
-        )
-        .to_vec();
+        let protected =
+            std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize).to_vec();
 
         local_free(output_blob.pbData);
 
@@ -80,11 +77,8 @@ pub fn dpapi_unprotect(encrypted_b64: &str) -> Result<String, AppError> {
         )
         .map_err(|e| AppError::Custom(format!("DPAPI Unprotect failed: {}", e)))?;
 
-        let decrypted = std::slice::from_raw_parts(
-            output_blob.pbData,
-            output_blob.cbData as usize,
-        )
-        .to_vec();
+        let decrypted =
+            std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize).to_vec();
 
         local_free(output_blob.pbData);
 

@@ -28,9 +28,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff, ChevronDown } from "lucide-react";
+import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff, ChevronDown, Share2, ShieldOff } from "lucide-react";
 import { WithTooltip } from "@/components/ui/with-tooltip";
-import type { AccountRecord, ClientConnectivityStatus, GoodLuckRiotAccount, MatchSummary } from "@/lib/tauri";
+import type { AccountRecord, ClientConnectivityStatus, GoodLuckFriend, GoodLuckRiotAccount, MatchSummary, SharedAccount, SharedAccountsResponse } from "@/lib/tauri";
 import { championIconUrl, formatTimeAgo, positionLabel } from "@/lib/lol-assets";
 import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
 import { toast } from "sonner";
@@ -126,8 +126,34 @@ export default function AccountsPage() {
   const [matchesByAccount, setMatchesByAccount] = useState<Record<string, MatchSummary[]>>({});
   const [matchesLoading, setMatchesLoading] = useState<string | null>(null);
   const [matchesError, setMatchesError] = useState<Record<string, string>>({});
+  const [sharedAccounts, setSharedAccounts] = useState<SharedAccountsResponse>({ available_to_me: [], shared_by_me: [] });
+  const [sharedLoading, setSharedLoading] = useState(false);
+  const [shareTarget, setShareTarget] = useState<AccountRecord | null>(null);
+  const [friends, setFriends] = useState<GoodLuckFriend[]>([]);
+  const [shareFriend, setShareFriend] = useState("");
+  const [shareDuration, setShareDuration] = useState("168");
+  const [sharePassword, setSharePassword] = useState("");
+  const [shareSaving, setShareSaving] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const accountsRequest = useRef(0);
+
+  const fetchSharedAccounts = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setSharedLoading(true);
+    try {
+      const { goodluckGetSharedAccounts } = await import("@/lib/tauri");
+      const data = await goodluckGetSharedAccounts();
+      const now = Date.now();
+      setSharedAccounts({
+        available_to_me: data.available_to_me.filter((a) => !a.expires_at || Date.parse(a.expires_at) > now),
+        shared_by_me: data.shared_by_me.filter((a) => !a.expires_at || Date.parse(a.expires_at) > now),
+      });
+    } catch {
+      // GoodLuck is optional; local accounts remain available offline.
+    } finally {
+      if (showSpinner) setSharedLoading(false);
+    }
+  }, []);
 
   const fetchAccounts = useCallback(async () => {
     const request = ++accountsRequest.current;
@@ -205,15 +231,18 @@ export default function AccountsPage() {
 
   useEffect(() => {
     fetchAccounts();
+    void fetchSharedAccounts();
     pollConnectivity();
     import("@/lib/tauri").then(({ loadSetting }) => {
       loadSetting("HideLogins", false).then((v) => setHideLogins(v as boolean)).catch(() => { });
     });
     pollRef.current = setInterval(pollConnectivity, 5000);
+    const sharedPoll = setInterval(() => void fetchSharedAccounts(), 30000);
 
     let unlistenProgress: (() => void) | undefined;
     let unlistenGlAuth: (() => void) | undefined;
     let unlistenCloud: (() => void) | undefined;
+    let unlistenShared: (() => void) | undefined;
     void (async () => {
       const { isTauri } = await import("@tauri-apps/api/core");
       if (!isTauri()) return;
@@ -248,6 +277,7 @@ export default function AccountsPage() {
           }
         },
       );
+      unlistenShared = await listen("shared-accounts-changed", () => void fetchSharedAccounts());
     })();
 
     const onAccountsReload = () => {
@@ -257,12 +287,14 @@ export default function AccountsPage() {
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      clearInterval(sharedPoll);
       unlistenProgress?.();
       unlistenGlAuth?.();
       unlistenCloud?.();
+      unlistenShared?.();
       window.removeEventListener("rustlm-accounts-reload", onAccountsReload);
     };
-  }, [fetchAccounts, pollConnectivity]);
+  }, [fetchAccounts, fetchSharedAccounts, pollConnectivity]);
 
   const handleDelete = async (username: string) => {
     ++accountsRequest.current;
@@ -527,6 +559,91 @@ export default function AccountsPage() {
     }
   };
 
+  const openShareDialog = async (account: AccountRecord) => {
+    if (!account.RiotId) {
+      toast.error("Сначала обнови аккаунт «Из клиента», чтобы привязать Riot ID для безопасного отзыва.");
+      return;
+    }
+    setShareTarget(account);
+    setSharePassword("");
+    setShareFriend("");
+    setShareDuration("168");
+    setShareError(null);
+    try {
+      const { goodluckGetFriends } = await import("@/lib/tauri");
+      setFriends(await goodluckGetFriends());
+    } catch (e) {
+      setFriends([]);
+      setShareError(`Не удалось загрузить друзей GoodLuck: ${String(e)}`);
+    }
+  };
+
+  const handleShareSubmit = async () => {
+    if (!shareTarget || !shareFriend || !sharePassword) return;
+    setShareSaving(true);
+    setShareError(null);
+    try {
+      const { goodluckShareAccount } = await import("@/lib/tauri");
+      const hours = Number(shareDuration);
+      await goodluckShareAccount({
+        recipientUserId: shareFriend,
+        username: shareTarget.Username,
+        password: sharePassword,
+        riotId: shareTarget.RiotId,
+        puuid: shareTarget.Puuid,
+        server: shareTarget.Server,
+        expiresAt: hours > 0 ? new Date(Date.now() + hours * 3600000).toISOString() : null,
+      });
+      setSharePassword("");
+      setShareTarget(null);
+      await fetchSharedAccounts();
+      toast.success("Доступ выдан. Другу придёт уведомление — пусть обновит страницу аккаунтов.");
+    } catch (e) {
+      const message = String(e);
+      setShareError(message.includes("totp_required")
+        ? "Подтверди 2FA в настройках GoodLuck и повтори выдачу."
+        : message);
+    } finally {
+      setShareSaving(false);
+    }
+  };
+
+  const handleRevokeShared = async (account: SharedAccount, incoming: boolean) => {
+    const text = incoming ? "Отказаться от доступа к этому аккаунту?" : "Отозвать доступ и поставить выход из Riot в очередь на компьютере друга?";
+    if (!window.confirm(text)) return;
+    try {
+      const { goodluckRevokeSharedAccount } = await import("@/lib/tauri");
+      await goodluckRevokeSharedAccount(account.id);
+      await fetchSharedAccounts();
+      toast.success(incoming ? "Доступ закрыт, очистка поставлена в очередь." : "Доступ отозван. Очистка Riot поставлена в очередь.");
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const handleSharedLogin = async (account: SharedAccount) => {
+    const key = `shared:${account.id}`;
+    setLoginInProgress(key);
+    setLoginProgress("");
+    setLoginError(null);
+    try {
+      const { loginToSharedAccount } = await import("@/lib/tauri");
+      await loginToSharedAccount(account.id);
+    } catch (e) {
+      const message = String(e);
+      setLoginError(message.includes("totp_required")
+        ? "Подтверди 2FA в настройках GoodLuck и повтори вход."
+        : `${account.riot_id}: ${message}`);
+    } finally {
+      setLoginInProgress(null);
+      setLoginProgress("");
+    }
+  };
+
+  const sharedExpiry = (account: SharedAccount) => account.expires_at
+    ? `до ${new Date(account.expires_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`
+    : "бессрочно";
+
   return (
     <div className="flex min-h-0 min-w-0 flex-col gap-4">
       {loginError && (
@@ -596,6 +713,68 @@ export default function AccountsPage() {
           <Button onClick={() => setAddOpen(true)}>Добавить</Button>
         </div>
       </div>
+
+      {(sharedLoading || sharedAccounts.available_to_me.length > 0 || sharedAccounts.shared_by_me.length > 0) && (
+        <section className="shrink-0 space-y-3 rounded-xl border border-primary/25 bg-primary/[0.03] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold">Аккаунты GoodLuck</h2>
+            <Button variant="ghost" size="sm" onClick={() => void fetchSharedAccounts(true)} disabled={sharedLoading}>
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${sharedLoading ? "animate-spin" : ""}`} /> Обновить
+            </Button>
+          </div>
+          {sharedAccounts.available_to_me.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Доступно мне</p>
+              <div className="grid gap-2 lg:grid-cols-2">
+                {sharedAccounts.available_to_me.map((account) => (
+                  <Card key={account.id} className="border-primary/20">
+                    <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="truncate font-medium">{account.riot_id}</span>
+                          <Badge variant="secondary">от {account.owner_display_name}</Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">{account.server} · {sharedExpiry(account)} · пароль не хранится локально</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" disabled={loginInProgress !== null} onClick={() => void handleSharedLogin(account)}>
+                          {loginInProgress === `shared:${account.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="mr-1 h-4 w-4" />}
+                          {loginInProgress === `shared:${account.id}` ? loginProgress || "Вход…" : "Войти"}
+                        </Button>
+                        <WithTooltip label="Отказаться от доступа и выйти из этого Riot-аккаунта">
+                          <Button variant="outline" size="icon" aria-label="Отказаться от доступа" onClick={() => void handleRevokeShared(account, true)}>
+                            <ShieldOff className="h-4 w-4" />
+                          </Button>
+                        </WithTooltip>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
+          {sharedAccounts.shared_by_me.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Выданные мной</p>
+              <div className="grid gap-2 lg:grid-cols-2">
+                {sharedAccounts.shared_by_me.map((account) => (
+                  <Card key={account.id}>
+                    <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">{account.riot_id}</div>
+                        <p className="mt-1 text-xs text-muted-foreground">для {account.recipient_display_name} · {sharedExpiry(account)} · выдач пароля: {account.access_count}</p>
+                      </div>
+                      <Button variant="destructive" size="sm" onClick={() => void handleRevokeShared(account, false)}>
+                        <ShieldOff className="mr-1 h-4 w-4" /> Отозвать доступ
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {loading ? (
@@ -849,18 +1028,32 @@ export default function AccountsPage() {
                                 </Button>
                               </WithTooltip>
                               {!isNotActivated && (
-                                <WithTooltip label="Редактировать аккаунт">
-                                  <Button
-                                    variant="outline"
-                                    size="icon"
-                                    className="h-9 w-9"
-                                    disabled={loginInProgress !== null}
-                                    aria-label="Редактировать"
-                                    onClick={() => openEditDialog(account)}
-                                  >
-                                    <Pencil className="h-4 w-4" />
-                                  </Button>
-                                </WithTooltip>
+                                <>
+                                  <WithTooltip label="Поделиться через GoodLuck">
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      className="h-9 w-9"
+                                      disabled={loginInProgress !== null}
+                                      aria-label="Поделиться"
+                                      onClick={() => void openShareDialog(account)}
+                                    >
+                                      <Share2 className="h-4 w-4" />
+                                    </Button>
+                                  </WithTooltip>
+                                  <WithTooltip label="Редактировать аккаунт">
+                                    <Button
+                                      variant="outline"
+                                      size="icon"
+                                      className="h-9 w-9"
+                                      disabled={loginInProgress !== null}
+                                      aria-label="Редактировать"
+                                      onClick={() => openEditDialog(account)}
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </Button>
+                                  </WithTooltip>
+                                </>
                               )}
                               <WithTooltip label={account.Pinned ? "Открепить" : "Закрепить"}>
                                 <Button
@@ -904,7 +1097,7 @@ export default function AccountsPage() {
                                 <p className="text-xs text-destructive">{matchesError[account.Username]}</p>
                               ) : (matchesByAccount[account.Username]?.length ?? 0) === 0 ? (
                                 <p className="text-xs text-muted-foreground">
-                                  Матчей не нашлось: проверь ключ Riot API на странице «Разведка» и сервер аккаунта.
+                                  Матчей не нашлось. Проверь подключение GoodLuck и сервер аккаунта.
                                 </p>
                               ) : (
                                 <div className="flex flex-wrap gap-2">
@@ -1173,6 +1366,57 @@ export default function AccountsPage() {
               }}
             >
               Удалить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={shareTarget !== null} onOpenChange={(open) => { if (!open) { setShareTarget(null); setSharePassword(""); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Поделиться аккаунтом</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md bg-muted/50 p-3 text-sm">
+              <div className="font-medium">{shareTarget?.RiotId}</div>
+              <div className="text-xs text-muted-foreground">{shareTarget?.Server}</div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Друг GoodLuck</label>
+              <Select value={shareFriend} onValueChange={(value) => value && setShareFriend(value)}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга" /></SelectTrigger>
+                <SelectContent>
+                  {friends.map((friend) => <SelectItem key={friend.id} value={friend.id}>{friend.display_name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {friends.length === 0 && <p className="text-xs text-muted-foreground">Сначала добавь получателя в друзья на GoodLuck.</p>}
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Срок доступа</label>
+              <Select value={shareDuration} onValueChange={(value) => value && setShareDuration(value)}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="24">24 часа</SelectItem>
+                  <SelectItem value="168">7 дней</SelectItem>
+                  <SelectItem value="720">30 дней</SelectItem>
+                  <SelectItem value="0">Бессрочно</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm text-muted-foreground">Пароль Riot-аккаунта</label>
+              <Input type="password" value={sharePassword} onChange={(e) => setSharePassword(e.target.value)} placeholder="Только для зашифрованной передачи" autoComplete="off" />
+            </div>
+            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+              Отзыв запрещает новую выдачу и ставит выход из Riot в очередь на устройстве друга. Если его RustLM офлайн, очистка произойдёт при следующей связи; при компрометации также смени пароль Riot. Передача аккаунта может нарушать правила Riot.
+            </p>
+            {shareError && <p className="text-sm text-destructive">{shareError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setShareTarget(null); setSharePassword(""); }}>Отмена</Button>
+            <Button onClick={() => void handleShareSubmit()} disabled={shareSaving || !shareFriend || !sharePassword}>
+              {shareSaving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Share2 className="mr-1 h-4 w-4" />}
+              {shareSaving ? "Выдача…" : "Поделиться"}
             </Button>
           </DialogFooter>
         </DialogContent>

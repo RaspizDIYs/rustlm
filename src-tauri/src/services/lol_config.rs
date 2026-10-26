@@ -57,7 +57,10 @@ pub struct LolConfigService {
 
 impl LolConfigService {
     pub fn new(riot_client: Arc<RiotClientService>, logger: Arc<FileLogger>) -> Self {
-        Self { riot_client, logger }
+        Self {
+            riot_client,
+            logger,
+        }
     }
 
     fn app_version() -> String {
@@ -86,7 +89,11 @@ impl LolConfigService {
     fn persisted_settings_path(&self) -> Option<PathBuf> {
         let _ = self;
         let install_dir = RiotClientService::find_lol_install_dir()?;
-        Some(install_dir.join(CONFIG_SUBDIR).join(PERSISTED_SETTINGS_FILENAME))
+        Some(
+            install_dir
+                .join(CONFIG_SUBDIR)
+                .join(PERSISTED_SETTINGS_FILENAME),
+        )
     }
 
     // --- Metadata I/O ---
@@ -131,7 +138,8 @@ impl LolConfigService {
             .ok_or_else(|| AppError::Custom("Установка League of Legends не найдена".into()))?;
         if !path.exists() {
             return Err(AppError::Custom(
-                "Файл PersistedSettings.json ещё не создан — запустите игру хотя бы один раз".into(),
+                "Файл PersistedSettings.json ещё не создан — запустите игру хотя бы один раз"
+                    .into(),
             ));
         }
         set_readonly_attribute(&path, readonly)?;
@@ -148,7 +156,9 @@ impl LolConfigService {
         // Drop orphans (preset metadata without backing file on disk).
         let dir = Self::presets_dir()?;
         let before = index.presets.len();
-        index.presets.retain(|p| dir.join(format!("{}.json", p.id)).exists());
+        index
+            .presets
+            .retain(|p| dir.join(format!("{}.json", p.id)).exists());
         if index.presets.len() != before {
             Self::write_index(&index)?;
             self.logger.info(&format!(
@@ -169,7 +179,8 @@ impl LolConfigService {
             .ok_or_else(|| AppError::Custom("Установка League of Legends не найдена".into()))?;
         if !src.exists() {
             return Err(AppError::Custom(
-                "Файл PersistedSettings.json ещё не создан — запустите игру хотя бы один раз".into(),
+                "Файл PersistedSettings.json ещё не создан — запустите игру хотя бы один раз"
+                    .into(),
             ));
         }
         let raw = std::fs::read_to_string(&src)?;
@@ -190,8 +201,10 @@ impl LolConfigService {
         let mut index = Self::read_index()?;
         index.presets.insert(0, meta.clone());
         Self::write_index(&index)?;
-        self.logger
-            .info(&format!("lol_config: created preset {} ({})", meta.name, id));
+        self.logger.info(&format!(
+            "lol_config: created preset {} ({})",
+            meta.name, id
+        ));
         Ok(meta)
     }
 
@@ -213,8 +226,11 @@ impl LolConfigService {
             Ok(())
         })?;
 
-        self.logger
-            .info(&format!("lol_config: applied preset {} → {}", id, dst.display()));
+        self.logger.info(&format!(
+            "lol_config: applied preset {} → {}",
+            id,
+            dst.display()
+        ));
         Ok(())
     }
 
@@ -226,7 +242,8 @@ impl LolConfigService {
         let mut index = Self::read_index()?;
         index.presets.retain(|p| p.id != id);
         Self::write_index(&index)?;
-        self.logger.info(&format!("lol_config: deleted preset {}", id));
+        self.logger
+            .info(&format!("lol_config: deleted preset {}", id));
         Ok(())
     }
 
@@ -257,8 +274,10 @@ impl LolConfigService {
         };
         let serialized = serde_json::to_string_pretty(&payload)?;
         std::fs::write(&dst_path, serialized)?;
-        self.logger
-            .info(&format!("lol_config: exported preset {} → {}", id, dst_path));
+        self.logger.info(&format!(
+            "lol_config: exported preset {} → {}",
+            id, dst_path
+        ));
         Ok(())
     }
 
@@ -292,8 +311,10 @@ impl LolConfigService {
         let mut index = Self::read_index()?;
         index.presets.insert(0, meta.clone());
         Self::write_index(&index)?;
-        self.logger
-            .info(&format!("lol_config: imported preset {} ({})", meta.name, id));
+        self.logger.info(&format!(
+            "lol_config: imported preset {} ({})",
+            meta.name, id
+        ));
         Ok(meta)
     }
 }
@@ -328,8 +349,8 @@ fn set_readonly_attribute(path: &Path, readonly: bool) -> Result<(), AppError> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
-        GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_READONLY,
-        FILE_FLAGS_AND_ATTRIBUTES, INVALID_FILE_ATTRIBUTES,
+        GetFileAttributesW, SetFileAttributesW, FILE_ATTRIBUTE_READONLY, FILE_FLAGS_AND_ATTRIBUTES,
+        INVALID_FILE_ATTRIBUTES,
     };
 
     let wide: Vec<u16> = path

@@ -97,3 +97,69 @@ pub struct SyncAccountData {
     #[serde(alias = "summonerName")]
     pub summoner_name: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoodLuckFriend {
+    pub id: String,
+    #[serde(alias = "displayName")]
+    pub display_name: String,
+    #[serde(default, alias = "avatarUrl")]
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharedAccount {
+    pub id: String,
+    #[serde(alias = "ownerUserId")]
+    pub owner_user_id: String,
+    #[serde(alias = "ownerDisplayName")]
+    pub owner_display_name: String,
+    #[serde(default, alias = "ownerAvatarUrl")]
+    pub owner_avatar_url: Option<String>,
+    #[serde(alias = "recipientUserId")]
+    pub recipient_user_id: String,
+    #[serde(alias = "recipientDisplayName")]
+    pub recipient_display_name: String,
+    pub username: String,
+    #[serde(alias = "riotId")]
+    pub riot_id: String,
+    #[serde(default)]
+    pub puuid: String,
+    pub server: String,
+    #[serde(alias = "createdAt")]
+    pub created_at: String,
+    #[serde(default, alias = "expiresAt")]
+    pub expires_at: Option<String>,
+    #[serde(default, alias = "lastAccessedAt")]
+    pub last_accessed_at: Option<String>,
+    #[serde(default, alias = "accessCount")]
+    pub access_count: u32,
+    #[serde(default, alias = "cleanupCompletedAt")]
+    pub cleanup_completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharedAccountsResponse {
+    #[serde(alias = "availableToMe")]
+    pub available_to_me: Vec<SharedAccount>,
+    #[serde(alias = "sharedByMe")]
+    pub shared_by_me: Vec<SharedAccount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareAccountRequest {
+    pub recipient_user_id: String,
+    pub username: String,
+    pub password: String,
+    pub riot_id: String,
+    pub puuid: String,
+    pub server: String,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SharedAccountCredentials {
+    pub username: String,
+    pub password: String,
+}

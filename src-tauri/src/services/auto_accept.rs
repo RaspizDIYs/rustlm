@@ -37,7 +37,10 @@ pub struct AutoAcceptService {
 }
 
 impl AutoAcceptService {
-    pub fn new(riot_client: Arc<RiotClientService>, rune_pages_storage: Arc<RunePagesStorage>) -> Self {
+    pub fn new(
+        riot_client: Arc<RiotClientService>,
+        rune_pages_storage: Arc<RunePagesStorage>,
+    ) -> Self {
         Self {
             riot_client,
             rune_pages_storage,
@@ -113,9 +116,11 @@ impl AutoAcceptService {
 
     /// Start background listeners if not already running. Called at app startup and on toggle.
     pub async fn ensure_listeners_started(self: &Arc<Self>) {
-        if self.listeners_running.compare_exchange(
-            false, true, Ordering::SeqCst, Ordering::SeqCst,
-        ).is_err() {
+        if self
+            .listeners_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return; // Already running
         }
 
@@ -161,8 +166,16 @@ impl AutoAcceptService {
             }
             if let Some(auth) = self.riot_client.get_lcu_auth() {
                 // Verify LCU is actually responsive, not just lockfile present
-                if self.riot_client.lcu_get("/lol-service-status/v1/shard-data").await.is_ok() {
-                    log::info!("[WS] LCU is ready (port={}), starting WebSocket connections", auth.0);
+                if self
+                    .riot_client
+                    .lcu_get("/lol-service-status/v1/shard-data")
+                    .await
+                    .is_ok()
+                {
+                    log::info!(
+                        "[WS] LCU is ready (port={}), starting WebSocket connections",
+                        auth.0
+                    );
                     break auth;
                 }
                 self.riot_client.invalidate_cache();
@@ -192,7 +205,12 @@ impl AutoAcceptService {
                     self.force_polling.store(false, Ordering::SeqCst);
                     loop {
                         if let Some(auth) = self.riot_client.get_lcu_auth() {
-                            if self.riot_client.lcu_get("/lol-service-status/v1/shard-data").await.is_ok() {
+                            if self
+                                .riot_client
+                                .lcu_get("/lol-service-status/v1/shard-data")
+                                .await
+                                .is_ok()
+                            {
                                 log::info!("[WS] LCU reconnected (port={})", auth.0);
                                 break auth;
                             }
@@ -208,9 +226,8 @@ impl AutoAcceptService {
 
             // Build WebSocket URL
             let ws_url = format!("wss://127.0.0.1:{}/", port);
-            let auth = base64::engine::general_purpose::STANDARD.encode(
-                format!("riot:{}", password),
-            );
+            let auth =
+                base64::engine::general_purpose::STANDARD.encode(format!("riot:{}", password));
 
             // Connect
             match self.ws_connect(&ws_url, &auth, &mut cancel).await {
@@ -224,7 +241,10 @@ impl AutoAcceptService {
                     let failures = self.ws_failures.fetch_add(1, Ordering::SeqCst) + 1;
                     if failures >= 3 {
                         self.force_polling.store(true, Ordering::SeqCst);
-                        log::warn!("[WS] WebSocket failed {}x, enabling polling fallback", failures);
+                        log::warn!(
+                            "[WS] WebSocket failed {}x, enabling polling fallback",
+                            failures
+                        );
                     }
                 }
             }
@@ -242,7 +262,8 @@ impl AutoAcceptService {
         auth: &str,
         cancel: &mut tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), AppError> {
-        let mut request = url.into_client_request()
+        let mut request = url
+            .into_client_request()
             .map_err(|e| AppError::Custom(e.to_string()))?;
 
         request.headers_mut().insert(
@@ -257,22 +278,19 @@ impl AutoAcceptService {
                 .map_err(|e| AppError::Custom(e.to_string()))?,
         );
 
-        let (ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(
-            request,
-            None,
-            false,
-            Some(connector),
-        )
-        .await
-        .map_err(|e| AppError::Custom(format!("WS connect failed: {}", e)))?;
+        let (ws_stream, _) =
+            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+                .await
+                .map_err(|e| AppError::Custom(format!("WS connect failed: {}", e)))?;
 
         let (mut write, mut read) = ws_stream.split();
 
         // Subscribe to events
-        let sub_msg = tokio_tungstenite::tungstenite::Message::Text(
-            "[5, \"OnJsonApiEvent\"]".into(),
-        );
-        write.send(sub_msg).await
+        let sub_msg =
+            tokio_tungstenite::tungstenite::Message::Text("[5, \"OnJsonApiEvent\"]".into());
+        write
+            .send(sub_msg)
+            .await
             .map_err(|e| AppError::Custom(e.to_string()))?;
 
         log::info!("[WS] WebSocket connected to LCU, subscribed to OnJsonApiEvent");
@@ -356,23 +374,26 @@ impl AutoAcceptService {
     }
 
     async fn accept_match(&self) {
-        if self.accept_in_progress.compare_exchange(
-            false, true, Ordering::SeqCst, Ordering::SeqCst,
-        ).is_err() {
+        if self
+            .accept_in_progress
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return;
         }
 
-        let result = self.riot_client.lcu_post(
-            "/lol-matchmaking/v1/ready-check/accept",
-            "{}",
-        ).await;
+        let result = self
+            .riot_client
+            .lcu_post("/lol-matchmaking/v1/ready-check/accept", "{}")
+            .await;
 
         self.accept_in_progress.store(false, Ordering::SeqCst);
 
         match result {
             Ok(_) => {
                 log::info!("[AutoAccept] Match accepted automatically");
-                self.emit_event("match-accepted", "Матч принят автоматически").await;
+                self.emit_event("match-accepted", "Матч принят автоматически")
+                    .await;
             }
             Err(e) => {
                 log::error!("[AutoAccept] Failed to accept match: {}", e);
@@ -421,13 +442,19 @@ impl AutoAcceptService {
         let game_id = session.get("gameId").and_then(|g| g.as_i64()).unwrap_or(0);
         let prev_game_id = self.last_game_id.swap(game_id, Ordering::SeqCst);
         if game_id != prev_game_id && prev_game_id != 0 {
-            log::info!("[ChampSelect] New game session detected (gameId={}), resetting state", game_id);
+            log::info!(
+                "[ChampSelect] New game session detected (gameId={}), resetting state",
+                game_id
+            );
             self.reset_champ_select_state();
         }
 
         let version = self.champ_select_version.load(Ordering::SeqCst);
 
-        let my_cell = session.get("localPlayerCellId").and_then(|c| c.as_i64()).unwrap_or(-1);
+        let my_cell = session
+            .get("localPlayerCellId")
+            .and_then(|c| c.as_i64())
+            .unwrap_or(-1);
         if my_cell < 0 {
             return;
         }
@@ -436,10 +463,15 @@ impl AutoAcceptService {
 
         // Set rune page once at the start of champ select
         if settings.auto_runes_enabled {
-            if self.has_set_runes.compare_exchange(
-                false, true, Ordering::SeqCst, Ordering::SeqCst,
-            ).is_ok() {
-                log::info!("[ChampSelect] Setting rune page '{}'", settings.selected_rune_page_name);
+            if self
+                .has_set_runes
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                log::info!(
+                    "[ChampSelect] Setting rune page '{}'",
+                    settings.selected_rune_page_name
+                );
                 self.set_rune_page(&settings).await;
             }
         }
@@ -451,8 +483,14 @@ impl AutoAcceptService {
                 if let Some(group) = action_group.as_array() {
                     for action in group {
                         let action_type = action.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        let completed = action.get("completed").and_then(|c| c.as_bool()).unwrap_or(false);
-                        let champ_id = action.get("championId").and_then(|c| c.as_i64()).unwrap_or(0);
+                        let completed = action
+                            .get("completed")
+                            .and_then(|c| c.as_bool())
+                            .unwrap_or(false);
+                        let champ_id = action
+                            .get("championId")
+                            .and_then(|c| c.as_i64())
+                            .unwrap_or(0);
                         if action_type == "ban" && completed && champ_id > 0 {
                             banned_ids.push(champ_id);
                         }
@@ -467,14 +505,30 @@ impl AutoAcceptService {
             for action_group in actions {
                 if let Some(group) = action_group.as_array() {
                     for action in group {
-                        let actor = action.get("actorCellId").and_then(|a| a.as_i64()).unwrap_or(-1);
+                        let actor = action
+                            .get("actorCellId")
+                            .and_then(|a| a.as_i64())
+                            .unwrap_or(-1);
                         if actor == my_cell {
-                            let action_type = action.get("type").and_then(|t| t.as_str()).unwrap_or("?");
-                            let completed = action.get("completed").and_then(|c| c.as_bool()).unwrap_or(false);
-                            let is_in_progress = action.get("isInProgress").and_then(|i| i.as_bool()).unwrap_or(false);
+                            let action_type =
+                                action.get("type").and_then(|t| t.as_str()).unwrap_or("?");
+                            let completed = action
+                                .get("completed")
+                                .and_then(|c| c.as_bool())
+                                .unwrap_or(false);
+                            let is_in_progress = action
+                                .get("isInProgress")
+                                .and_then(|i| i.as_bool())
+                                .unwrap_or(false);
                             let action_id = action.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-                            let champ_id = action.get("championId").and_then(|c| c.as_i64()).unwrap_or(0);
-                            my_actions_summary.push(format!("{}(id={},champ={},prog={},done={})", action_type, action_id, champ_id, is_in_progress, completed));
+                            let champ_id = action
+                                .get("championId")
+                                .and_then(|c| c.as_i64())
+                                .unwrap_or(0);
+                            my_actions_summary.push(format!(
+                                "{}(id={},champ={},prog={},done={})",
+                                action_type, action_id, champ_id, is_in_progress, completed
+                            ));
                         }
                     }
                 }
@@ -494,15 +548,24 @@ impl AutoAcceptService {
             for action_group in actions {
                 if let Some(group) = action_group.as_array() {
                     for action in group {
-                        let actor = action.get("actorCellId").and_then(|a| a.as_i64()).unwrap_or(-1);
+                        let actor = action
+                            .get("actorCellId")
+                            .and_then(|a| a.as_i64())
+                            .unwrap_or(-1);
                         if actor != my_cell {
                             continue;
                         }
 
                         let action_type = action.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        let completed = action.get("completed").and_then(|c| c.as_bool()).unwrap_or(false);
+                        let completed = action
+                            .get("completed")
+                            .and_then(|c| c.as_bool())
+                            .unwrap_or(false);
                         let action_id = action.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-                        let is_in_progress = action.get("isInProgress").and_then(|i| i.as_bool()).unwrap_or(false);
+                        let is_in_progress = action
+                            .get("isInProgress")
+                            .and_then(|i| i.as_bool())
+                            .unwrap_or(false);
 
                         if completed {
                             continue;
@@ -513,19 +576,31 @@ impl AutoAcceptService {
                         }
 
                         if action_type == "ban" && is_in_progress && settings.auto_ban_enabled {
-                            if self.has_banned_champion.compare_exchange(
-                                false, true, Ordering::SeqCst, Ordering::SeqCst,
-                            ).is_ok() {
-                                log::info!("[ChampSelect] Ban phase, my turn (actionId={})", action_id);
+                            if self
+                                .has_banned_champion
+                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                            {
+                                log::info!(
+                                    "[ChampSelect] Ban phase, my turn (actionId={})",
+                                    action_id
+                                );
                                 if let Some(ref ban) = settings.ban_champion {
                                     if !ban.is_empty() {
                                         let ban_id = settings.ban_champion_id.unwrap_or(0);
                                         if ban_id > 0 {
-                                            log::info!("[ChampSelect] Banning '{}' (id={})", ban, ban_id);
-                                            let success = self.do_champion_action(action_id, ban_id, true).await;
+                                            log::info!(
+                                                "[ChampSelect] Banning '{}' (id={})",
+                                                ban,
+                                                ban_id
+                                            );
+                                            let success = self
+                                                .do_champion_action(action_id, ban_id, true)
+                                                .await;
                                             if !success {
                                                 // Reset flag so next WS event can retry
-                                                self.has_banned_champion.store(false, Ordering::SeqCst);
+                                                self.has_banned_champion
+                                                    .store(false, Ordering::SeqCst);
                                                 log::warn!("[ChampSelect] Ban failed, will retry on next event");
                                             }
                                         } else {
@@ -540,27 +615,40 @@ impl AutoAcceptService {
                         }
 
                         if action_type == "pick" && is_in_progress && settings.auto_pick_enabled {
-                            if self.has_picked_champion.compare_exchange(
-                                false, true, Ordering::SeqCst, Ordering::SeqCst,
-                            ).is_ok() {
-                                log::info!("[ChampSelect] Pick phase, my turn (actionId={})", action_id);
+                            if self
+                                .has_picked_champion
+                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                            {
+                                log::info!(
+                                    "[ChampSelect] Pick phase, my turn (actionId={})",
+                                    action_id
+                                );
 
                                 // Get pickable champion IDs to check availability
-                                let pickable_ids = match self.riot_client.lcu_get("/lol-champ-select/v1/pickable-champion-ids").await {
-                                    Ok(body) => {
-                                        match serde_json::from_str::<Vec<i64>>(&body) {
-                                            Ok(ids) => {
-                                                log::info!("[ChampSelect] {} pickable champions available", ids.len());
-                                                ids
-                                            }
-                                            Err(_) => {
-                                                log::warn!("[ChampSelect] Failed to parse pickable champions: {}", &body[..body.len().min(200)]);
-                                                Vec::new()
-                                            }
+                                let pickable_ids = match self
+                                    .riot_client
+                                    .lcu_get("/lol-champ-select/v1/pickable-champion-ids")
+                                    .await
+                                {
+                                    Ok(body) => match serde_json::from_str::<Vec<i64>>(&body) {
+                                        Ok(ids) => {
+                                            log::info!(
+                                                "[ChampSelect] {} pickable champions available",
+                                                ids.len()
+                                            );
+                                            ids
                                         }
-                                    }
+                                        Err(_) => {
+                                            log::warn!("[ChampSelect] Failed to parse pickable champions: {}", &body[..body.len().min(200)]);
+                                            Vec::new()
+                                        }
+                                    },
                                     Err(e) => {
-                                        log::warn!("[ChampSelect] Failed to get pickable champions: {}", e);
+                                        log::warn!(
+                                            "[ChampSelect] Failed to get pickable champions: {}",
+                                            e
+                                        );
                                         Vec::new()
                                     }
                                 };
@@ -584,35 +672,58 @@ impl AutoAcceptService {
                                                 log::info!("[ChampSelect] Pick '{}' (id={}) is banned, trying next", name, pick_id);
                                                 continue;
                                             }
-                                            if !pickable_ids.is_empty() && !pickable_ids.contains(&pick_id) {
+                                            if !pickable_ids.is_empty()
+                                                && !pickable_ids.contains(&pick_id)
+                                            {
                                                 log::warn!("[ChampSelect] Pick '{}' (id={}) is NOT in pickable list (not owned/free rotation?), trying next", name, pick_id);
                                                 continue;
                                             }
-                                            log::info!("[ChampSelect] Picking '{}' (id={})", name, pick_id);
-                                            let success = self.do_champion_action(action_id, pick_id as i32, false).await;
+                                            log::info!(
+                                                "[ChampSelect] Picking '{}' (id={})",
+                                                name,
+                                                pick_id
+                                            );
+                                            let success = self
+                                                .do_champion_action(
+                                                    action_id,
+                                                    pick_id as i32,
+                                                    false,
+                                                )
+                                                .await;
                                             if success {
                                                 picked = true;
                                                 break;
                                             }
                                             // If this pick failed, try next champion
-                                            log::warn!("[ChampSelect] Pick '{}' failed, trying next", name);
+                                            log::warn!(
+                                                "[ChampSelect] Pick '{}' failed, trying next",
+                                                name
+                                            );
                                         }
                                     }
                                 }
                                 if !picked {
                                     // Reset flag so next WS event can retry
                                     self.has_picked_champion.store(false, Ordering::SeqCst);
-                                    log::warn!("[ChampSelect] No pick succeeded, will retry on next event");
+                                    log::warn!(
+                                        "[ChampSelect] No pick succeeded, will retry on next event"
+                                    );
                                 }
                             }
                         }
 
                         // Set summoner spells (independent of pick)
                         if action_type == "pick" && is_in_progress && settings.auto_spells_enabled {
-                            if self.has_set_spells.compare_exchange(
-                                false, true, Ordering::SeqCst, Ordering::SeqCst,
-                            ).is_ok() {
-                                log::info!("[ChampSelect] Setting spells: D={:?}, F={:?}", settings.spell1_id, settings.spell2_id);
+                            if self
+                                .has_set_spells
+                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                            {
+                                log::info!(
+                                    "[ChampSelect] Setting spells: D={:?}, F={:?}",
+                                    settings.spell1_id,
+                                    settings.spell2_id
+                                );
                                 self.set_summoner_spells(&settings).await;
                             }
                         }
@@ -631,7 +742,12 @@ impl AutoAcceptService {
 
         // Step 1: PATCH to hover (set championId without completing)
         let hover_body = format!("{{\"championId\":{}}}", champion_id);
-        log::info!("[ChampSelect] {} step1 hover: PATCH {} body={}", action_str, endpoint, hover_body);
+        log::info!(
+            "[ChampSelect] {} step1 hover: PATCH {} body={}",
+            action_str,
+            endpoint,
+            hover_body
+        );
 
         match self.riot_client.lcu_patch(&endpoint, &hover_body).await {
             Ok(resp) => log::info!("[ChampSelect] {} hover ok: '{}'", action_str, resp),
@@ -645,7 +761,11 @@ impl AutoAcceptService {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify hover took effect
-        let hover_verified = match self.riot_client.lcu_get("/lol-champ-select/v1/session").await {
+        let hover_verified = match self
+            .riot_client
+            .lcu_get("/lol-champ-select/v1/session")
+            .await
+        {
             Ok(session_str) => {
                 if let Ok(session) = serde_json::from_str::<serde_json::Value>(&session_str) {
                     Self::check_action_champion(&session, action_id, champion_id as i64)
@@ -660,15 +780,26 @@ impl AutoAcceptService {
         };
 
         if !hover_verified {
-            log::warn!("[ChampSelect] {} hover NOT verified, will retry on next event", action_str);
+            log::warn!(
+                "[ChampSelect] {} hover NOT verified, will retry on next event",
+                action_str
+            );
             return false;
         }
 
-        log::info!("[ChampSelect] {} hover verified, proceeding to lock-in", action_str);
+        log::info!(
+            "[ChampSelect] {} hover verified, proceeding to lock-in",
+            action_str
+        );
 
         // Step 2: PATCH with completed=true to lock in
         let complete_body = format!("{{\"championId\":{},\"completed\":true}}", champion_id);
-        log::info!("[ChampSelect] {} step2 lock-in: PATCH {} body={}", action_str, endpoint, complete_body);
+        log::info!(
+            "[ChampSelect] {} step2 lock-in: PATCH {} body={}",
+            action_str,
+            endpoint,
+            complete_body
+        );
 
         match self.riot_client.lcu_patch(&endpoint, &complete_body).await {
             Ok(resp) => log::info!("[ChampSelect] {} lock-in ok: '{}'", action_str, resp),
@@ -681,32 +812,55 @@ impl AutoAcceptService {
         // Verify completion
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        match self.riot_client.lcu_get("/lol-champ-select/v1/session").await {
+        match self
+            .riot_client
+            .lcu_get("/lol-champ-select/v1/session")
+            .await
+        {
             Ok(session_str) => {
                 if let Ok(session) = serde_json::from_str::<serde_json::Value>(&session_str) {
                     if Self::check_action_completed(&session, action_id) {
                         log::info!("[ChampSelect] {} VERIFIED completed!", action_str);
                         return true;
                     }
-                    log::warn!("[ChampSelect] {} NOT completed after lock-in, will retry on next event", action_str);
+                    log::warn!(
+                        "[ChampSelect] {} NOT completed after lock-in, will retry on next event",
+                        action_str
+                    );
                 }
             }
-            Err(e) => log::warn!("[ChampSelect] {} completion verify failed: {}", action_str, e),
+            Err(e) => log::warn!(
+                "[ChampSelect] {} completion verify failed: {}",
+                action_str,
+                e
+            ),
         }
 
         false
     }
 
     /// Check if an action has the expected championId set
-    fn check_action_champion(session: &serde_json::Value, action_id: i64, expected_champ: i64) -> bool {
+    fn check_action_champion(
+        session: &serde_json::Value,
+        action_id: i64,
+        expected_champ: i64,
+    ) -> bool {
         if let Some(actions) = session.get("actions").and_then(|a| a.as_array()) {
             for group in actions {
                 if let Some(arr) = group.as_array() {
                     for action in arr {
                         let id = action.get("id").and_then(|i| i.as_i64()).unwrap_or(-1);
                         if id == action_id {
-                            let champ = action.get("championId").and_then(|c| c.as_i64()).unwrap_or(0);
-                            log::info!("[ChampSelect] verify action {}: championId={} (expected={})", action_id, champ, expected_champ);
+                            let champ = action
+                                .get("championId")
+                                .and_then(|c| c.as_i64())
+                                .unwrap_or(0);
+                            log::info!(
+                                "[ChampSelect] verify action {}: championId={} (expected={})",
+                                action_id,
+                                champ,
+                                expected_champ
+                            );
                             return champ == expected_champ;
                         }
                     }
@@ -724,9 +878,20 @@ impl AutoAcceptService {
                     for action in arr {
                         let id = action.get("id").and_then(|i| i.as_i64()).unwrap_or(-1);
                         if id == action_id {
-                            let completed = action.get("completed").and_then(|c| c.as_bool()).unwrap_or(false);
-                            let champ = action.get("championId").and_then(|c| c.as_i64()).unwrap_or(0);
-                            log::info!("[ChampSelect] verify action {}: championId={}, completed={}", action_id, champ, completed);
+                            let completed = action
+                                .get("completed")
+                                .and_then(|c| c.as_bool())
+                                .unwrap_or(false);
+                            let champ = action
+                                .get("championId")
+                                .and_then(|c| c.as_i64())
+                                .unwrap_or(0);
+                            log::info!(
+                                "[ChampSelect] verify action {}: championId={}, completed={}",
+                                action_id,
+                                champ,
+                                completed
+                            );
                             return completed;
                         }
                     }
@@ -743,10 +908,16 @@ impl AutoAcceptService {
 
         // Find the rune page by name from local storage
         let pages = self.rune_pages_storage.load_all();
-        let page = match pages.iter().find(|p| p.name == settings.selected_rune_page_name) {
+        let page = match pages
+            .iter()
+            .find(|p| p.name == settings.selected_rune_page_name)
+        {
             Some(p) => p,
             None => {
-                log::warn!("[ChampSelect] Rune page '{}' not found", settings.selected_rune_page_name);
+                log::warn!(
+                    "[ChampSelect] Rune page '{}' not found",
+                    settings.selected_rune_page_name
+                );
                 return;
             }
         };
@@ -781,7 +952,10 @@ impl AutoAcceptService {
             for p in arr {
                 let name = p.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let id = p.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-                let is_deletable = p.get("isDeletable").and_then(|d| d.as_bool()).unwrap_or(false);
+                let is_deletable = p
+                    .get("isDeletable")
+                    .and_then(|d| d.as_bool())
+                    .unwrap_or(false);
                 if name == "RustLM" {
                     rustlm_page_id = Some(id);
                     break;
@@ -804,16 +978,29 @@ impl AutoAcceptService {
             // Overwrite existing RustLM page
             let endpoint = format!("/lol-perks/v1/pages/{}", page_id);
             match self.riot_client.lcu_put(&endpoint, &body.to_string()).await {
-                Ok(_) => log::info!("[ChampSelect] Rune page '{}' updated in LCU", settings.selected_rune_page_name),
+                Ok(_) => log::info!(
+                    "[ChampSelect] Rune page '{}' updated in LCU",
+                    settings.selected_rune_page_name
+                ),
                 Err(e) => log::error!("[ChampSelect] Failed to update rune page: {}", e),
             }
         } else {
             // Delete a page to make room if needed, then create new
             if let Some(del_id) = deletable_page_id {
-                let _ = self.riot_client.lcu_delete(&format!("/lol-perks/v1/pages/{}", del_id)).await;
+                let _ = self
+                    .riot_client
+                    .lcu_delete(&format!("/lol-perks/v1/pages/{}", del_id))
+                    .await;
             }
-            match self.riot_client.lcu_post("/lol-perks/v1/pages", &body.to_string()).await {
-                Ok(_) => log::info!("[ChampSelect] Rune page '{}' created in LCU", settings.selected_rune_page_name),
+            match self
+                .riot_client
+                .lcu_post("/lol-perks/v1/pages", &body.to_string())
+                .await
+            {
+                Ok(_) => log::info!(
+                    "[ChampSelect] Rune page '{}' created in LCU",
+                    settings.selected_rune_page_name
+                ),
                 Err(e) => log::error!("[ChampSelect] Failed to create rune page: {}", e),
             }
         }
@@ -836,10 +1023,14 @@ impl AutoAcceptService {
             body.insert("spell2Id".to_string(), serde_json::json!(id));
         }
 
-        match self.riot_client.lcu_patch(
-            "/lol-champ-select/v1/session/my-selection",
-            &serde_json::Value::Object(body).to_string(),
-        ).await {
+        match self
+            .riot_client
+            .lcu_patch(
+                "/lol-champ-select/v1/session/my-selection",
+                &serde_json::Value::Object(body).to_string(),
+            )
+            .await
+        {
             Ok(_) => log::info!("[ChampSelect] Spells set: D={:?}, F={:?}", spell1, spell2),
             Err(e) => log::error!("[ChampSelect] Failed to set spells: {}", e),
         }
@@ -855,7 +1046,12 @@ impl AutoAcceptService {
                 return;
             }
             if let Some(auth) = self.riot_client.get_lcu_auth() {
-                if self.riot_client.lcu_get("/lol-service-status/v1/shard-data").await.is_ok() {
+                if self
+                    .riot_client
+                    .lcu_get("/lol-service-status/v1/shard-data")
+                    .await
+                    .is_ok()
+                {
                     log::info!("[Polling] LCU is ready (port={}), starting polling", auth.0);
                     break;
                 }
@@ -905,13 +1101,21 @@ impl AutoAcceptService {
 
             // Poll ready-check (only when auto-accept is enabled)
             if self.enabled.load(Ordering::SeqCst) {
-                match self.riot_client.lcu_get("/lol-matchmaking/v1/ready-check").await {
+                match self
+                    .riot_client
+                    .lcu_get("/lol-matchmaking/v1/ready-check")
+                    .await
+                {
                     Ok(body) => {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
                             let state = json.get("state").and_then(|s| s.as_str()).unwrap_or("");
-                            let response = json.get("playerResponse").and_then(|r| r.as_str()).unwrap_or("");
+                            let response = json
+                                .get("playerResponse")
+                                .and_then(|r| r.as_str())
+                                .unwrap_or("");
                             if state == "InProgress" && response == "None" {
-                                let timer = json.get("timer").and_then(|t| t.as_f64()).unwrap_or(-1.0);
+                                let timer =
+                                    json.get("timer").and_then(|t| t.as_f64()).unwrap_or(-1.0);
                                 let mut last = self.last_accepted_timer.lock().await;
                                 if (*last - timer).abs() >= 0.5 || *last < 0.0 {
                                     *last = timer;
@@ -926,7 +1130,11 @@ impl AutoAcceptService {
             }
 
             // Poll champ-select session (always active for auto-pick/ban/spells/runes)
-            match self.riot_client.lcu_get("/lol-champ-select/v1/session").await {
+            match self
+                .riot_client
+                .lcu_get("/lol-champ-select/v1/session")
+                .await
+            {
                 Ok(body) => {
                     if let Ok(session) = serde_json::from_str::<serde_json::Value>(&body) {
                         let game_id = session.get("gameId").and_then(|g| g.as_i64()).unwrap_or(0);
@@ -939,7 +1147,11 @@ impl AutoAcceptService {
             }
 
             // Faster polling when WS is down
-            let delay = if self.force_polling.load(Ordering::SeqCst) { 300 } else { 5000 };
+            let delay = if self.force_polling.load(Ordering::SeqCst) {
+                300
+            } else {
+                5000
+            };
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(delay)) => {},
                 _ = cancel.changed() => return,

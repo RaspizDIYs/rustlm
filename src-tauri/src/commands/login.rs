@@ -33,19 +33,13 @@ pub async fn login_to_account(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.login_cancelled.store(false, Ordering::Relaxed);
-
-    let logger: &FileLogger = &state.logger;
-    logger.login_flow("START", Some(&format!("user={}", username)));
-
-    // 1. Look up encrypted password from storage (never exposed to frontend)
+    // Local accounts use DPAPI; shared accounts never enter this storage.
     let account = state
         .accounts
         .load_all()
         .into_iter()
         .find(|a| a.username == username)
         .ok_or_else(|| "Аккаунт не найден".to_string())?;
-
     if account.encrypted_password.is_empty() {
         return Err("Аккаунт не активирован — введите данные для входа".to_string());
     }
@@ -54,11 +48,21 @@ pub async fn login_to_account(
     let plain_password = state
         .accounts
         .unprotect(&account.encrypted_password)
-        .map_err(|e| {
-            logger.login_flow("ERROR", Some(&format!("unprotect failed: {}", e)));
-            e.to_string()
-        })?;
-    logger.login_flow("DECRYPT", Some("password decrypted OK"));
+        .map_err(|e| e.to_string())?;
+    login_with_credentials(username, plain_password, false, &state, app).await
+}
+
+async fn login_with_credentials(
+    username: String,
+    plain_password: String,
+    shared_account: bool,
+    state: &AppState,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    state.login_cancelled.store(false, Ordering::Relaxed);
+    let logger: &FileLogger = &state.logger;
+    logger.login_flow("START", Some(&format!("user={}", username)));
+    logger.login_flow("DECRYPT", Some("password available in Rust memory only"));
 
     let rc = &state.riot_client;
 
@@ -95,13 +99,9 @@ pub async fn login_to_account(
             15
         }
 
-        LoginPhase::Authenticated => {
-            prepare_logout(rc, logger, &app, &state, false).await?
-        }
+        LoginPhase::Authenticated => prepare_logout(rc, logger, &app, &state, false).await?,
 
-        LoginPhase::LeagueRunning => {
-            prepare_logout(rc, logger, &app, &state, true).await?
-        }
+        LoginPhase::LeagueRunning => prepare_logout(rc, logger, &app, &state, true).await?,
     };
     check_cancelled(&state)?;
 
@@ -114,7 +114,7 @@ pub async fn login_to_account(
 
     if uia_ok {
         logger.login_flow("UIA", Some("success"));
-        return finalize_login(rc, logger, &app, &state).await;
+        return finalize_login(rc, logger, &app, &state, shared_account).await;
     }
 
     // 5. Fallback — two stages: soft (retry logout), then hard (kill+restart)
@@ -141,7 +141,7 @@ pub async fn login_to_account(
 
         if uia_ok {
             logger.login_flow("FALLBACK_SOFT", Some("succeeded"));
-            return finalize_login(rc, logger, &app, &state).await;
+            return finalize_login(rc, logger, &app, &state, shared_account).await;
         }
         logger.login_flow("FALLBACK_SOFT", Some("failed"));
     }
@@ -167,10 +167,33 @@ pub async fn login_to_account(
 
     if uia_ok {
         logger.login_flow("FALLBACK_HARD", Some("succeeded"));
-        return finalize_login(rc, logger, &app, &state).await;
+        return finalize_login(rc, logger, &app, &state, shared_account).await;
     }
 
     Err("Не удалось войти после нескольких попыток".to_string())
+}
+
+#[tauri::command]
+pub async fn login_to_shared_account(
+    id: String,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    emit_progress(&app, "Получение разрешения GoodLuck...");
+    let session = state.cloud_sync.get_valid_totp_session_public();
+    let credentials = state
+        .goodluck
+        .get_shared_credentials(&id, session.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    login_with_credentials(
+        credentials.username,
+        credentials.password,
+        true,
+        &state,
+        app,
+    )
+    .await
 }
 
 /// Handle Authenticated / LeagueRunning phases.
@@ -220,6 +243,7 @@ async fn finalize_login(
     logger: &FileLogger,
     app: &tauri::AppHandle,
     state: &AppState,
+    shared_account: bool,
 ) -> Result<(), String> {
     emit_progress(app, "Ожидание авторизации...");
     logger.login_flow("AUTH", Some("waiting for RSO authorization..."));
@@ -242,8 +266,10 @@ async fn finalize_login(
 
     logger.login_flow("DONE", Some("login complete"));
     rc.invalidate_cache();
-    trigger_cloud_sync(state);
-    spawn_post_login_lcu_refresh(app.clone());
+    if !shared_account {
+        trigger_cloud_sync(state);
+        spawn_post_login_lcu_refresh(app.clone());
+    }
     Ok(())
 }
 
@@ -271,7 +297,10 @@ async fn run_uia_login(
 
         let result = tokio::task::spawn_blocking(move || {
             crate::services::uia_login::login_to_riot_client(
-                &uia_user, &uia_pass, timeout_secs, Some(&uia_cancel),
+                &uia_user,
+                &uia_pass,
+                timeout_secs,
+                Some(&uia_cancel),
             )
         })
         .await;
@@ -339,15 +368,26 @@ fn delete_rc_session_data(logger: &FileLogger) {
     };
 
     let paths_to_delete = [
-        local_app_data.join("Riot Games").join("Riot Client").join("Data").join("RiotGamesPrivateSettings.yaml"),
-        local_app_data.join("Riot Games").join("Riot Client").join("Data").join("RiotClientPrivateSettings.yaml"),
+        local_app_data
+            .join("Riot Games")
+            .join("Riot Client")
+            .join("Data")
+            .join("RiotGamesPrivateSettings.yaml"),
+        local_app_data
+            .join("Riot Games")
+            .join("Riot Client")
+            .join("Data")
+            .join("RiotClientPrivateSettings.yaml"),
     ];
 
     for path in &paths_to_delete {
         if path.exists() {
             match std::fs::remove_file(path) {
                 Ok(_) => logger.login_flow("CLEANUP", Some(&format!("deleted {}", path.display()))),
-                Err(e) => logger.login_flow("CLEANUP", Some(&format!("failed to delete {}: {}", path.display(), e))),
+                Err(e) => logger.login_flow(
+                    "CLEANUP",
+                    Some(&format!("failed to delete {}: {}", path.display(), e)),
+                ),
             }
         }
     }

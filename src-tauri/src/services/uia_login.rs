@@ -13,7 +13,12 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// Attempt to log in to Riot Client by automating the login form via UI Automation.
 /// This must be called from a COM STA thread (use `spawn_blocking`).
 /// Pass `cancel` to allow early abort from the UI.
-pub fn login_to_riot_client(username: &str, password: &str, timeout_secs: u64, cancel: Option<&Arc<AtomicBool>>) -> Result<()> {
+pub fn login_to_riot_client(
+    username: &str,
+    password: &str,
+    timeout_secs: u64,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
     unsafe {
         CoInitializeEx(Some(std::ptr::null()), COINIT_APARTMENTTHREADED).ok()?;
     }
@@ -31,9 +36,13 @@ fn is_cancelled(cancel: Option<&Arc<AtomicBool>>) -> bool {
     cancel.map_or(false, |c| c.load(Ordering::Relaxed))
 }
 
-unsafe fn do_login(username: &str, password: &str, timeout_secs: u64, cancel: Option<&Arc<AtomicBool>>) -> Result<()> {
-    let automation: IUIAutomation =
-        CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
+unsafe fn do_login(
+    username: &str,
+    password: &str,
+    timeout_secs: u64,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    let automation: IUIAutomation = CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
 
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
 
@@ -134,13 +143,19 @@ unsafe fn do_login(username: &str, password: &str, timeout_secs: u64, cancel: Op
     Ok(())
 }
 
-fn wait_for_riot_client_window(deadline: std::time::Instant, cancel: Option<&Arc<AtomicBool>>) -> Result<HWND> {
+fn wait_for_riot_client_window(
+    deadline: std::time::Instant,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<HWND> {
     loop {
         if is_cancelled(cancel) {
             return Err(Error::new(E_ABORT, "Login cancelled"));
         }
         if std::time::Instant::now() > deadline {
-            return Err(Error::new(E_FAIL, "Riot Client window not found within timeout"));
+            return Err(Error::new(
+                E_FAIL,
+                "Riot Client window not found within timeout",
+            ));
         }
 
         if let Ok(hwnd) = find_riot_client_window() {
@@ -167,8 +182,8 @@ fn find_process_main_window(process_name: &str) -> Option<HWND> {
     // This handles names with spaces like "Riot Client" without shell quoting issues
     let exe_name = format!("{}.exe", process_name);
 
-    use windows::Win32::System::Diagnostics::ToolHelp::*;
     use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
 
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
@@ -178,7 +193,11 @@ fn find_process_main_window(process_name: &str) -> Option<HWND> {
         if Process32FirstW(snapshot, &mut entry).is_ok() {
             loop {
                 let name = String::from_utf16_lossy(
-                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                    &entry.szExeFile[..entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len())],
                 );
                 if name.eq_ignore_ascii_case(&exe_name) {
                     let pid = entry.th32ProcessID;
@@ -245,8 +264,19 @@ unsafe fn try_find_fields(
     automation: &IUIAutomation,
     root: &IUIAutomationElement,
 ) -> Option<(IUIAutomationElement, IUIAutomationElement)> {
-    let username_el = find_element_by_ids(automation, root, &["username", "login"])
-        .or_else(|| find_element_by_names(automation, root, &["username", "Login", "Email", "Адрес электронной почты", "Имя пользователя"]));
+    let username_el = find_element_by_ids(automation, root, &["username", "login"]).or_else(|| {
+        find_element_by_names(
+            automation,
+            root,
+            &[
+                "username",
+                "Login",
+                "Email",
+                "Адрес электронной почты",
+                "Имя пользователя",
+            ],
+        )
+    });
 
     let password_el = find_element_by_ids(automation, root, &["password"])
         .or_else(|| find_element_by_names(automation, root, &["password", "Пароль", "Password"]));
@@ -259,9 +289,15 @@ unsafe fn try_find_fields(
 
 /// Check if the element's current value matches expected. Non-blocking.
 unsafe fn check_value(element: &IUIAutomationElement, expected: &str) -> bool {
-    let Ok(pattern_obj) = element.GetCurrentPattern(UIA_ValuePatternId) else { return false };
-    let Ok(value_pattern) = pattern_obj.cast::<IUIAutomationValuePattern>() else { return false };
-    let Ok(current) = value_pattern.CurrentValue() else { return false };
+    let Ok(pattern_obj) = element.GetCurrentPattern(UIA_ValuePatternId) else {
+        return false;
+    };
+    let Ok(value_pattern) = pattern_obj.cast::<IUIAutomationValuePattern>() else {
+        return false;
+    };
+    let Ok(current) = value_pattern.CurrentValue() else {
+        return false;
+    };
     current.to_string() == expected
 }
 
@@ -308,9 +344,7 @@ unsafe fn find_edit_controls_fallback(
         )
         .ok()?;
 
-    let edits = root
-        .FindAll(TreeScope_Descendants, &edit_condition)
-        .ok()?;
+    let edits = root.FindAll(TreeScope_Descendants, &edit_condition).ok()?;
 
     let count = edits.Length().ok()?;
     if count >= 2 {

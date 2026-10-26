@@ -9,7 +9,11 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub async fn get_rune_paths(state: State<'_, AppState>) -> Result<Vec<RunePath>, String> {
-    state.rune_data.get_all_paths().await.map_err(|e| e.to_string())
+    state
+        .rune_data
+        .get_all_paths()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -17,15 +21,20 @@ pub async fn get_rune_path_by_id(
     id: i32,
     state: State<'_, AppState>,
 ) -> Result<Option<RunePath>, String> {
-    state.rune_data.get_path_by_id(id).await.map_err(|e| e.to_string())
+    state
+        .rune_data
+        .get_path_by_id(id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn get_rune_by_id(
-    id: i32,
-    state: State<'_, AppState>,
-) -> Result<Option<Rune>, String> {
-    state.rune_data.get_rune_by_id(id).await.map_err(|e| e.to_string())
+pub async fn get_rune_by_id(id: i32, state: State<'_, AppState>) -> Result<Option<Rune>, String> {
+    state
+        .rune_data
+        .get_rune_by_id(id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -59,14 +68,20 @@ pub fn save_rune_page(page: RunePage, state: State<AppState>) -> Result<(), Stri
 
 #[tauri::command]
 pub fn save_all_rune_pages(pages: Vec<RunePage>, state: State<AppState>) -> Result<(), String> {
-    state.rune_pages.save_all(&pages).map_err(|e| e.to_string())?;
+    state
+        .rune_pages
+        .save_all(&pages)
+        .map_err(|e| e.to_string())?;
     trigger_cloud_sync(&state);
     Ok(())
 }
 
 #[tauri::command]
 pub fn delete_rune_page(page_name: String, state: State<AppState>) -> Result<(), String> {
-    state.rune_pages.delete(&page_name).map_err(|e| e.to_string())?;
+    state
+        .rune_pages
+        .delete(&page_name)
+        .map_err(|e| e.to_string())?;
     trigger_cloud_sync(&state);
     Ok(())
 }

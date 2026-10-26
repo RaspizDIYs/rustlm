@@ -4,8 +4,8 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use tauri::{Emitter, Manager};
 
-use crate::error::AppError;
 use crate::cloud_profile_apply;
+use crate::error::AppError;
 use crate::models::account::{CloudAccountData, CloudProfilePayload, SyncStatus, TotpSession};
 use crate::services::accounts_storage::AccountsStorage;
 use crate::services::goodluck_auth::GoodLuckAuthService;
