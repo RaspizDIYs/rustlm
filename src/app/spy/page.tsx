@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import type { PlayerInfo } from "@/lib/tauri";
+import type { PlayerInfo, RevealSnapshot } from "@/lib/tauri";
+import { championIconUrl, positionLabel, profileIconUrl } from "@/lib/lol-assets";
 
 const REGIONS = [
   { code: "euw1", name: "EU West" },
@@ -28,38 +29,78 @@ const REGIONS = [
   { code: "oc1", name: "Oceania" },
 ];
 
-function PlayerCard({ player }: { player: PlayerInfo }) {
-  const tierColor: Record<string, string> = {
-    IRON: "text-gray-400",
-    BRONZE: "text-amber-700",
-    SILVER: "text-gray-300",
-    GOLD: "text-yellow-500",
-    PLATINUM: "text-teal-400",
-    EMERALD: "text-emerald-400",
-    DIAMOND: "text-blue-400",
-    MASTER: "text-purple-400",
-    GRANDMASTER: "text-red-500",
-    CHALLENGER: "text-cyan-300",
-  };
+const TIER_CLASSES: Record<string, string> = {
+  IRON: "text-gray-400",
+  BRONZE: "text-amber-700",
+  SILVER: "text-gray-300",
+  GOLD: "text-yellow-500",
+  PLATINUM: "text-teal-400",
+  EMERALD: "text-emerald-400",
+  DIAMOND: "text-blue-400",
+  MASTER: "text-purple-400",
+  GRANDMASTER: "text-red-500",
+  CHALLENGER: "text-cyan-300",
+};
+
+function PlayerRow({
+  player,
+  fallbackLabel,
+}: {
+  player: PlayerInfo;
+  fallbackLabel: string;
+}) {
+  const [iconFailed, setIconFailed] = useState(false);
+  const icon = championIconUrl(player.champion_id) ?? profileIconUrl(player.profile_icon_id);
+  const name = player.riot_id || player.summoner_name;
+  const position = positionLabel(player.position);
 
   return (
-    <div className="flex items-center justify-between rounded-lg border border-border p-3">
-      <div className="flex items-center gap-3">
-        <div>
-          <div className="text-sm font-medium">{player.riot_id || player.summoner_name}</div>
-          <div className="text-xs text-muted-foreground">
-            Lvl {player.level}
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">
+          {icon && !iconFailed ? (
+            <img
+              src={icon}
+              alt=""
+              className="h-10 w-10 object-cover"
+              onError={() => setIconFailed(true)}
+            />
+          ) : (
+            <span className="text-xs text-muted-foreground">?</span>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className={`truncate text-sm font-medium ${name ? "" : "italic text-muted-foreground"}`}>
+              {name || "Ник скрыт"}
+            </span>
+            {player.is_self && (
+              <Badge variant="secondary" className="shrink-0">
+                Вы
+              </Badge>
+            )}
+          </div>
+          <div className="truncate text-xs text-muted-foreground">
+            {position || fallbackLabel}
+            {player.level > 0 ? ` · Lvl ${player.level}` : ""}
+            {player.champion_id > 0 ? "" : " · пик не выбран"}
           </div>
         </div>
       </div>
-      <div className="text-right">
-        <div className={`text-sm font-medium ${tierColor[player.tier] || "text-muted-foreground"}`}>
-          {player.tier !== "Unranked"
+      <div className="shrink-0 text-right">
+        <div
+          className={`text-sm font-medium ${
+            TIER_CLASSES[player.tier] || "text-muted-foreground"
+          }`}
+        >
+          {player.tier && player.tier !== "Unranked"
             ? `${player.tier} ${player.rank} ${player.league_points}LP`
             : "Unranked"}
         </div>
         <div className="text-xs text-muted-foreground">
-          {player.wins}W {player.losses}L ({player.win_rate})
+          {player.wins + player.losses > 0
+            ? `${player.wins}W ${player.losses}L (${player.win_rate})`
+            : "нет данных по рангам"}
         </div>
       </div>
     </div>
@@ -69,24 +110,21 @@ function PlayerCard({ player }: { player: PlayerInfo }) {
 export default function SpyPage() {
   const [apiKey, setApiKey] = useState("");
   const [region, setRegion] = useState("euw1");
-  const [allies, setAllies] = useState<PlayerInfo[]>([]);
-  const [enemies, setEnemies] = useState<PlayerInfo[]>([]);
+  const [snapshot, setSnapshot] = useState<RevealSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
-  const [configured, setConfigured] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [apiStatus, setApiStatus] = useState<string | null>(null);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const inFlight = useRef(false);
 
   const loadRevealConfig = useCallback(() => {
     import("@/lib/tauri").then(({ getRevealApiConfig }) => {
-      getRevealApiConfig().then(([savedKey, savedRegion]) => {
-        if (savedKey) {
-          setApiKey(savedKey);
-          setConfigured(true);
-        } else {
-          setApiKey("");
-          setConfigured(false);
-        }
-        if (savedRegion) setRegion(savedRegion);
-      }).catch(() => {});
+      getRevealApiConfig()
+        .then(([savedKey, savedRegion]) => {
+          setApiKey(savedKey ?? "");
+          if (savedRegion) setRegion(savedRegion);
+        })
+        .catch(() => {});
     });
   }, []);
 
@@ -98,6 +136,7 @@ export default function SpyPage() {
     let un: (() => void) | undefined;
     void (async () => {
       const { isTauri } = await import("@tauri-apps/api/core");
+      setIsDesktop(isTauri());
       if (!isTauri()) return;
       const { listen } = await import("@tauri-apps/api/event");
       un = await listen("cloud-sync-complete", () => {
@@ -109,55 +148,159 @@ export default function SpyPage() {
     };
   }, [loadRevealConfig]);
 
+  const refresh = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setLoading(true);
+    try {
+      const { getTeamsInfo } = await import("@/lib/tauri");
+      const next = await getTeamsInfo();
+      setSnapshot(next);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      inFlight.current = false;
+      setLoading(false);
+    }
+  }, []);
+
+  // Разведка живёт своей жизнью: клиент меняет состав каждые пару секунд,
+  // кнопка «Обновить» для этого не нужна.
+  useEffect(() => {
+    if (!isDesktop) return;
+    void refresh();
+    const timer = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [isDesktop, refresh]);
+
   const handleSaveConfig = async () => {
     try {
       const { setRevealApiConfig, testApiKey } = await import("@/lib/tauri");
       await setRevealApiConfig(apiKey, region);
       const [valid, msg] = await testApiKey();
       setApiStatus(valid ? "API ключ валиден" : `Ошибка: ${msg}`);
-      setConfigured(valid);
+      await refresh();
     } catch (e) {
       setApiStatus(`Ошибка: ${e}`);
     }
   };
 
-  const handleRefresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { getTeamsInfo } = await import("@/lib/tauri");
-      const [a, e] = await getTeamsInfo();
-      setAllies(a);
-      setEnemies(e);
-    } catch (e) {
-      console.error("Refresh failed:", e);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const inChampSelect = snapshot?.in_champ_select ?? false;
+  const allies = snapshot?.allies ?? [];
+  const enemies = snapshot?.enemies ?? [];
+  const noApiKey = snapshot ? !snapshot.api_configured : false;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Разведка</h1>
-        {configured && (
-          <Button onClick={handleRefresh} disabled={loading}>
-            {loading ? "Загрузка..." : "Обновить"}
-          </Button>
-        )}
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">Разведка</h1>
+          {snapshot?.queue_name && <Badge variant="secondary">{snapshot.queue_name}</Badge>}
+          {inChampSelect && (
+            <span className="text-xs text-muted-foreground">обновляется автоматически</span>
+          )}
+        </div>
+        <Button onClick={() => void refresh()} disabled={loading || !isDesktop}>
+          {loading ? "Обновление..." : "Обновить"}
+        </Button>
       </div>
 
-      <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4">
-        <p className="text-sm text-destructive">
-          Эта функция использует Riot API. Необходим API ключ с{" "}
-          <span className="font-medium">developer.riotgames.com</span>.
-        </p>
+      {!isDesktop && (
+        <div className="rounded-xl border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+          Разведка работает только в собранном приложении: нужен запущенный клиент League of Legends.
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {snapshot?.note && (
+        <div className="rounded-xl border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+          {snapshot.note}
+        </div>
+      )}
+
+      {snapshot && snapshot.unmatched_names.length > 0 && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-600 dark:text-amber-400">
+          Клиент отдал ники, но не привязал их к слотам: {snapshot.unmatched_names.join(", ")}
+        </div>
+      )}
+
+      {snapshot?.api_error && (
+        <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-4 text-sm text-amber-600 dark:text-amber-400">
+          {snapshot.api_error}
+        </div>
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Союзники ({allies.length})</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {allies.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">
+                {inChampSelect
+                  ? "Клиент не отдал состав команды."
+                  : "Войди в выбор чемпионов — данные появятся автоматически."}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {allies.map((player) => (
+                  <PlayerRow
+                    key={`ally-${player.cell_id}`}
+                    player={player}
+                    fallbackLabel={`Союзник ${player.cell_id + 1}`}
+                  />
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Противники ({enemies.length})</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {enemies.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">
+                {inChampSelect
+                  ? "Riot не показывает противников в выборе чемпионов — они видны только в кастомных лобби."
+                  : "Войди в выбор чемпионов — данные появятся автоматически."}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {enemies.map((player) => (
+                  <PlayerRow
+                    key={`enemy-${player.cell_id}`}
+                    player={player}
+                    fallbackLabel={`Противник ${player.cell_id - 4}`}
+                  />
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Настройки API</CardTitle>
+          <CardTitle className="text-base">
+            Riot API {noApiKey ? "— ключ не задан" : ""}
+          </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Ключ нужен только для рангов и винрейта: ники, позиции и чемпионы читаются из
+            клиента. Dev-ключ Riot живёт 24 часа — просроченный подсвечивается выше.
+          </p>
           <div className="flex gap-3">
             <Input
               placeholder="RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
@@ -178,59 +321,15 @@ export default function SpyPage() {
                 ))}
               </SelectContent>
             </Select>
-            <Button onClick={handleSaveConfig}>Сохранить</Button>
+            <Button onClick={() => void handleSaveConfig()}>Сохранить</Button>
           </div>
           {apiStatus && (
-            <Badge variant={configured ? "secondary" : "destructive"}>
+            <Badge variant={apiStatus.startsWith("Ошибка") ? "destructive" : "secondary"}>
               {apiStatus}
             </Badge>
           )}
         </CardContent>
       </Card>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Союзники ({allies.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {allies.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">
-                {configured ? "Войдите в выбор чемпионов" : "Настройте API ключ"}
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {allies.map((p, i) => (
-                  <PlayerCard key={i} player={p} />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Противники ({enemies.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {enemies.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">
-                {configured ? "Войдите в выбор чемпионов" : "Настройте API ключ"}
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {enemies.map((p, i) => (
-                  <PlayerCard key={i} player={p} />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

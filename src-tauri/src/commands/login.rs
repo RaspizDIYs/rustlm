@@ -248,24 +248,36 @@ async fn finalize_login(
 }
 
 /// Run UIA login in a blocking thread. Returns true on success.
+///
+/// UI Automation есть только на Windows. Заглушка для остальных платформ нужна,
+/// чтобы проект можно было собрать и проверить на любой машине разработчика.
 async fn run_uia_login(
     username: &str,
     password: &str,
     timeout_secs: u64,
     state: &AppState,
 ) -> bool {
-    let uia_user = username.to_string();
-    let uia_pass = password.to_string();
-    let uia_cancel = state.login_cancelled.clone();
+    #[cfg(not(windows))]
+    {
+        let _ = (username, password, timeout_secs, state);
+        false
+    }
 
-    let result = tokio::task::spawn_blocking(move || {
-        crate::services::uia_login::login_to_riot_client(
-            &uia_user, &uia_pass, timeout_secs, Some(&uia_cancel),
-        )
-    })
-    .await;
+    #[cfg(windows)]
+    {
+        let uia_user = username.to_string();
+        let uia_pass = password.to_string();
+        let uia_cancel = state.login_cancelled.clone();
 
-    matches!(result, Ok(Ok(())))
+        let result = tokio::task::spawn_blocking(move || {
+            crate::services::uia_login::login_to_riot_client(
+                &uia_user, &uia_pass, timeout_secs, Some(&uia_cancel),
+            )
+        })
+        .await;
+
+        matches!(result, Ok(Ok(())))
+    }
 }
 
 /// Wait for RC UI process (Riot Client.exe / RiotClientUx.exe) to be running.

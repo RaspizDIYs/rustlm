@@ -160,14 +160,6 @@ export async function refreshAccountProfileFromLcu(): Promise<LcuProfileRefreshR
   return invoke<LcuProfileRefreshResult>("refresh_account_profile_from_lcu");
 }
 
-export async function lcuGet(endpoint: string): Promise<string> {
-  return invoke<string>("lcu_get", { endpoint });
-}
-
-export async function lcuPost(endpoint: string, body: string): Promise<string> {
-  return invoke<string>("lcu_post", { endpoint, body });
-}
-
 export async function invalidateLcuCache(): Promise<void> {
   return invoke("invalidate_lcu_cache");
 }
@@ -394,6 +386,26 @@ export interface PlayerInfo {
   profile_icon_id: number;
   puuid: string;
   ugg_link: string;
+  cell_id: number;
+  team: number;
+  position: string;
+  is_self: boolean;
+  identity_hidden: boolean;
+}
+
+export interface RevealSnapshot {
+  allies: PlayerInfo[];
+  enemies: PlayerInfo[];
+  in_champ_select: boolean;
+  queue_id: number;
+  queue_name: string;
+  is_ranked: boolean;
+  is_custom: boolean;
+  identity_hidden: boolean;
+  api_configured: boolean;
+  unmatched_names: string[];
+  api_error: string | null;
+  note: string | null;
 }
 
 export async function getRevealApiConfig(): Promise<[string, string]> {
@@ -408,8 +420,30 @@ export async function testApiKey(): Promise<[boolean, string]> {
   return invoke<[boolean, string]>("test_api_key");
 }
 
-export async function getTeamsInfo(): Promise<[PlayerInfo[], PlayerInfo[]]> {
-  return invoke<[PlayerInfo[], PlayerInfo[]]>("get_teams_info");
+export async function getTeamsInfo(): Promise<RevealSnapshot> {
+  return invoke<RevealSnapshot>("get_teams_info");
+}
+
+export interface MatchSummary {
+  match_id: string;
+  champion_id: number;
+  champion_name: string;
+  win: boolean;
+  kills: number;
+  deaths: number;
+  assists: number;
+  queue_name: string;
+  position: string;
+  duration_secs: number;
+  created_at_ms: number;
+}
+
+export async function getRecentMatches(
+  puuid: string,
+  server: string,
+  count = 5
+): Promise<MatchSummary[]> {
+  return invoke<MatchSummary[]>("get_recent_matches", { puuid, server, count });
 }
 
 export async function sendChatMessage(message: string): Promise<boolean> {

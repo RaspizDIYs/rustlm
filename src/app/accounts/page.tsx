@@ -28,9 +28,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff } from "lucide-react";
+import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff, ChevronDown } from "lucide-react";
 import { WithTooltip } from "@/components/ui/with-tooltip";
-import type { AccountRecord, ClientConnectivityStatus, GoodLuckRiotAccount } from "@/lib/tauri";
+import type { AccountRecord, ClientConnectivityStatus, GoodLuckRiotAccount, MatchSummary } from "@/lib/tauri";
+import { championIconUrl, formatTimeAgo, positionLabel } from "@/lib/lol-assets";
 import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
 import { toast } from "sonner";
 
@@ -49,6 +50,42 @@ function rankToNumber(rankDisplay: string): number {
 }
 
 type SortMode = "default" | "rank-asc" | "rank-desc";
+
+/** Одна игра в раскрывающемся аккаунте: чемпион, исход, KDA, режим, когда. */
+function MatchChip({ match }: { match: MatchSummary }) {
+  const icon = championIconUrl(match.champion_id);
+  const position = positionLabel(match.position);
+
+  return (
+    <div
+      className={`flex min-w-[190px] items-center gap-2 rounded-lg border px-2 py-1.5 ${
+        match.win ? "border-green-500/40 bg-green-500/10" : "border-red-500/40 bg-red-500/10"
+      }`}
+    >
+      {icon && (
+        <img
+          src={icon}
+          alt=""
+          className="h-8 w-8 shrink-0 rounded-md bg-muted object-cover"
+          onError={(e) => {
+            e.currentTarget.style.display = "none";
+          }}
+        />
+      )}
+      <div className="min-w-0">
+        <div className={`text-xs font-medium ${match.win ? "text-green-500" : "text-red-500"}`}>
+          {match.win ? "Победа" : "Поражение"}
+          <span className="ml-1 text-foreground">{match.champion_name}</span>
+        </div>
+        <div className="truncate text-[11px] text-muted-foreground">
+          {match.kills}/{match.deaths}/{match.assists}
+          {position ? ` · ${position}` : ""}
+          {` · ${match.queue_name || "—"} · ${formatTimeAgo(match.created_at_ms)}`}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
@@ -85,6 +122,10 @@ export default function AccountsPage() {
   const [glImportSaving, setGlImportSaving] = useState(false);
   const [glImportError, setGlImportError] = useState<string | null>(null);
   const [lcuProfileRefreshing, setLcuProfileRefreshing] = useState(false);
+  const [expandedAccount, setExpandedAccount] = useState<string | null>(null);
+  const [matchesByAccount, setMatchesByAccount] = useState<Record<string, MatchSummary[]>>({});
+  const [matchesLoading, setMatchesLoading] = useState<string | null>(null);
+  const [matchesError, setMatchesError] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAccounts = useCallback(async () => {
@@ -123,6 +164,41 @@ export default function AccountsPage() {
       // Not in Tauri
     }
   }, []);
+
+  const toggleAccountMatches = useCallback(
+    async (account: AccountRecord) => {
+      const key = account.Username;
+      if (expandedAccount === key) {
+        setExpandedAccount(null);
+        return;
+      }
+      setExpandedAccount(key);
+      if (matchesByAccount[key] || matchesLoading === key) return;
+      if (!account.Puuid) {
+        setMatchesError((prev) => ({
+          ...prev,
+          [key]: "У аккаунта нет PUUID — обнови профиль кнопкой «Из клиента».",
+        }));
+        return;
+      }
+      setMatchesLoading(key);
+      setMatchesError((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      try {
+        const { getRecentMatches } = await import("@/lib/tauri");
+        const matches = await getRecentMatches(account.Puuid, account.Server, 5);
+        setMatchesByAccount((prev) => ({ ...prev, [key]: matches }));
+      } catch (e) {
+        setMatchesError((prev) => ({ ...prev, [key]: String(e) }));
+      } finally {
+        setMatchesLoading(null);
+      }
+    },
+    [expandedAccount, matchesByAccount, matchesLoading]
+  );
 
   useEffect(() => {
     fetchAccounts();
@@ -751,6 +827,21 @@ export default function AccountsPage() {
                                   </Button>
                                 </WithTooltip>
                               )}
+                              <WithTooltip
+                                label={expandedAccount === account.Username ? "Скрыть матчи" : "Последние матчи"}
+                              >
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-9 w-9"
+                                  aria-label="Последние матчи"
+                                  onClick={() => void toggleAccountMatches(account)}
+                                >
+                                  <ChevronDown
+                                    className={`h-4 w-4 transition-transform ${expandedAccount === account.Username ? "rotate-180" : ""}`}
+                                  />
+                                </Button>
+                              </WithTooltip>
                               {!isNotActivated && (
                                 <WithTooltip label="Редактировать аккаунт">
                                   <Button
@@ -793,6 +884,33 @@ export default function AccountsPage() {
                           </TableCell>
                         </TableRow>
                       );
+
+                      if (expandedAccount === account.Username) {
+                        rows.push(
+                          <TableRow key={`matches-${account.Username}`}>
+                            <TableCell colSpan={5} className="bg-muted/20 p-3">
+                              {matchesLoading === account.Username ? (
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  Загружаю последние матчи...
+                                </div>
+                              ) : matchesError[account.Username] ? (
+                                <p className="text-xs text-destructive">{matchesError[account.Username]}</p>
+                              ) : (matchesByAccount[account.Username]?.length ?? 0) === 0 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  Матчей не нашлось: проверь ключ Riot API на странице «Разведка» и сервер аккаунта.
+                                </p>
+                              ) : (
+                                <div className="flex flex-wrap gap-2">
+                                  {matchesByAccount[account.Username]?.map((match) => (
+                                    <MatchChip key={match.match_id} match={match} />
+                                  ))}
+                                </div>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      }
                     }
                   }
                   return rows;
