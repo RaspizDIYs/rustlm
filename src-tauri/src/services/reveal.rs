@@ -1059,16 +1059,29 @@ fn win_rate(wins: i32, losses: i32) -> String {
     }
 }
 
-fn queue_name(queue_id: i64) -> &'static str {
+fn queue_name(queue_id: i64) -> String {
     match queue_id {
-        QUEUE_RANKED_SOLO | QUEUE_RANKED_SOLO_OLD => "Ranked Solo/Duo",
-        QUEUE_RANKED_FLEX => "Ranked Flex",
-        400 => "Normal Draft",
-        430 => "Normal Blind",
-        450 => "ARAM",
-        1700 => "Arena",
-        0 => "",
-        _ => "Другой режим",
+        QUEUE_RANKED_SOLO | QUEUE_RANKED_SOLO_OLD => "Ranked Solo/Duo".into(),
+        QUEUE_RANKED_FLEX => "Ranked Flex".into(),
+        400 => "Normal Draft".into(),
+        430 => "Normal Blind".into(),
+        450 => "ARAM".into(),
+        480 => "Swiftplay".into(),
+        490 => "Normal Quickplay".into(),
+        700 => "Clash".into(),
+        720 => "ARAM Clash".into(),
+        830 | 840 | 850 | 870 | 880 | 890 => "Co-op vs AI".into(),
+        900 | 1900 => "URF".into(),
+        1010 => "Snow ARURF".into(),
+        1020 => "One for All".into(),
+        1200 | 1300 => "Nexus Blitz".into(),
+        1400 => "Ultimate Spellbook".into(),
+        1700 | 1710 => "Arena".into(),
+        1810 | 1820 | 1830 => "Swarm".into(),
+        2400 => "ARAM: Mayhem".into(),
+        2000 | 2010 | 2020 => "Tutorial".into(),
+        0 => String::new(),
+        _ => format!("Режим #{queue_id}"),
     }
 }
 
@@ -1471,6 +1484,9 @@ mod tests {
     fn queue_names() {
         assert_eq!(queue_name(420), "Ranked Solo/Duo");
         assert_eq!(queue_name(440), "Ranked Flex");
+        assert_eq!(queue_name(480), "Swiftplay");
+        assert_eq!(queue_name(1710), "Arena");
+        assert_eq!(queue_name(9999), "Режим #9999");
         assert_eq!(queue_name(0), "");
     }
 

@@ -341,7 +341,7 @@ impl AccountsStorage {
         self.edit(|accounts, removed| {
             let mut imported = 0;
             for ca in cloud_accounts {
-                let record = AccountRecord {
+                let mut record = AccountRecord {
                     username: ca.username,
                     encrypted_password: self.protect(&ca.password)?,
                     note: ca.note,
@@ -358,6 +358,9 @@ impl AccountsStorage {
                     pinned: ca.pinned,
                     is_selected: false,
                 };
+                if !crate::models::account::is_valid_puuid(&record.puuid) {
+                    record.puuid.clear();
+                }
                 if removed.contains(&record) {
                     continue;
                 }
@@ -365,9 +368,13 @@ impl AccountsStorage {
                     .iter_mut()
                     .find(|a| a.username.eq_ignore_ascii_case(&record.username))
                 {
-                    let mut record = record;
                     if record.encrypted_password.is_empty() {
                         record.encrypted_password = existing.encrypted_password.clone();
+                    }
+                    // A valid PUUID read from this device's LCU is authoritative for
+                    // the same Riot login. An older cloud snapshot must not erase it.
+                    if crate::models::account::is_valid_puuid(&existing.puuid) {
+                        record.puuid = existing.puuid.clone();
                     }
                     *existing = record;
                 } else {
@@ -719,6 +726,62 @@ mod storage_tests {
             store.load_all()[0].encrypted_password,
             "opaque-test-ciphertext"
         );
+        cleanup(store);
+    }
+    #[test]
+    fn cloud_pull_preserves_valid_local_puuid_and_discards_legacy_values() {
+        let store = storage();
+        let local_puuid = "a".repeat(78);
+        let cloud_puuid = "b".repeat(78);
+        store
+            .save(AccountRecord {
+                username: "local-login".into(),
+                puuid: local_puuid.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .import_from_cloud(vec![
+                serde_json::from_value(serde_json::json!({
+                    "username": "local-login",
+                    "puuid": "7402b99a-0000-0000-0000-000000000000"
+                }))
+                .unwrap(),
+                serde_json::from_value(serde_json::json!({
+                    "username": "cloud-login",
+                    "puuid": cloud_puuid
+                }))
+                .unwrap(),
+                serde_json::from_value(serde_json::json!({
+                    "username": "legacy-cloud-login",
+                    "puuid": "7402b99a-0000-0000-0000-000000000000"
+                }))
+                .unwrap(),
+            ])
+            .unwrap();
+        let accounts = store.load_all();
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|a| a.username == "local-login")
+                .unwrap()
+                .puuid,
+            local_puuid
+        );
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|a| a.username == "cloud-login")
+                .unwrap()
+                .puuid,
+            "b".repeat(78)
+        );
+        assert!(accounts
+            .iter()
+            .find(|a| a.username == "legacy-cloud-login")
+            .unwrap()
+            .puuid
+            .is_empty());
         cleanup(store);
     }
     fn storage() -> AccountsStorage {

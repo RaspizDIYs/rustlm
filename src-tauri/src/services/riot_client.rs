@@ -617,11 +617,23 @@ impl RiotClientService {
             .get("summonerLevel")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        let puuid = summoner
+        let mut puuid = summoner
             .get("puuid")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        if !crate::models::account::is_valid_puuid(&puuid) {
+            // current-summoner can be only partially populated while LCU finishes
+            // logging in. Chat exposes the same account identity independently.
+            if let Ok(chat_json) = self.lcu_get("/lol-chat/v1/me").await {
+                if let Ok(chat) = serde_json::from_str::<serde_json::Value>(&chat_json) {
+                    let chat_puuid = chat.get("puuid").and_then(|v| v.as_str()).unwrap_or("");
+                    if crate::models::account::is_valid_puuid(chat_puuid) {
+                        puuid = chat_puuid.to_string();
+                    }
+                }
+            }
+        }
 
         // Get ranked info
         let ranked_json = self

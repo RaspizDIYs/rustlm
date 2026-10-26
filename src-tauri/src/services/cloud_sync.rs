@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use crate::cloud_profile_apply;
 use crate::error::AppError;
@@ -322,9 +322,8 @@ impl CloudSyncService {
         self.debounce_notify.notify_one();
     }
 
-    pub fn start_debounce_loop(self: &Arc<Self>, app: &tauri::AppHandle) {
+    pub fn start_debounce_loop(self: &Arc<Self>, _app: &tauri::AppHandle) {
         let this = Arc::clone(self);
-        let handle = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 this.debounce_notify.notified().await;
@@ -332,8 +331,9 @@ impl CloudSyncService {
                 if !this.goodluck.is_connected() {
                     continue;
                 }
-                let state = handle.state::<crate::state::AppState>();
-                let _ = this.sync(&*state).await;
+                // This notification means local data changed. Upload it directly:
+                // pulling the older server snapshot first undoes fresh LCU updates.
+                let _ = this.push().await;
                 this.emit_cloud_sync_complete();
             }
         });

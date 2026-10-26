@@ -66,8 +66,11 @@ fn merge_account_from_lcu_info(mut acc: AccountRecord, info: &AccountInfo) -> Ac
     if !info.riot_id.is_empty() {
         acc.riot_id = info.riot_id.clone();
     }
-    if !info.puuid.is_empty() {
+    if crate::models::account::is_valid_puuid(&info.puuid) {
         acc.puuid = info.puuid.clone();
+    } else if !crate::models::account::is_valid_puuid(&acc.puuid) {
+        // Do not keep legacy GUID/placeholder values when LCU has no PUUID yet.
+        acc.puuid.clear();
     }
     if !info.rank.is_empty() {
         acc.rank = info.rank.clone();
@@ -110,7 +113,7 @@ pub async fn refresh_account_profile_from_lcu_inner(
         .get_account_info()
         .await
         .map_err(|e| e.to_string())?;
-    let Some(info) = info else {
+    let Some(mut info) = info else {
         return Ok(LcuProfileRefreshResult {
             updated: false,
             matched_username: None,
@@ -138,6 +141,14 @@ pub async fn refresh_account_profile_from_lcu_inner(
         });
     }
 
+    if !crate::models::account::is_valid_puuid(&info.puuid) {
+        // Some LCU builds expose the 36-character Riot account GUID here.
+        // Resolve the real match-v5 PUUID through GoodLuck using the live Riot ID.
+        if let Ok(Some(puuid)) = state.goodluck.resolve_riot_puuid(&info.riot_id).await {
+            info.puuid = puuid;
+        }
+    }
+
     let accounts = state.accounts.load_all();
     let Some(idx) = pick_account_index_for_lcu(&accounts, &info, &login) else {
         return Ok(LcuProfileRefreshResult {
@@ -151,11 +162,16 @@ pub async fn refresh_account_profile_from_lcu_inner(
     let before = accounts[idx].clone();
     let merged = merge_account_from_lcu_info(before.clone(), &info);
     let uname = merged.username.clone();
+    let has_valid_puuid = crate::models::account::is_valid_puuid(&merged.puuid);
     if !account_profile_fields_changed(&before, &merged) {
         return Ok(LcuProfileRefreshResult {
             updated: false,
             matched_username: Some(uname),
-            message: "Данные уже совпадают с LCU".to_string(),
+            message: if has_valid_puuid {
+                "Данные уже совпадают с LCU".to_string()
+            } else {
+                "Не удалось получить PUUID через GoodLuck по Riot ID. Проверь подключение GoodLuck и повтори.".to_string()
+            },
         });
     }
 
@@ -174,7 +190,11 @@ pub async fn refresh_account_profile_from_lcu_inner(
     Ok(LcuProfileRefreshResult {
         updated: true,
         matched_username: Some(uname),
-        message: "Профиль обновлён из League клиента".to_string(),
+        message: if has_valid_puuid {
+            "Профиль и PUUID обновлены из League клиента".to_string()
+        } else {
+            "Профиль обновлён, но GoodLuck не вернул PUUID по Riot ID. Проверь подключение GoodLuck и повтори.".to_string()
+        },
     })
 }
 

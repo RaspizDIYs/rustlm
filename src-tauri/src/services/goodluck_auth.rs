@@ -1181,6 +1181,33 @@ impl GoodLuckAuthService {
         Ok(())
     }
 
+    pub async fn resolve_riot_puuid(&self, riot_id: &str) -> Result<Option<String>, AppError> {
+        let Some((game_name, tag_line)) = riot_id.split_once('#') else {
+            return Ok(None);
+        };
+        let game_name = game_name.trim();
+        let tag_line = tag_line.trim();
+        if game_name.is_empty() || tag_line.is_empty() {
+            return Ok(None);
+        }
+        let response: serde_json::Value = self
+            .api_json(
+                reqwest::Method::POST,
+                "/riot-accounts/resolve",
+                Some(serde_json::json!({
+                    "gameName": game_name,
+                    "tagLine": tag_line,
+                })),
+                None,
+            )
+            .await?;
+        Ok(response
+            .get("puuid")
+            .and_then(|v| v.as_str())
+            .filter(|p| crate::models::account::is_valid_puuid(p))
+            .map(str::to_owned))
+    }
+
     pub async fn get_recent_matches(
         &self,
         puuid: &str,

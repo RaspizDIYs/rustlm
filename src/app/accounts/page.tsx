@@ -59,7 +59,8 @@ function MatchChip({ match }: { match: MatchSummary }) {
 
   return (
     <div
-      className={`flex min-w-[190px] items-center gap-2 rounded-lg border px-2 py-1.5 ${
+      title={`${match.champion_name} · ${match.queue_name || "Режим не указан"} · ${formatTimeAgo(match.created_at_ms)}`}
+      className={`flex min-w-[120px] flex-1 items-center gap-1.5 rounded-md border px-1.5 py-1 ${
         match.win ? "border-green-500/40 bg-green-500/10" : "border-red-500/40 bg-red-500/10"
       }`}
     >
@@ -67,18 +68,18 @@ function MatchChip({ match }: { match: MatchSummary }) {
         <img
           src={icon}
           alt=""
-          className="h-8 w-8 shrink-0 rounded-md bg-muted object-cover"
+          className="h-6 w-6 shrink-0 rounded bg-muted object-cover"
           onError={(e) => {
             e.currentTarget.style.display = "none";
           }}
         />
       )}
-      <div className="min-w-0">
-        <div className={`text-xs font-medium ${match.win ? "text-green-500" : "text-red-500"}`}>
+      <div className="min-w-0 flex-1">
+        <div className={`truncate text-[11px] font-medium ${match.win ? "text-green-500" : "text-red-500"}`}>
           {match.win ? "Победа" : "Поражение"}
           <span className="ml-1 text-foreground">{match.champion_name}</span>
         </div>
-        <div className="truncate text-[11px] text-muted-foreground">
+        <div className="truncate text-[10px] text-muted-foreground">
           {match.kills}/{match.deaths}/{match.assists}
           {position ? ` · ${position}` : ""}
           {` · ${match.queue_name || "—"} · ${formatTimeAgo(match.created_at_ms)}`}
@@ -746,6 +747,20 @@ export default function AccountsPage() {
                   const { notifyCloudAfterGoodluckSession } = await import("@/lib/post-login-sync");
                   const r = await refreshAccountProfileFromLcu();
                   await fetchAccounts();
+                  if (r.matchedUsername) {
+                    const username = r.matchedUsername;
+                    setMatchesError((prev) => {
+                      const next = { ...prev };
+                      delete next[username];
+                      return next;
+                    });
+                    setMatchesByAccount((prev) => {
+                      const next = { ...prev };
+                      delete next[username];
+                      return next;
+                    });
+                    setExpandedAccount((current) => current === username ? null : current);
+                  }
                   await notifyCloudAfterGoodluckSession();
                   if (r.updated) toast.success(r.message);
                   else toast.info(r.message);
@@ -1137,7 +1152,7 @@ export default function AccountsPage() {
                       if (expandedAccount === account.Username) {
                         rows.push(
                           <TableRow key={`matches-${account.Username}`}>
-                            <TableCell colSpan={5} className="bg-muted/20 p-3">
+                            <TableCell colSpan={5} className="bg-muted/20 p-2">
                               {matchesLoading === account.Username ? (
                                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1150,7 +1165,7 @@ export default function AccountsPage() {
                                   Матчей не нашлось. Проверь подключение GoodLuck и сервер аккаунта.
                                 </p>
                               ) : (
-                                <div className="flex flex-wrap gap-2">
+                                <div className="flex flex-nowrap gap-1.5 overflow-x-auto pb-1">
                                   {matchesByAccount[account.Username]?.map((match) => (
                                     <MatchChip key={match.match_id} match={match} />
                                   ))}
