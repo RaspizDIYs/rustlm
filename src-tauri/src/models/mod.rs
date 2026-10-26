@@ -1,9 +1,9 @@
 pub mod account;
 pub mod automation;
-pub mod goodluck;
 pub mod champion;
-pub mod league_client;
+pub mod goodluck;
 pub mod lcu_data;
+pub mod league_client;
 pub mod player;
 pub mod rune;
 pub mod settings;

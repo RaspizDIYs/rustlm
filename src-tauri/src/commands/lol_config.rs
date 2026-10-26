@@ -27,9 +27,7 @@ pub async fn lol_cfg_set_readonly(
 }
 
 #[tauri::command]
-pub async fn lol_cfg_list_presets(
-    state: State<'_, AppState>,
-) -> Result<Vec<PresetMeta>, AppError> {
+pub async fn lol_cfg_list_presets(state: State<'_, AppState>) -> Result<Vec<PresetMeta>, AppError> {
     let svc = Arc::clone(&state.lol_config);
     tokio::task::spawn_blocking(move || svc.list_presets())
         .await
@@ -48,10 +46,7 @@ pub async fn lol_cfg_create_preset(
 }
 
 #[tauri::command]
-pub async fn lol_cfg_apply_preset(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn lol_cfg_apply_preset(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     let svc = Arc::clone(&state.lol_config);
     tokio::task::spawn_blocking(move || svc.apply_preset(id))
         .await
@@ -59,10 +54,7 @@ pub async fn lol_cfg_apply_preset(
 }
 
 #[tauri::command]
-pub async fn lol_cfg_delete_preset(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub async fn lol_cfg_delete_preset(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     let svc = Arc::clone(&state.lol_config);
     tokio::task::spawn_blocking(move || svc.delete_preset(id))
         .await

@@ -41,11 +41,7 @@ impl SettingsService {
         }
     }
 
-    pub fn load_setting<T: serde::de::DeserializeOwned>(
-        &self,
-        key: &str,
-        default: T,
-    ) -> T {
+    pub fn load_setting<T: serde::de::DeserializeOwned>(&self, key: &str, default: T) -> T {
         let cache = self.cache.lock().unwrap();
         match cache.get(key) {
             Some(value) => serde_json::from_value(value.clone()).unwrap_or(default),
@@ -53,13 +49,9 @@ impl SettingsService {
         }
     }
 
-    pub fn save_setting<T: serde::Serialize>(
-        &self,
-        key: &str,
-        value: &T,
-    ) -> Result<(), AppError> {
-        let json_value = serde_json::to_value(value)
-            .map_err(|e| AppError::Custom(e.to_string()))?;
+    pub fn save_setting<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<(), AppError> {
+        let json_value =
+            serde_json::to_value(value).map_err(|e| AppError::Custom(e.to_string()))?;
 
         {
             let mut cache = self.cache.lock().unwrap();
@@ -96,10 +88,7 @@ impl SettingsService {
 
     pub fn export_settings_json_map(&self) -> serde_json::Map<String, Value> {
         let cache = self.cache.lock().unwrap();
-        cache
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     pub fn replace_settings_json_map(

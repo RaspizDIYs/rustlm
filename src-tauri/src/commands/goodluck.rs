@@ -5,7 +5,9 @@ use tauri_plugin_opener::OpenerExt;
 use crate::commands::accounts::trigger_cloud_sync;
 use crate::error::AppError;
 use crate::models::account::AccountRecord;
-use crate::models::goodluck::{GlImportResult, GoodLuckRiotAccount, GoodLuckUser, SyncAccountData, SyncResult};
+use crate::models::goodluck::{
+    GlImportResult, GoodLuckRiotAccount, GoodLuckUser, SyncAccountData, SyncResult,
+};
 use crate::state::AppState;
 
 pub async fn run_goodluck_post_login(
@@ -109,12 +111,16 @@ pub async fn goodluck_handle_callback(
 }
 
 #[tauri::command]
-pub async fn goodluck_get_user(state: State<'_, AppState>) -> Result<Option<GoodLuckUser>, AppError> {
+pub async fn goodluck_get_user(
+    state: State<'_, AppState>,
+) -> Result<Option<GoodLuckUser>, AppError> {
     Ok(state.goodluck.get_user())
 }
 
 #[tauri::command]
-pub async fn goodluck_refresh_profile(state: State<'_, AppState>) -> Result<GoodLuckUser, AppError> {
+pub async fn goodluck_refresh_profile(
+    state: State<'_, AppState>,
+) -> Result<GoodLuckUser, AppError> {
     state.goodluck.refresh_profile_from_server().await
 }
 
@@ -202,7 +208,12 @@ pub async fn goodluck_import_profile_accounts(
             continue;
         }
 
-        let summoner_name = acc.riot_id.split('#').next().unwrap_or(&acc.riot_id).to_string();
+        let summoner_name = acc
+            .riot_id
+            .split('#')
+            .next()
+            .unwrap_or(&acc.riot_id)
+            .to_string();
         let record = AccountRecord {
             username: format!("gl:{}", acc.riot_id),
             encrypted_password: String::new(),
@@ -229,4 +240,186 @@ pub async fn goodluck_import_profile_accounts(
         skipped,
         updated_pairs: Vec::new(),
     })
+}
+
+#[tauri::command]
+pub async fn goodluck_get_friends(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::goodluck::GoodLuckFriend>, AppError> {
+    state.goodluck.get_friends().await
+}
+
+#[tauri::command]
+pub async fn goodluck_get_shared_accounts(
+    state: State<'_, AppState>,
+) -> Result<crate::models::goodluck::SharedAccountsResponse, AppError> {
+    let response = state.goodluck.get_shared_accounts().await?;
+    if let Err(error) = process_shared_account_cleanups(&state).await {
+        log::warn!("Shared account cleanup failed: {}", error);
+    }
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn goodluck_share_account(
+    mut request: crate::models::goodluck::ShareAccountRequest,
+    state: State<'_, AppState>,
+) -> Result<crate::models::goodluck::SharedAccount, AppError> {
+    request.server = map_lm_server_for_goodluck_platform(&request.server);
+    let session = state.cloud_sync.get_valid_totp_session_public();
+    state
+        .goodluck
+        .share_account(&request, session.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn goodluck_revoke_shared_account(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    state.goodluck.revoke_shared_account(&id).await
+}
+
+#[tauri::command]
+pub async fn goodluck_process_shared_cleanups(state: State<'_, AppState>) -> Result<u32, AppError> {
+    process_shared_account_cleanups(&state).await
+}
+
+/// Returns None when the current identity is not reliable enough to acknowledge cleanup.
+/// PUUID is authoritative; Riot ID is a fallback for older shares without a PUUID.
+fn shared_identity_matches(
+    task_puuid: &str,
+    task_riot_id: &str,
+    current_puuid: &str,
+    game_name: &str,
+    tag_line: &str,
+) -> Option<bool> {
+    let task_puuid = task_puuid.trim();
+    let current_puuid = current_puuid.trim();
+    if !task_puuid.is_empty() && !current_puuid.is_empty() {
+        return Some(task_puuid == current_puuid);
+    }
+    if !task_riot_id.trim().is_empty() && !game_name.is_empty() && !tag_line.is_empty() {
+        let current_riot_id = format!("{}#{}", game_name, tag_line);
+        return Some(task_riot_id.trim().to_lowercase() == current_riot_id.to_lowercase());
+    }
+    None
+}
+
+/// Process durable revocation/expiration tasks. A task is acknowledged only after
+/// the current Riot identity is known: matching accounts are logged out; a verified
+/// different account is left untouched. Offline/unknown sessions remain queued.
+pub async fn process_shared_account_cleanups(state: &AppState) -> Result<u32, AppError> {
+    static CLEANUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = CLEANUP_LOCK.lock().await;
+    let tasks = state.goodluck.get_shared_cleanups().await?;
+    let mut completed = 0u32;
+
+    for task in tasks {
+        let current = match state
+            .riot_client
+            .lcu_get("/lol-summoner/v1/current-summoner")
+            .await
+        {
+            Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_default(),
+            Err(_) => continue,
+        };
+        if current.get("errorCode").is_some() {
+            continue;
+        }
+
+        let current_puuid = current.get("puuid").and_then(|v| v.as_str()).unwrap_or("");
+        let game_name = current
+            .get("gameName")
+            .and_then(|v| v.as_str())
+            .or_else(|| current.get("displayName").and_then(|v| v.as_str()))
+            .unwrap_or("");
+        let tag_line = current
+            .get("tagLine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let Some(same_account) = shared_identity_matches(
+            &task.puuid,
+            &task.riot_id,
+            current_puuid,
+            game_name,
+            tag_line,
+        ) else {
+            continue;
+        };
+
+        if same_account {
+            state.riot_client.invalidate_cache();
+            if let Err(error) = state.riot_client.logout_via_rc().await {
+                log::warn!(
+                    "Shared account {} cleanup logout failed: {}",
+                    task.id,
+                    error
+                );
+                continue;
+            }
+            if crate::services::riot_client::RiotClientService::is_league_running() {
+                crate::services::riot_client::RiotClientService::kill_league(false);
+            }
+            if state.riot_client.is_rso_authorized().await {
+                log::warn!(
+                    "Shared account {} cleanup: RSO is still authorized",
+                    task.id
+                );
+                continue;
+            }
+        }
+
+        if let Err(error) = state.goodluck.complete_shared_cleanup(&task.id).await {
+            log::warn!(
+                "Shared account {} cleanup acknowledgement failed: {}",
+                task.id,
+                error
+            );
+            continue;
+        }
+        completed += 1;
+        log::info!(
+            "Shared account {} cleanup completed (matching={})",
+            task.id,
+            same_account
+        );
+    }
+    Ok(completed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shared_identity_matches;
+
+    #[test]
+    fn puuid_is_authoritative_when_available() {
+        assert_eq!(
+            shared_identity_matches("puuid-a", "Old Name#EUW", "puuid-a", "New Name", "EUW"),
+            Some(true)
+        );
+        assert_eq!(
+            shared_identity_matches("puuid-a", "Same#EUW", "puuid-b", "Same", "EUW"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn riot_id_is_case_insensitive_fallback() {
+        assert_eq!(
+            shared_identity_matches("", "Shared Account#EUW", "", "shared account", "euw"),
+            Some(true)
+        );
+        assert_eq!(
+            shared_identity_matches("", "Shared Account#EUW", "", "Personal", "EUW"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn unknown_identity_stays_queued() {
+        assert_eq!(shared_identity_matches("puuid-a", "", "", "", ""), None);
+        assert_eq!(shared_identity_matches("", "", "", "Personal", "EUW"), None);
+    }
 }

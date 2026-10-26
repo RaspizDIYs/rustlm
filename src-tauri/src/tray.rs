@@ -40,8 +40,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         }
     }
 
-    let login_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-        login_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+    let login_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = login_items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+        .collect();
     let login_submenu =
         Submenu::with_id_and_items(app, "login_submenu", "Войти", true, &login_refs)?;
 
@@ -49,13 +51,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let show_item = MenuItem::with_id(app, "show", "Показать", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
 
-    Menu::with_items(app, &[
-        &auto_accept_item,
-        &login_submenu,
-        &separator,
-        &show_item,
-        &quit_item,
-    ])
+    Menu::with_items(
+        app,
+        &[
+            &auto_accept_item,
+            &login_submenu,
+            &separator,
+            &show_item,
+            &quit_item,
+        ],
+    )
 }
 
 /// Create the system tray icon with menu. Called once during app setup.
@@ -110,7 +115,8 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<AppState>();
                 if let Err(e) =
-                    crate::commands::auto_accept::apply_auto_accept_enabled(&state, new_enabled).await
+                    crate::commands::auto_accept::apply_auto_accept_enabled(&state, new_enabled)
+                        .await
                 {
                     log::error!("[Tray] persist auto-accept: {}", e);
                 }

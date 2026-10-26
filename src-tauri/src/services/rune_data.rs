@@ -30,17 +30,80 @@ impl RuneDataService {
     fn stat_mods() -> Vec<Rune> {
         vec![
             // Row 1
-            Rune { id: 5008, key: "StatModsAdaptiveForceIcon".into(), name: "Adaptive Force".into(), icon: "perk-images/StatMods/StatModsAdaptiveForceIcon.png".into(), short_desc: "+9 Adaptive Force".into(), long_desc: String::new() },
-            Rune { id: 5005, key: "StatModsAttackSpeedIcon".into(), name: "Attack Speed".into(), icon: "perk-images/StatMods/StatModsAttackSpeedIcon.png".into(), short_desc: "+10% Attack Speed".into(), long_desc: String::new() },
-            Rune { id: 5007, key: "StatModsCDRScalingIcon".into(), name: "Ability Haste".into(), icon: "perk-images/StatMods/StatModsCDRScalingIcon.png".into(), short_desc: "+8 Ability Haste".into(), long_desc: String::new() },
+            Rune {
+                id: 5008,
+                key: "StatModsAdaptiveForceIcon".into(),
+                name: "Adaptive Force".into(),
+                icon: "perk-images/StatMods/StatModsAdaptiveForceIcon.png".into(),
+                short_desc: "+9 Adaptive Force".into(),
+                long_desc: String::new(),
+            },
+            Rune {
+                id: 5005,
+                key: "StatModsAttackSpeedIcon".into(),
+                name: "Attack Speed".into(),
+                icon: "perk-images/StatMods/StatModsAttackSpeedIcon.png".into(),
+                short_desc: "+10% Attack Speed".into(),
+                long_desc: String::new(),
+            },
+            Rune {
+                id: 5007,
+                key: "StatModsCDRScalingIcon".into(),
+                name: "Ability Haste".into(),
+                icon: "perk-images/StatMods/StatModsCDRScalingIcon.png".into(),
+                short_desc: "+8 Ability Haste".into(),
+                long_desc: String::new(),
+            },
             // Row 2
-            Rune { id: 5008, key: "StatModsAdaptiveForceIcon".into(), name: "Adaptive Force".into(), icon: "perk-images/StatMods/StatModsAdaptiveForceIcon.png".into(), short_desc: "+9 Adaptive Force".into(), long_desc: String::new() },
-            Rune { id: 5010, key: "StatModsMovementSpeedIcon".into(), name: "Move Speed".into(), icon: "perk-images/StatMods/StatModsMovementSpeedIcon.png".into(), short_desc: "+2% Move Speed".into(), long_desc: String::new() },
-            Rune { id: 5001, key: "StatModsHealthScalingIcon".into(), name: "Health Scaling".into(), icon: "perk-images/StatMods/StatModsHealthScalingIcon.png".into(), short_desc: "+10-180 Health (based on level)".into(), long_desc: String::new() },
+            Rune {
+                id: 5008,
+                key: "StatModsAdaptiveForceIcon".into(),
+                name: "Adaptive Force".into(),
+                icon: "perk-images/StatMods/StatModsAdaptiveForceIcon.png".into(),
+                short_desc: "+9 Adaptive Force".into(),
+                long_desc: String::new(),
+            },
+            Rune {
+                id: 5010,
+                key: "StatModsMovementSpeedIcon".into(),
+                name: "Move Speed".into(),
+                icon: "perk-images/StatMods/StatModsMovementSpeedIcon.png".into(),
+                short_desc: "+2% Move Speed".into(),
+                long_desc: String::new(),
+            },
+            Rune {
+                id: 5001,
+                key: "StatModsHealthScalingIcon".into(),
+                name: "Health Scaling".into(),
+                icon: "perk-images/StatMods/StatModsHealthScalingIcon.png".into(),
+                short_desc: "+10-180 Health (based on level)".into(),
+                long_desc: String::new(),
+            },
             // Row 3
-            Rune { id: 5011, key: "StatModsHealthPlusIcon".into(), name: "Health".into(), icon: "perk-images/StatMods/StatModsHealthPlusIcon.png".into(), short_desc: "+65 Health".into(), long_desc: String::new() },
-            Rune { id: 5013, key: "StatModsTenacityIcon".into(), name: "Tenacity".into(), icon: "perk-images/StatMods/StatModsTenacityIcon.png".into(), short_desc: "+10% Tenacity and Slow Resist".into(), long_desc: String::new() },
-            Rune { id: 5001, key: "StatModsHealthScalingIcon".into(), name: "Health Scaling".into(), icon: "perk-images/StatMods/StatModsHealthScalingIcon.png".into(), short_desc: "+10-180 Health (based on level)".into(), long_desc: String::new() },
+            Rune {
+                id: 5011,
+                key: "StatModsHealthPlusIcon".into(),
+                name: "Health".into(),
+                icon: "perk-images/StatMods/StatModsHealthPlusIcon.png".into(),
+                short_desc: "+65 Health".into(),
+                long_desc: String::new(),
+            },
+            Rune {
+                id: 5013,
+                key: "StatModsTenacityIcon".into(),
+                name: "Tenacity".into(),
+                icon: "perk-images/StatMods/StatModsTenacityIcon.png".into(),
+                short_desc: "+10% Tenacity and Slow Resist".into(),
+                long_desc: String::new(),
+            },
+            Rune {
+                id: 5001,
+                key: "StatModsHealthScalingIcon".into(),
+                name: "Health Scaling".into(),
+                icon: "perk-images/StatMods/StatModsHealthScalingIcon.png".into(),
+                short_desc: "+10-180 Health (based on level)".into(),
+                long_desc: String::new(),
+            },
         ]
     }
 
@@ -88,9 +151,21 @@ impl RuneDataService {
         let mut paths = Vec::new();
         for raw in raw_paths {
             let id = raw.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let key = raw.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let name = raw.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let icon = raw.get("icon").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let key = raw
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = raw
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let icon = raw
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             let mut slots = Vec::new();
             if let Some(slot_arr) = raw.get("slots").and_then(|s| s.as_array()) {
@@ -100,11 +175,31 @@ impl RuneDataService {
                         for rune_val in rune_arr {
                             runes.push(Rune {
                                 id: rune_val.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                                key: rune_val.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                name: rune_val.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                icon: rune_val.get("icon").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                short_desc: rune_val.get("shortDesc").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                long_desc: rune_val.get("longDesc").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                key: rune_val
+                                    .get("key")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                name: rune_val
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                icon: rune_val
+                                    .get("icon")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                short_desc: rune_val
+                                    .get("shortDesc")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                long_desc: rune_val
+                                    .get("longDesc")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
                             });
                         }
                     }
@@ -112,7 +207,13 @@ impl RuneDataService {
                 }
             }
 
-            paths.push(RunePath { id, key, name, icon, slots });
+            paths.push(RunePath {
+                id,
+                key,
+                name,
+                icon,
+                slots,
+            });
         }
 
         *self.cached_paths.write().await = Some(paths);
@@ -127,20 +228,32 @@ impl RuneDataService {
             }
         }
 
-        let raw: Vec<serde_json::Value> = self.client.get(CDRAGON_PERKS).send().await?.json().await?;
+        let raw: Vec<serde_json::Value> =
+            self.client.get(CDRAGON_PERKS).send().await?.json().await?;
         let mut map = HashMap::new();
         for perk in raw {
             let id = perk.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let name = perk.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let icon_path = perk.get("iconPath").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            map.insert(id, Rune {
+            let name = perk
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let icon_path = perk
+                .get("iconPath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            map.insert(
                 id,
-                key: String::new(),
-                name,
-                icon: icon_path,
-                short_desc: String::new(),
-                long_desc: String::new(),
-            });
+                Rune {
+                    id,
+                    key: String::new(),
+                    name,
+                    icon: icon_path,
+                    short_desc: String::new(),
+                    long_desc: String::new(),
+                },
+            );
         }
 
         *self.all_perks_by_id.write().await = Some(map);

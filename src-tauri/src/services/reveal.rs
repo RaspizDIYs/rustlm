@@ -144,18 +144,30 @@ impl RevealService {
     }
 
     pub async fn set_api_configuration(&self, api_key: &str, region: &str) {
-        *self.api_key.write().await = if api_key.is_empty() { None } else { Some(api_key.to_string()) };
+        *self.api_key.write().await = if api_key.is_empty() {
+            None
+        } else {
+            Some(api_key.to_string())
+        };
         *self.region.write().await = region.to_string();
-        let _ = self.settings.save_setting(REVEAL_API_KEY_SETTING, &api_key.to_string());
-        let _ = self.settings.save_setting(REVEAL_REGION_SETTING, &region.to_string());
+        let _ = self
+            .settings
+            .save_setting(REVEAL_API_KEY_SETTING, &api_key.to_string());
+        let _ = self
+            .settings
+            .save_setting(REVEAL_REGION_SETTING, &region.to_string());
         // Регион мог измениться — старые ранги к другому серверу не относятся.
         self.ranked_cache.lock().await.clear();
         self.match_cache.lock().await.clear();
     }
 
     pub async fn reload_from_settings(&self) {
-        let saved_key: String = self.settings.load_setting(REVEAL_API_KEY_SETTING, String::new());
-        let saved_region: String = self.settings.load_setting(REVEAL_REGION_SETTING, "euw1".to_string());
+        let saved_key: String = self
+            .settings
+            .load_setting(REVEAL_API_KEY_SETTING, String::new());
+        let saved_region: String = self
+            .settings
+            .load_setting(REVEAL_REGION_SETTING, "euw1".to_string());
         *self.api_key.write().await = if saved_key.is_empty() {
             None
         } else {
@@ -239,9 +251,8 @@ impl RevealService {
             Ok(value) => value,
             Err(_) => {
                 let mut snapshot = self.empty_snapshot(api_configured);
-                snapshot.note = Some(
-                    "Клиент вернул неожиданный ответ на запрос выбора чемпионов.".to_string(),
-                );
+                snapshot.note =
+                    Some("Клиент вернул неожиданный ответ на запрос выбора чемпионов.".to_string());
                 return Ok(snapshot);
             }
         };
@@ -284,8 +295,15 @@ impl RevealService {
         let mut allies: Vec<PlayerInfo> = Vec::new();
         for member in &my_team {
             allies.push(
-                self.build_player(member, 1, local_cell, &known, api_configured, &mut api_error)
-                    .await,
+                self.build_player(
+                    member,
+                    1,
+                    local_cell,
+                    &known,
+                    api_configured,
+                    &mut api_error,
+                )
+                .await,
             );
         }
         allies.sort_by_key(|player| player.cell_id);
@@ -298,8 +316,15 @@ impl RevealService {
         let mut enemies: Vec<PlayerInfo> = Vec::new();
         for member in &their_team {
             enemies.push(
-                self.build_player(member, 2, local_cell, &known, api_configured, &mut api_error)
-                    .await,
+                self.build_player(
+                    member,
+                    2,
+                    local_cell,
+                    &known,
+                    api_configured,
+                    &mut api_error,
+                )
+                .await,
             );
         }
         enemies.sort_by_key(|player| player.cell_id);
@@ -507,8 +532,8 @@ impl RevealService {
                 for conversation in conversations {
                     let id = json_str(conversation.get("id"));
                     let kind = json_str(conversation.get("type"));
-                    let is_champ_select = kind.eq_ignore_ascii_case("champSelect")
-                        || id.contains("champ-select");
+                    let is_champ_select =
+                        kind.eq_ignore_ascii_case("champSelect") || id.contains("champ-select");
                     if !id.is_empty() && is_champ_select && !rooms.contains(&id) {
                         rooms.push(id);
                     }
@@ -593,7 +618,9 @@ impl RevealService {
             }
         }
         if identity.summoner_id != 0
-            && (identity.level == 0 || identity.profile_icon_id == 0 || identity.game_name.is_empty())
+            && (identity.level == 0
+                || identity.profile_icon_id == 0
+                || identity.game_name.is_empty())
         {
             if let Some(summoner) = self.summoner_by_id(identity.summoner_id).await {
                 merge_identity(&mut identity, &summoner);
@@ -602,9 +629,7 @@ impl RevealService {
 
         // Последний и самый надёжный источник: PUUID → Riot ID через Riot API.
         // Работает, даже если клиент показал «Ally 1» и не отдал gameName.
-        if identity.game_name.is_empty()
-            && api_configured
-            && identity.puuid.len() >= MIN_PUUID_LEN
+        if identity.game_name.is_empty() && api_configured && identity.puuid.len() >= MIN_PUUID_LEN
         {
             if let Some((game_name, tag_line)) = self.account_name_by_puuid(&identity.puuid).await {
                 if identity.game_name.is_empty() {
@@ -705,7 +730,10 @@ impl RevealService {
 
         let mut info = RankedInfo::default();
         for entry in entries {
-            let queue = entry.get("queueType").and_then(|q| q.as_str()).unwrap_or("");
+            let queue = entry
+                .get("queueType")
+                .and_then(|q| q.as_str())
+                .unwrap_or("");
             if queue == "RANKED_SOLO_5x5" {
                 info.tier = entry
                     .get("tier")
@@ -1068,10 +1096,7 @@ fn regional_host_for_server(server: &str) -> &'static str {
 
 /// Ники из известных источников, которые не удалось привязать ни к одному
 /// слоту: бывает, когда клиент скрыл id, но чат ещё отдаёт имена.
-fn unmatched_identities(
-    known: &HashMap<String, Identity>,
-    allies: &[PlayerInfo],
-) -> Vec<String> {
+fn unmatched_identities(known: &HashMap<String, Identity>, allies: &[PlayerInfo]) -> Vec<String> {
     let ally_names: Vec<String> = allies
         .iter()
         .map(|player| player.summoner_name.to_lowercase())
@@ -1084,7 +1109,10 @@ fn unmatched_identities(
         if name.is_empty() {
             continue;
         }
-        if ally_names.iter().any(|known_name| known_name == &name.to_lowercase()) {
+        if ally_names
+            .iter()
+            .any(|known_name| known_name == &name.to_lowercase())
+        {
             continue;
         }
         let display = riot_id_of(identity);
@@ -1105,7 +1133,7 @@ fn account_name_from_json(value: &Value) -> Option<(String, String)> {
     Some((game_name, json_str(value.get("tagLine"))))
 }
 
-fn parse_match_summary(value: &Value, puuid: &str) -> Option<MatchSummary> {
+pub(crate) fn parse_match_summary(value: &Value, puuid: &str) -> Option<MatchSummary> {
     let info = value.get("info")?;
     let participants = info.get("participants")?.as_array()?;
     let me = participants
@@ -1448,17 +1476,23 @@ mod tests {
     #[test]
     fn unmatched_identities_skips_known_allies() {
         let mut known: HashMap<String, Identity> = HashMap::new();
-        insert_identity(&mut known, Identity {
-            game_name: "AllyKnown".to_string(),
-            summoner_id: 1,
-            ..Default::default()
-        });
-        insert_identity(&mut known, Identity {
-            game_name: "Mystery".to_string(),
-            tag_line: "RU1".to_string(),
-            summoner_id: 2,
-            ..Default::default()
-        });
+        insert_identity(
+            &mut known,
+            Identity {
+                game_name: "AllyKnown".to_string(),
+                summoner_id: 1,
+                ..Default::default()
+            },
+        );
+        insert_identity(
+            &mut known,
+            Identity {
+                game_name: "Mystery".to_string(),
+                tag_line: "RU1".to_string(),
+                summoner_id: 2,
+                ..Default::default()
+            },
+        );
 
         let allies = vec![PlayerInfo {
             summoner_name: "AllyKnown".to_string(),

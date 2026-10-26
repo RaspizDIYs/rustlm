@@ -1,6 +1,6 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
 
 use crate::services::accounts_storage::AccountsStorage;
 use crate::services::auto_accept::AutoAcceptService;
@@ -43,7 +43,10 @@ impl AppState {
         let data_dragon = Arc::new(DataDragonService::new());
         let rune_data = Arc::new(RuneDataService::new());
         let rune_pages = Arc::new(RunePagesStorage::new());
-        let auto_accept = Arc::new(AutoAcceptService::new(Arc::clone(&riot_client), Arc::clone(&rune_pages)));
+        let auto_accept = Arc::new(AutoAcceptService::new(
+            Arc::clone(&riot_client),
+            Arc::clone(&rune_pages),
+        ));
         let customization = Arc::new(CustomizationService::new(Arc::clone(&riot_client)));
         let reveal = Arc::new(RevealService::new(
             Arc::clone(&riot_client),

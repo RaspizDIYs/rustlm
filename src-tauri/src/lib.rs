@@ -134,6 +134,7 @@ pub fn run() {
             commands::auto_accept::set_automation_settings,
             commands::auto_accept::get_automation_settings,
             commands::login::login_to_account,
+            commands::login::login_to_shared_account,
             commands::login::cancel_login,
             commands::customization::set_profile_status,
             commands::customization::set_profile_availability,
@@ -160,6 +161,11 @@ pub fn run() {
             commands::goodluck::goodluck_get_profile_accounts,
             commands::goodluck::goodluck_import_profile_accounts,
             commands::goodluck::goodluck_refresh_profile,
+            commands::goodluck::goodluck_get_friends,
+            commands::goodluck::goodluck_get_shared_accounts,
+            commands::goodluck::goodluck_share_account,
+            commands::goodluck::goodluck_revoke_shared_account,
+            commands::goodluck::goodluck_process_shared_cleanups,
             commands::cloud_sync::cloud_sync,
             commands::cloud_sync::cloud_push,
             commands::cloud_sync::cloud_pull,
@@ -186,7 +192,11 @@ pub fn run() {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
-                    .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("rustlm".into()) }))
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::LogDir {
+                            file_name: Some("rustlm".into()),
+                        },
+                    ))
                     .build(),
             )?;
 
@@ -203,9 +213,24 @@ pub fn run() {
             });
 
             state.cloud_sync.set_app_handle(app.handle().clone());
-            state
-                .cloud_sync
-                .start_debounce_loop(&app.handle().clone());
+            state.cloud_sync.start_debounce_loop(&app.handle().clone());
+
+            let cleanup_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let st = cleanup_handle.state::<AppState>();
+                    if st.goodluck.is_connected() {
+                        match commands::goodluck::process_shared_account_cleanups(&st).await {
+                            Ok(completed) if completed > 0 => {
+                                let _ = cleanup_handle.emit("shared-accounts-changed", ());
+                            }
+                            Ok(_) => {}
+                            Err(e) => log::debug!("Shared account cleanup polling: {}", e),
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            });
 
             let gl_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -224,7 +249,9 @@ pub fn run() {
                             .filter(|a| !a.riot_id.trim().is_empty())
                             .map(|a| crate::models::goodluck::SyncAccountData {
                                 riot_id: a.riot_id,
-                                server: commands::goodluck::map_lm_server_for_goodluck_platform(&a.server),
+                                server: commands::goodluck::map_lm_server_for_goodluck_platform(
+                                    &a.server,
+                                ),
                                 rank: a.rank,
                                 summoner_name: a.summoner_name,
                             })

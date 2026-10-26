@@ -122,9 +122,7 @@ pub fn save_setting(
 }
 
 #[tauri::command]
-pub fn load_update_settings(
-    state: State<AppState>,
-) -> crate::models::settings::UpdateSettings {
+pub fn load_update_settings(state: State<AppState>) -> crate::models::settings::UpdateSettings {
     state.settings.load_update_settings()
 }
 

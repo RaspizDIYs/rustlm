@@ -2,8 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 
 use crate::error::AppError;
 use crate::models::account::{
@@ -57,10 +57,7 @@ impl AccountsStorage {
     pub fn save(&self, account: AccountRecord) -> Result<(), AppError> {
         let mut accounts = self.load_all();
 
-        if let Some(existing) = accounts
-            .iter_mut()
-            .find(|a| a.username == account.username)
-        {
+        if let Some(existing) = accounts.iter_mut().find(|a| a.username == account.username) {
             *existing = account;
         } else {
             accounts.push(account);
@@ -222,59 +219,55 @@ impl AccountsStorage {
         Ok(())
     }
 
-    pub fn import_accounts(
-        &self,
-        path: &str,
-        password: Option<&str>,
-    ) -> Result<usize, AppError> {
+    pub fn import_accounts(&self, path: &str, password: Option<&str>) -> Result<usize, AppError> {
         let content = fs::read_to_string(path)?;
 
-        let import_records: Vec<ExportAccountRecord> =
-            if let Ok(export_data) = serde_json::from_str::<EncryptedExportData>(&content) {
-                if export_data.version == 3 && !export_data.encrypted_accounts.is_empty() {
-                    // Encrypted export (v3)
-                    let pwd = password.ok_or_else(|| {
-                        AppError::Custom("Password required for encrypted import".to_string())
-                    })?;
-                    let iv = export_data.iv.ok_or_else(|| {
-                        AppError::Custom("Missing IV in export data".to_string())
-                    })?;
-                    let decrypted =
-                        aes_decrypt(&export_data.encrypted_accounts, &export_data.salt, &iv, pwd)?;
-                    serde_json::from_slice(&decrypted)?
-                } else if let Ok(records) = serde_json::from_str::<Vec<ExportAccountRecord>>(&content) {
-                    records
-                } else {
-                    return Err(AppError::Custom("Unknown export format".to_string()));
-                }
+        let import_records: Vec<ExportAccountRecord> = if let Ok(export_data) =
+            serde_json::from_str::<EncryptedExportData>(&content)
+        {
+            if export_data.version == 3 && !export_data.encrypted_accounts.is_empty() {
+                // Encrypted export (v3)
+                let pwd = password.ok_or_else(|| {
+                    AppError::Custom("Password required for encrypted import".to_string())
+                })?;
+                let iv = export_data
+                    .iv
+                    .ok_or_else(|| AppError::Custom("Missing IV in export data".to_string()))?;
+                let decrypted =
+                    aes_decrypt(&export_data.encrypted_accounts, &export_data.salt, &iv, pwd)?;
+                serde_json::from_slice(&decrypted)?
             } else if let Ok(records) = serde_json::from_str::<Vec<ExportAccountRecord>>(&content) {
-                // Plain export
                 records
-            } else if let Ok(legacy) =
-                serde_json::from_str::<Vec<LegacyExportAccountRecord>>(&content)
-            {
-                // Legacy v1
-                legacy
-                    .into_iter()
-                    .map(|l| ExportAccountRecord {
-                        username: l.username,
-                        password: l.password,
-                        note: String::new(),
-                        created_at: l.created_at,
-                        avatar_url: String::new(),
-                        summoner_name: String::new(),
-                        rank: String::new(),
-                        rank_display: String::new(),
-                        riot_id: String::new(),
-                        puuid: String::new(),
-                        rank_icon_url: String::new(),
-                        summoner_level: 0,
-                        pinned: false,
-                    })
-                    .collect()
             } else {
                 return Err(AppError::Custom("Unknown export format".to_string()));
-            };
+            }
+        } else if let Ok(records) = serde_json::from_str::<Vec<ExportAccountRecord>>(&content) {
+            // Plain export
+            records
+        } else if let Ok(legacy) = serde_json::from_str::<Vec<LegacyExportAccountRecord>>(&content)
+        {
+            // Legacy v1
+            legacy
+                .into_iter()
+                .map(|l| ExportAccountRecord {
+                    username: l.username,
+                    password: l.password,
+                    note: String::new(),
+                    created_at: l.created_at,
+                    avatar_url: String::new(),
+                    summoner_name: String::new(),
+                    rank: String::new(),
+                    rank_display: String::new(),
+                    riot_id: String::new(),
+                    puuid: String::new(),
+                    rank_icon_url: String::new(),
+                    summoner_level: 0,
+                    pinned: false,
+                })
+                .collect()
+        } else {
+            return Err(AppError::Custom("Unknown export format".to_string()));
+        };
 
         let mut accounts = self.load_all();
         let mut imported = 0;

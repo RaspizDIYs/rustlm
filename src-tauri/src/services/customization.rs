@@ -35,36 +35,41 @@ impl CustomizationService {
         let body = serde_json::json!({ "backgroundSkinId": background_skin_id }).to_string();
 
         // Try POST first
-        if let Ok(resp) = self.riot_client.lcu_post(
-            "/lol-summoner/v1/current-summoner/summoner-profile",
-            &body,
-        ).await {
+        if let Ok(resp) = self
+            .riot_client
+            .lcu_post("/lol-summoner/v1/current-summoner/summoner-profile", &body)
+            .await
+        {
             if !resp.contains("errorCode") {
                 return Ok(true);
             }
         }
 
         // Try PUT
-        if let Ok(resp) = self.riot_client.lcu_put(
-            "/lol-summoner/v1/current-summoner/summoner-profile",
-            &body,
-        ).await {
+        if let Ok(resp) = self
+            .riot_client
+            .lcu_put("/lol-summoner/v1/current-summoner/summoner-profile", &body)
+            .await
+        {
             if !resp.contains("errorCode") {
                 return Ok(true);
             }
         }
 
         // Try PATCH
-        let resp = self.riot_client.lcu_patch(
-            "/lol-summoner/v1/current-summoner/summoner-profile",
-            &body,
-        ).await?;
+        let resp = self
+            .riot_client
+            .lcu_patch("/lol-summoner/v1/current-summoner/summoner-profile", &body)
+            .await?;
 
         Ok(!resp.contains("errorCode"))
     }
 
     pub async fn get_challenges(&self) -> Result<serde_json::Value, AppError> {
-        let resp = self.riot_client.lcu_get("/lol-challenges/v1/challenges/local-player").await?;
+        let resp = self
+            .riot_client
+            .lcu_get("/lol-challenges/v1/challenges/local-player")
+            .await?;
         serde_json::from_str(&resp).map_err(|e| AppError::Json(e))
     }
 
@@ -76,12 +81,13 @@ impl CustomizationService {
         let body = serde_json::json!({
             "challengeIds": challenge_ids,
             "title": title_id
-        }).to_string();
+        })
+        .to_string();
 
-        let resp = self.riot_client.lcu_post(
-            "/lol-challenges/v1/update-player-preferences",
-            &body,
-        ).await?;
+        let resp = self
+            .riot_client
+            .lcu_post("/lol-challenges/v1/update-player-preferences", &body)
+            .await?;
 
         Ok(!resp.contains("errorCode"))
     }

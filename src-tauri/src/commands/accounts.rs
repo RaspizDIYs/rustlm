@@ -38,9 +38,10 @@ fn pick_account_index_for_lcu(
     }
     let r = info.riot_id.trim();
     if !r.is_empty() {
-        if let Some(i) = accounts.iter().position(|a| {
-            !a.riot_id.trim().is_empty() && a.riot_id.eq_ignore_ascii_case(r)
-        }) {
+        if let Some(i) = accounts
+            .iter()
+            .position(|a| !a.riot_id.trim().is_empty() && a.riot_id.eq_ignore_ascii_case(r))
+        {
             return Some(i);
         }
     }
@@ -113,8 +114,9 @@ pub async fn refresh_account_profile_from_lcu_inner(
         return Ok(LcuProfileRefreshResult {
             updated: false,
             matched_username: None,
-            message: "LCU не отвечает или нет данных призывателя (запусти клиент и войди в аккаунт)"
-                .to_string(),
+            message:
+                "LCU не отвечает или нет данных призывателя (запусти клиент и войди в аккаунт)"
+                    .to_string(),
         });
     };
 
@@ -332,11 +334,7 @@ pub fn export_accounts(
 ) -> Result<(), String> {
     state
         .accounts
-        .export_accounts(
-            path,
-            password,
-            selected_usernames.as_deref(),
-        )
+        .export_accounts(path, password, selected_usernames.as_deref())
         .map_err(|e| e.to_string())
 }
 

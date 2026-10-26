@@ -137,11 +137,7 @@ impl GoodLuckAuthService {
     }
 
     /// Handle the deep link callback: exchange auth code for tokens
-    pub async fn handle_callback(
-        &self,
-        code: &str,
-        state: &str,
-    ) -> Result<GoodLuckUser, AppError> {
+    pub async fn handle_callback(&self, code: &str, state: &str) -> Result<GoodLuckUser, AppError> {
         // Verify state and get code_verifier
         let code_verifier = {
             let mut pending = self.pending_flow.lock().unwrap();
@@ -184,7 +180,8 @@ impl GoodLuckAuthService {
             .await
             .map_err(|e| AppError::Custom(format!("Failed to parse auth response: {}", e)))?;
 
-        let mut user = auth_response.user
+        let mut user = auth_response
+            .user
             .ok_or_else(|| AppError::Custom("No user in auth response".to_string()))?;
 
         user.avatar_url = absolutize_goodluck_media_url(&user.avatar_url);
@@ -322,16 +319,19 @@ impl GoodLuckAuthService {
                     break;
                 }
 
-                result = Some(
-                    resp.json::<GoodLuckUser>()
-                        .await
-                        .map_err(|e| AppError::Custom(format!("Failed to parse profile: {}", e)))?
-                );
+                result =
+                    Some(resp.json::<GoodLuckUser>().await.map_err(|e| {
+                        AppError::Custom(format!("Failed to parse profile: {}", e))
+                    })?);
                 break;
             }
             match result {
                 Some(u) => u,
-                None => return Err(AppError::Custom(last_err.unwrap_or_else(|| "Profile refresh failed".to_string()))),
+                None => {
+                    return Err(AppError::Custom(
+                        last_err.unwrap_or_else(|| "Profile refresh failed".to_string()),
+                    ))
+                }
             }
         };
 
@@ -403,7 +403,8 @@ impl GoodLuckAuthService {
                 )));
             }
 
-            return resp.json()
+            return resp
+                .json()
                 .await
                 .map_err(|e| AppError::Custom(format!("Failed to parse sync response: {}", e)));
         }
@@ -567,9 +568,8 @@ impl GoodLuckAuthService {
         }
 
         fs::create_dir_all(self.profile_data_dir()).ok();
-        fs::write(self.avatar_bytes_path(), &bytes).map_err(|e| {
-            AppError::Custom(format!("Failed to write avatar cache: {}", e))
-        })?;
+        fs::write(self.avatar_bytes_path(), &bytes)
+            .map_err(|e| AppError::Custom(format!("Failed to write avatar cache: {}", e)))?;
 
         let meta = GoodluckAvatarMeta {
             url: url.to_string(),
@@ -738,7 +738,11 @@ impl GoodLuckAuthService {
 
         for attempt in 0..2u8 {
             let token = self.get_token().await?;
-            let mut req = self.http_client.put(&url).bearer_auth(&token).json(&profile);
+            let mut req = self
+                .http_client
+                .put(&url)
+                .bearer_auth(&token)
+                .json(&profile);
             if let Some(session) = totp_session {
                 req = req.header("X-TOTP-Session", session);
             }
@@ -773,7 +777,9 @@ impl GoodLuckAuthService {
             });
         }
 
-        Err(AppError::Custom("Cloud upload failed after retry".to_string()))
+        Err(AppError::Custom(
+            "Cloud upload failed after retry".to_string(),
+        ))
     }
 
     pub async fn download_cloud_accounts(
@@ -834,10 +840,7 @@ impl GoodLuckAuthService {
         ))
     }
 
-    pub async fn delete_cloud_accounts(
-        &self,
-        totp_session: Option<&str>,
-    ) -> Result<(), AppError> {
+    pub async fn delete_cloud_accounts(&self, totp_session: Option<&str>) -> Result<(), AppError> {
         let token = self.get_token().await?;
         let mut req = self
             .http_client
@@ -896,7 +899,10 @@ impl GoodLuckAuthService {
             .map_err(|e| AppError::Custom(format!("Failed to parse TOTP setup: {}", e)))
     }
 
-    pub async fn totp_confirm(&self, code: &str) -> Result<crate::models::account::TotpVerifyResponse, AppError> {
+    pub async fn totp_confirm(
+        &self,
+        code: &str,
+    ) -> Result<crate::models::account::TotpVerifyResponse, AppError> {
         let token = self.get_token().await?;
         let resp = self
             .http_client
@@ -963,10 +969,10 @@ impl GoodLuckAuthService {
             )));
         }
 
-        let data: crate::models::account::TotpStatusResponse =
-            resp.json().await.map_err(|e| {
-                AppError::Custom(format!("Failed to parse TOTP status: {}", e))
-            })?;
+        let data: crate::models::account::TotpStatusResponse = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Custom(format!("Failed to parse TOTP status: {}", e)))?;
         Ok(data.enabled)
     }
 
@@ -993,16 +999,179 @@ impl GoodLuckAuthService {
             )));
         }
 
-        let data: crate::models::account::TotpValidateResponse =
-            resp.json().await.map_err(|e| {
-                AppError::Custom(format!("Failed to parse TOTP validate: {}", e))
-            })?;
+        let data: crate::models::account::TotpValidateResponse = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Custom(format!("Failed to parse TOTP validate: {}", e)))?;
 
         Ok(crate::models::account::TotpSession {
             token: data.session_token,
-            expires_at: chrono::Utc::now()
-                + chrono::Duration::seconds(data.expires_in as i64),
+            expires_at: chrono::Utc::now() + chrono::Duration::seconds(data.expires_in as i64),
         })
+    }
+}
+
+impl GoodLuckAuthService {
+    async fn api_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        totp_session: Option<&str>,
+    ) -> Result<reqwest::Response, AppError> {
+        let url = format!("{}{}", GOODLUCK_API_BASE, path);
+        for attempt in 0..2u8 {
+            let token = self.get_token().await?;
+            let mut request = self
+                .http_client
+                .request(method.clone(), &url)
+                .bearer_auth(token);
+            if let Some(session) = totp_session {
+                request = request.header("X-TOTP-Session", session);
+            }
+            if let Some(ref json) = body {
+                request = request.json(json);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|e| AppError::Custom(format!("GoodLuck request failed: {}", e)))?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
+                self.refresh_token().await?;
+                continue;
+            }
+            if !response.status().is_success() {
+                let status = response.status();
+                let raw = response.text().await.unwrap_or_default();
+                let message = serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_owned))
+                    .unwrap_or(raw);
+                return Err(AppError::Custom(format!(
+                    "GoodLuck {}: {}",
+                    status, message
+                )));
+            }
+            return Ok(response);
+        }
+        Err(AppError::Custom(
+            "GoodLuck authorization failed".to_string(),
+        ))
+    }
+
+    async fn api_json<T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        totp_session: Option<&str>,
+    ) -> Result<T, AppError> {
+        self.api_request(method, path, body, totp_session)
+            .await?
+            .json::<T>()
+            .await
+            .map_err(|e| AppError::Custom(format!("Failed to parse GoodLuck response: {}", e)))
+    }
+
+    pub async fn get_friends(
+        &self,
+    ) -> Result<Vec<crate::models::goodluck::GoodLuckFriend>, AppError> {
+        self.api_json(reqwest::Method::GET, "/friends", None, None)
+            .await
+    }
+
+    pub async fn get_shared_accounts(
+        &self,
+    ) -> Result<crate::models::goodluck::SharedAccountsResponse, AppError> {
+        self.api_json(
+            reqwest::Method::GET,
+            "/auth/rustlm/shared-accounts",
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn share_account(
+        &self,
+        request: &crate::models::goodluck::ShareAccountRequest,
+        totp_session: Option<&str>,
+    ) -> Result<crate::models::goodluck::SharedAccount, AppError> {
+        let body = serde_json::to_value(request)
+            .map_err(|e| AppError::Custom(format!("Failed to encode share request: {}", e)))?;
+        self.api_json(
+            reqwest::Method::POST,
+            "/auth/rustlm/shared-accounts",
+            Some(body),
+            totp_session,
+        )
+        .await
+    }
+
+    pub async fn revoke_shared_account(&self, id: &str) -> Result<(), AppError> {
+        self.api_request(
+            reqwest::Method::DELETE,
+            &format!("/auth/rustlm/shared-accounts/{}", urlencode(id)),
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_shared_credentials(
+        &self,
+        id: &str,
+        totp_session: Option<&str>,
+    ) -> Result<crate::models::goodluck::SharedAccountCredentials, AppError> {
+        self.api_json(
+            reqwest::Method::GET,
+            &format!("/auth/rustlm/shared-accounts/{}/credentials", urlencode(id)),
+            None,
+            totp_session,
+        )
+        .await
+    }
+
+    pub async fn get_shared_cleanups(
+        &self,
+    ) -> Result<Vec<crate::models::goodluck::SharedAccount>, AppError> {
+        self.api_json(
+            reqwest::Method::GET,
+            "/auth/rustlm/shared-account-cleanups",
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn complete_shared_cleanup(&self, id: &str) -> Result<(), AppError> {
+        self.api_request(
+            reqwest::Method::POST,
+            &format!(
+                "/auth/rustlm/shared-accounts/{}/cleanup-complete",
+                urlencode(id)
+            ),
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_recent_matches(
+        &self,
+        puuid: &str,
+        server: &str,
+        count: u32,
+    ) -> Result<Vec<serde_json::Value>, AppError> {
+        let path = format!(
+            "/auth/rustlm/recent-matches?puuid={}&server={}&count={}",
+            urlencode(puuid),
+            urlencode(server),
+            count.clamp(1, 20)
+        );
+        self.api_json(reqwest::Method::GET, &path, None, None).await
     }
 }
 

@@ -147,7 +147,9 @@ impl RiotClientService {
                 .open(path)
                 .ok()?;
             let mut content = String::new();
-            std::io::BufReader::new(file).read_to_string(&mut content).ok()?;
+            std::io::BufReader::new(file)
+                .read_to_string(&mut content)
+                .ok()?;
             Self::parse_lockfile_content(&content)
         }
         #[cfg(not(windows))]
@@ -177,7 +179,14 @@ impl RiotClientService {
     fn find_league_lockfile_from_process() -> Option<PathBuf> {
         use std::os::windows::process::CommandExt;
         let output = Command::new("wmic")
-            .args(["process", "where", "name='LeagueClientUx.exe'", "get", "ExecutablePath", "/VALUE"])
+            .args([
+                "process",
+                "where",
+                "name='LeagueClientUx.exe'",
+                "get",
+                "ExecutablePath",
+                "/VALUE",
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .ok()?;
@@ -210,8 +219,8 @@ impl RiotClientService {
     /// Find all PIDs of a process by name using CreateToolhelp32Snapshot.
     #[cfg(windows)]
     fn find_process_pids(name: &str) -> Vec<u32> {
-        use windows::Win32::System::Diagnostics::ToolHelp::*;
         use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::*;
 
         let mut pids = Vec::new();
         unsafe {
@@ -226,7 +235,11 @@ impl RiotClientService {
             if Process32FirstW(snapshot, &mut entry).is_ok() {
                 loop {
                     let exe_name = String::from_utf16_lossy(
-                        &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                        &entry.szExeFile[..entry
+                            .szExeFile
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(entry.szExeFile.len())],
                     );
                     if exe_name.eq_ignore_ascii_case(name) {
                         pids.push(entry.th32ProcessID);
@@ -260,8 +273,10 @@ impl RiotClientService {
     fn is_pid_alive(pid: u32) -> bool {
         #[cfg(windows)]
         {
-            use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
             use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::System::Threading::{
+                OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            };
             unsafe {
                 match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
                     Ok(handle) => {
@@ -281,8 +296,7 @@ impl RiotClientService {
 
     /// Check specifically if the Riot Client UI process is running.
     pub fn is_riot_client_ui_running() -> bool {
-        Self::is_process_running("Riot Client.exe")
-            || Self::is_process_running("RiotClientUx.exe")
+        Self::is_process_running("Riot Client.exe") || Self::is_process_running("RiotClientUx.exe")
     }
 
     pub fn is_riot_client_services_running() -> bool {
@@ -321,7 +335,13 @@ impl RiotClientService {
                 .output();
             if include_riot_client {
                 // Kill the entire process tree for each RC process
-                for name in &["Riot Client.exe", "RiotClientUx.exe", "RiotClientServices.exe", "RiotClientCrashHandler.exe", "RiotClientUxRender.exe"] {
+                for name in &[
+                    "Riot Client.exe",
+                    "RiotClientUx.exe",
+                    "RiotClientServices.exe",
+                    "RiotClientCrashHandler.exe",
+                    "RiotClientUxRender.exe",
+                ] {
                     let _ = Command::new("taskkill")
                         .args(["/F", "/T", "/IM", name])
                         .creation_flags(CREATE_NO_WINDOW)
@@ -350,7 +370,9 @@ impl RiotClientService {
                             Command::new(&path)
                                 .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                                 .spawn()
-                                .map_err(|e| AppError::Custom(format!("Failed to start RC: {}", e)))?;
+                                .map_err(|e| {
+                                    AppError::Custom(format!("Failed to start RC: {}", e))
+                                })?;
                             return Ok(());
                         }
                     }
@@ -376,7 +398,9 @@ impl RiotClientService {
             Err(AppError::Custom("Riot Client not found".to_string()))
         }
         #[cfg(not(windows))]
-        Err(AppError::Custom("Not supported on this platform".to_string()))
+        Err(AppError::Custom(
+            "Not supported on this platform".to_string(),
+        ))
     }
 
     // --- LCU HTTP API ---
@@ -463,7 +487,10 @@ impl RiotClientService {
             .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
 
         if !status.is_success() {
-            return Err(AppError::Custom(format!("LCU POST {} returned {}: {}", endpoint, status, text)));
+            return Err(AppError::Custom(format!(
+                "LCU POST {} returned {}: {}",
+                endpoint, status, text
+            )));
         }
 
         Ok(text)
@@ -548,10 +575,18 @@ impl RiotClientService {
             .await
             .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
 
-        log::info!("[LCU] PATCH {} -> {} resp={}", endpoint, status, &text[..text.len().min(300)]);
+        log::info!(
+            "[LCU] PATCH {} -> {} resp={}",
+            endpoint,
+            status,
+            &text[..text.len().min(300)]
+        );
 
         if !status.is_success() {
-            return Err(AppError::Custom(format!("LCU PATCH {} returned {}: {}", endpoint, status, text)));
+            return Err(AppError::Custom(format!(
+                "LCU PATCH {} returned {}: {}",
+                endpoint, status, text
+            )));
         }
 
         Ok(text)
@@ -559,12 +594,8 @@ impl RiotClientService {
 
     // --- Account Info ---
 
-    pub async fn get_account_info(
-        &self,
-    ) -> Result<Option<AccountInfo>, AppError> {
-        let summoner_json = self
-            .lcu_get("/lol-summoner/v1/current-summoner")
-            .await?;
+    pub async fn get_account_info(&self) -> Result<Option<AccountInfo>, AppError> {
+        let summoner_json = self.lcu_get("/lol-summoner/v1/current-summoner").await?;
 
         let summoner: serde_json::Value = serde_json::from_str(&summoner_json)
             .map_err(|_| AppError::Custom("Failed to parse summoner".to_string()))?;
@@ -597,37 +628,22 @@ impl RiotClientService {
             .lcu_get("/lol-ranked/v1/current-ranked-stats")
             .await
             .unwrap_or_default();
-        let ranked: serde_json::Value =
-            serde_json::from_str(&ranked_json).unwrap_or_default();
+        let ranked: serde_json::Value = serde_json::from_str(&ranked_json).unwrap_or_default();
 
         let mut rank = String::from("Unranked");
         let mut rank_display = String::new();
 
         if let Some(queues) = ranked.get("queues").and_then(|v| v.as_array()) {
-            let preferred_queues = [
-                "RANKED_SOLO_5x5",
-                "RANKED_FLEX_SR",
-                "RANKED_TFT",
-            ];
+            let preferred_queues = ["RANKED_SOLO_5x5", "RANKED_FLEX_SR", "RANKED_TFT"];
             for queue_type in &preferred_queues {
-                if let Some(queue) = queues.iter().find(|q| {
-                    q.get("queueType")
-                        .and_then(|v| v.as_str())
-                        == Some(queue_type)
-                }) {
-                    let tier = queue
-                        .get("tier")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let division = queue
-                        .get("division")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                if let Some(queue) = queues
+                    .iter()
+                    .find(|q| q.get("queueType").and_then(|v| v.as_str()) == Some(queue_type))
+                {
+                    let tier = queue.get("tier").and_then(|v| v.as_str()).unwrap_or("");
+                    let division = queue.get("division").and_then(|v| v.as_str()).unwrap_or("");
 
-                    if !tier.is_empty()
-                        && tier != "NONE"
-                        && tier != "NA"
-                    {
+                    if !tier.is_empty() && tier != "NONE" && tier != "NA" {
                         rank = format!("{} {}", tier, division);
                         let lp = queue
                             .get("leaguePoints")
@@ -678,7 +694,10 @@ impl RiotClientService {
 
     pub async fn detect_server(&self) -> Result<String, AppError> {
         // Try /riotclient/region-locale first (works via RC API)
-        if let Ok(resp) = self.rc_request(reqwest::Method::GET, "/riotclient/region-locale", None).await {
+        if let Ok(resp) = self
+            .rc_request(reqwest::Method::GET, "/riotclient/region-locale", None)
+            .await
+        {
             let val: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
             if let Some(region) = val.get("region").and_then(|v| v.as_str()) {
                 if !region.is_empty() {
@@ -705,7 +724,9 @@ impl RiotClientService {
 
     /// Riot login username for the current RC/LCU session (email / login name), if exposed by APIs.
     pub async fn get_authorized_riot_login_username(&self) -> Result<String, AppError> {
-        fn pick_username_fields(obj: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+        fn pick_username_fields(
+            obj: &serde_json::Map<String, serde_json::Value>,
+        ) -> Option<String> {
             for key in ["username", "loginUsername", "accountName", "userName"] {
                 if let Some(s) = obj.get(key).and_then(|x| x.as_str()) {
                     let t = s.trim();
@@ -780,9 +801,7 @@ impl RiotClientService {
     }
 
     async fn get_riot_id(&self) -> Result<String, AppError> {
-        let resp = self
-            .lcu_get("/lol-chat/v1/me")
-            .await?;
+        let resp = self.lcu_get("/lol-chat/v1/me").await?;
         let me: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
         let game_name = me.get("gameName").and_then(|v| v.as_str()).unwrap_or("");
         let tag_line = me.get("gameTag").and_then(|v| v.as_str()).unwrap_or("");
@@ -852,8 +871,16 @@ impl RiotClientService {
             .map_err(|e| AppError::Custom(format!("RC response read failed: {}", e)))?;
 
         if log_errors && !status.is_success() {
-            eprintln!("[RC_API] {} → {} | {}", endpoint, status.as_u16(),
-                if text.len() > 200 { &text[..200] } else { &text });
+            eprintln!(
+                "[RC_API] {} → {} | {}",
+                endpoint,
+                status.as_u16(),
+                if text.len() > 200 {
+                    &text[..200]
+                } else {
+                    &text
+                }
+            );
         }
 
         Ok(text)
@@ -861,9 +888,19 @@ impl RiotClientService {
 
     /// Logout current account via RC API.
     pub async fn logout_via_rc(&self) -> Result<(), AppError> {
-        let _ = self.rc_request_silent(reqwest::Method::DELETE, "/rso-auth/v2/authorizations", None).await;
-        let _ = self.rc_request_silent(reqwest::Method::DELETE, "/rso-auth/v1/authorization", None).await;
-        let _ = self.rc_request_silent(reqwest::Method::PUT, "/rso-auth/v1/session/credentials", Some(r#"{"username":"","password":"","persistLogin":false}"#)).await;
+        let _ = self
+            .rc_request_silent(reqwest::Method::DELETE, "/rso-auth/v2/authorizations", None)
+            .await;
+        let _ = self
+            .rc_request_silent(reqwest::Method::DELETE, "/rso-auth/v1/authorization", None)
+            .await;
+        let _ = self
+            .rc_request_silent(
+                reqwest::Method::PUT,
+                "/rso-auth/v1/session/credentials",
+                Some(r#"{"username":"","password":"","persistLogin":false}"#),
+            )
+            .await;
         Ok(())
     }
 
@@ -889,10 +926,19 @@ impl RiotClientService {
                 if json.get("authorized").and_then(|v| v.as_bool()) == Some(true) {
                     return true;
                 }
-                if json.get("subject").and_then(|v| v.as_str()).map(|s| !s.is_empty()) == Some(true) {
+                if json
+                    .get("subject")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    == Some(true)
+                {
                     return true;
                 }
-                if json.get("currentAccountId").and_then(|v| v.as_u64()).is_some() {
+                if json
+                    .get("currentAccountId")
+                    .and_then(|v| v.as_u64())
+                    .is_some()
+                {
                     return true;
                 }
             }
@@ -904,7 +950,10 @@ impl RiotClientService {
     pub async fn init_rso_session(&self) -> Result<(), AppError> {
         let body = r#"{"clientId":"riot-client","trustLevels":["always_trusted"]}"#;
         for ep in ["/rso-auth/v2/authorizations", "/rso-auth/v1/authorization"] {
-            match self.rc_request_silent(reqwest::Method::POST, ep, Some(body)).await {
+            match self
+                .rc_request_silent(reqwest::Method::POST, ep, Some(body))
+                .await
+            {
                 Ok(resp) => {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
                         if json.get("errorCode").is_none() {
@@ -917,7 +966,9 @@ impl RiotClientService {
                 Err(_) => continue,
             }
         }
-        Err(AppError::Custom("RSO session init failed on all endpoints".to_string()))
+        Err(AppError::Custom(
+            "RSO session init failed on all endpoints".to_string(),
+        ))
     }
 
     /// Login via RC API using credentials (no UIA needed).
@@ -948,19 +999,29 @@ impl RiotClientService {
 
             // 2FA required
             if resp_type == "multifactor" {
-                let method = json.get("multifactor")
+                let method = json
+                    .get("multifactor")
                     .and_then(|m| m.get("method"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                return Err(AppError::Custom(format!("Login requires 2FA (method: {})", method)));
+                return Err(AppError::Custom(format!(
+                    "Login requires 2FA (method: {})",
+                    method
+                )));
             }
 
             // Error
             if let Some(error) = json.get("error").and_then(|v| v.as_str()) {
-                return Err(AppError::Custom(format!("Login failed: {} (type: {})", error, resp_type)));
+                return Err(AppError::Custom(format!(
+                    "Login failed: {} (type: {})",
+                    error, resp_type
+                )));
             }
             if let Some(error_code) = json.get("errorCode").and_then(|v| v.as_str()) {
-                let message = json.get("message").and_then(|v| v.as_str()).unwrap_or(error_code);
+                let message = json
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(error_code);
                 return Err(AppError::Custom(format!("Login failed: {}", message)));
             }
 
@@ -983,7 +1044,10 @@ impl RiotClientService {
         let body = r#"{"productId":"league_of_legends","patchlineId":"live"}"#;
 
         for endpoint in &endpoints {
-            match self.rc_request(reqwest::Method::POST, endpoint, Some(body)).await {
+            match self
+                .rc_request(reqwest::Method::POST, endpoint, Some(body))
+                .await
+            {
                 Ok(r) if !r.contains("errorCode") => return Ok(()),
                 Ok(r) if r.contains("eula_not_accepted") => {
                     // EULA not accepted — RC will show prompt, League cannot launch yet.
@@ -1015,19 +1079,28 @@ impl RiotClientService {
                         let path = PathBuf::from(rc_path);
                         if path.exists() {
                             Command::new(&path)
-                                .args(["--launch-product=league_of_legends", "--launch-patchline=live"])
+                                .args([
+                                    "--launch-product=league_of_legends",
+                                    "--launch-patchline=live",
+                                ])
                                 .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
                                 .spawn()
-                                .map_err(|e| AppError::Custom(format!("Failed to launch League: {}", e)))?;
+                                .map_err(|e| {
+                                    AppError::Custom(format!("Failed to launch League: {}", e))
+                                })?;
                             return Ok(());
                         }
                     }
                 }
             }
-            Err(AppError::Custom("Could not launch League of Legends".to_string()))
+            Err(AppError::Custom(
+                "Could not launch League of Legends".to_string(),
+            ))
         }
         #[cfg(not(windows))]
-        Err(AppError::Custom("Not supported on this platform".to_string()))
+        Err(AppError::Custom(
+            "Not supported on this platform".to_string(),
+        ))
     }
 
     // --- Wait Helpers ---
@@ -1061,8 +1134,13 @@ impl RiotClientService {
     pub async fn wait_for_rc_api_ready(&self, timeout: Duration) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            match self.rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None).await {
-                Ok(resp) if !resp.contains("RESOURCE_NOT_FOUND") && !resp.is_empty() => return true,
+            match self
+                .rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None)
+                .await
+            {
+                Ok(resp) if !resp.contains("RESOURCE_NOT_FOUND") && !resp.is_empty() => {
+                    return true
+                }
                 _ => {}
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1107,7 +1185,10 @@ impl RiotClientService {
         }
 
         // Lockfile exists — check if API is responsive via lightweight endpoint
-        match self.rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None).await {
+        match self
+            .rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None)
+            .await
+        {
             Ok(resp) if !resp.contains("RESOURCE_NOT_FOUND") && !resp.is_empty() => {
                 if self.is_rso_authorized().await {
                     return LoginPhase::Authenticated;
@@ -1201,5 +1282,6 @@ fn platform_to_server(platform: &str) -> String {
         "TW2" | "TW" => "TW",
         "VN2" | "VN" => "VN",
         _ => return upper,
-    }.to_string()
+    }
+    .to_string()
 }

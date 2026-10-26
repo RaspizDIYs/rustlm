@@ -590,6 +590,65 @@ export async function goodluckImportProfileAccounts(
   return invoke<GlImportResult>("goodluck_import_profile_accounts", { riotAccounts });
 }
 
+export interface GoodLuckFriend {
+  id: string;
+  display_name: string;
+  avatar_url?: string | null;
+}
+
+export interface SharedAccount {
+  id: string;
+  owner_user_id: string;
+  owner_display_name: string;
+  owner_avatar_url?: string | null;
+  recipient_user_id: string;
+  recipient_display_name: string;
+  username: string;
+  riot_id: string;
+  puuid: string;
+  server: string;
+  created_at: string;
+  expires_at?: string | null;
+  last_accessed_at?: string | null;
+  access_count: number;
+  cleanup_completed_at?: string | null;
+}
+
+export interface SharedAccountsResponse {
+  available_to_me: SharedAccount[];
+  shared_by_me: SharedAccount[];
+}
+
+export interface ShareAccountRequest {
+  recipientUserId: string;
+  username: string;
+  password: string;
+  riotId: string;
+  puuid: string;
+  server: string;
+  expiresAt: string | null;
+}
+
+export async function goodluckGetFriends(): Promise<GoodLuckFriend[]> {
+  return invoke("goodluck_get_friends");
+}
+
+export async function goodluckGetSharedAccounts(): Promise<SharedAccountsResponse> {
+  return invoke("goodluck_get_shared_accounts");
+}
+
+export async function goodluckShareAccount(request: ShareAccountRequest): Promise<SharedAccount> {
+  return invoke("goodluck_share_account", { request });
+}
+
+export async function goodluckRevokeSharedAccount(id: string): Promise<void> {
+  return invoke("goodluck_revoke_shared_account", { id });
+}
+
+export async function loginToSharedAccount(id: string): Promise<void> {
+  return invoke("login_to_shared_account", { id });
+}
+
 // Greet (test)
 export async function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });

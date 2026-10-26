@@ -84,10 +84,7 @@ impl DataDragonService {
         }
 
         let version = self.get_latest_version().await?;
-        let url = format!(
-            "{}/cdn/{}/data/ru_RU/champion.json",
-            DDRAGON_BASE, version
-        );
+        let url = format!("{}/cdn/{}/data/ru_RU/champion.json", DDRAGON_BASE, version);
         let resp: serde_json::Value = self.client.get(&url).send().await?.json().await?;
 
         let mut result = HashMap::new();
@@ -131,10 +128,7 @@ impl DataDragonService {
         let mut cache = self.champion_info_cache.write().await;
         for handle in handles {
             if let Ok(Ok((display_name, english_name, val))) = handle.await {
-                if let Some(champ_data) = val
-                    .get("data")
-                    .and_then(|d| d.get(&english_name))
-                {
+                if let Some(champ_data) = val.get("data").and_then(|d| d.get(&english_name)) {
                     let id = champ_data
                         .get("key")
                         .and_then(|k| k.as_str())
@@ -160,8 +154,11 @@ impl DataDragonService {
                     if let Some(skin_arr) = champ_data.get("skins").and_then(|s| s.as_array()) {
                         let champ_id: i32 = id.parse().unwrap_or(0);
                         for skin in skin_arr {
-                            let skin_num = skin.get("num").and_then(|n| n.as_i64()).unwrap_or(0) as i32;
-                            let skin_id = skin.get("id").and_then(|n| n.as_str())
+                            let skin_num =
+                                skin.get("num").and_then(|n| n.as_i64()).unwrap_or(0) as i32;
+                            let skin_id = skin
+                                .get("id")
+                                .and_then(|n| n.as_str())
                                 .and_then(|s| s.parse::<i32>().ok())
                                 .unwrap_or(0);
                             let skin_name = skin
@@ -279,10 +276,7 @@ impl DataDragonService {
         }
 
         let version = self.get_latest_version().await?;
-        let url = format!(
-            "{}/cdn/{}/data/ru_RU/summoner.json",
-            DDRAGON_BASE, version
-        );
+        let url = format!("{}/cdn/{}/data/ru_RU/summoner.json", DDRAGON_BASE, version);
         let resp: serde_json::Value = self.client.get(&url).send().await?.json().await?;
 
         let mut result = HashMap::new();
@@ -325,10 +319,7 @@ impl DataDragonService {
         } else {
             &english
         };
-        format!(
-            "{}/cdn/{}/img/champion/{}.png",
-            DDRAGON_BASE, version, name
-        )
+        format!("{}/cdn/{}/img/champion/{}.png", DDRAGON_BASE, version, name)
     }
 
     pub async fn get_summoner_spell_image_url(&self, spell_name: &str) -> String {

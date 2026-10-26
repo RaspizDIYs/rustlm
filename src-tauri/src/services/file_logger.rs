@@ -52,10 +52,7 @@ impl FileLogger {
         let truncated = response
             .map(|r| if r.len() > 100 { &r[..100] } else { r })
             .unwrap_or("");
-        let msg = format!(
-            "🌐 {} {} → {} {}",
-            method, url, status_code, truncated
-        );
+        let msg = format!("🌐 {} {} → {} {}", method, url, status_code, truncated);
         self.write_log("HTTP", &msg);
     }
 
