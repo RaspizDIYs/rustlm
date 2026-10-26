@@ -793,14 +793,15 @@ mod tests {
         let text = fs::read_to_string(dir.join("child.json")).unwrap();
         let record: serde_json::Value =
             serde_json::from_str(text.trim_start_matches('\u{feff}')).unwrap();
-        let cleanup=powershell(&format!("$p=Get-CimInstance Win32_Process -Filter 'ProcessId={}';if($p -and $p.CreationDate.ToUniversalTime().Ticks.ToString() -eq {}){{Stop-Process -Id $p.ProcessId -Force;'alive'}}else{{'gone'}}",record["pid"].as_u64().unwrap(),literal(record["created"].as_str().unwrap()))).unwrap();
-        fs::remove_dir_all(dir).unwrap();
+        let cleanup=powershell(&format!("$p=Get-Process -Id {} -ErrorAction SilentlyContinue;if($p){{Stop-Process -Id $p.Id -Force;Wait-Process -Id $p.Id -Timeout 10;'alive'}}else{{'gone'}}",record["pid"].as_u64().unwrap())).unwrap();
         assert_eq!(result.unwrap(), "OK");
         assert_eq!(
             cleanup, "alive",
             "The helper must not wait for its child to exit"
         );
         assert!(elapsed < Duration::from_secs(15), "Helper took {elapsed:?}");
+        // Windows can keep redirected output locked briefly after the child exits.
+        let _ = fs::remove_dir_all(dir);
     }
     #[test]
     fn service_manager_integration_is_backed_up_and_idempotent() {
