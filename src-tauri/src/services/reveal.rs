@@ -764,9 +764,10 @@ impl RevealService {
         server: &str,
         count: u32,
     ) -> Result<Vec<MatchSummary>, AppError> {
-        if puuid.len() < MIN_PUUID_LEN {
+        if !crate::models::account::is_valid_puuid(puuid) {
             return Err(AppError::Custom(
-                "У аккаунта нет PUUID — обнови профиль из клиента и попробуй снова.".to_string(),
+                "У аккаунта нет корректного PUUID — обнови профиль «Из клиента» и попробуй снова."
+                    .to_string(),
             ));
         }
 

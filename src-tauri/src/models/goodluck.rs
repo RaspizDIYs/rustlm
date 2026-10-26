@@ -101,10 +101,17 @@ pub struct SyncAccountData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoodLuckFriend {
     pub id: String,
+    #[serde(default)]
+    pub username: String,
     #[serde(alias = "displayName")]
     pub display_name: String,
     #[serde(default, alias = "avatarUrl")]
     pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GoodLuckUserSearchResponse {
+    pub users: Vec<GoodLuckFriend>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

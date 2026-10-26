@@ -28,7 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff, ChevronDown, Share2, ShieldOff } from "lucide-react";
+import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff, ChevronDown, Share2, ShieldOff, UserPlus } from "lucide-react";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import type { AccountRecord, ClientConnectivityStatus, GoodLuckFriend, GoodLuckRiotAccount, MatchSummary, SharedAccount, SharedAccountsResponse } from "@/lib/tauri";
 import { championIconUrl, formatTimeAgo, positionLabel } from "@/lib/lol-assets";
@@ -40,6 +40,7 @@ const RANK_ORDER: Record<string, number> = {
   EMERALD: 6, DIAMOND: 7, MASTER: 8, GRANDMASTER: 9, CHALLENGER: 10,
 };
 const DIVISION_ORDER: Record<string, number> = { IV: 1, III: 2, II: 3, I: 4 };
+const hasValidPuuid = (value: string) => /^[A-Za-z0-9_-]{78}$/.test(value);
 
 function rankToNumber(rankDisplay: string): number {
   if (!rankDisplay) return 0;
@@ -135,6 +136,12 @@ export default function AccountsPage() {
   const [sharePassword, setSharePassword] = useState("");
   const [shareSaving, setShareSaving] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
+  const [friendSearchOpen, setFriendSearchOpen] = useState(false);
+  const [friendQuery, setFriendQuery] = useState("");
+  const [friendResults, setFriendResults] = useState<GoodLuckFriend[]>([]);
+  const [friendSearchLoading, setFriendSearchLoading] = useState(false);
+  const [friendRequestSending, setFriendRequestSending] = useState<string | null>(null);
+  const [friendNotice, setFriendNotice] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const accountsRequest = useRef(0);
 
@@ -203,10 +210,10 @@ export default function AccountsPage() {
       }
       setExpandedAccount(key);
       if (matchesByAccount[key] || matchesLoading === key) return;
-      if (!account.Puuid) {
+      if (!hasValidPuuid(account.Puuid)) {
         setMatchesError((prev) => ({
           ...prev,
-          [key]: "У аккаунта нет PUUID — обнови профиль кнопкой «Из клиента».",
+          [key]: "У аккаунта нет корректного PUUID — обнови профиль кнопкой «Из клиента».",
         }));
         return;
       }
@@ -569,12 +576,55 @@ export default function AccountsPage() {
     setShareFriend("");
     setShareDuration("168");
     setShareError(null);
+    setFriendQuery("");
+    setFriendResults([]);
+    setFriendNotice(null);
+    setFriendSearchOpen(false);
     try {
       const { goodluckGetFriends } = await import("@/lib/tauri");
-      setFriends(await goodluckGetFriends());
+      const data = await goodluckGetFriends();
+      setFriends(data);
+      setFriendSearchOpen(data.length === 0);
     } catch (e) {
       setFriends([]);
+      setFriendSearchOpen(true);
       setShareError(`Не удалось загрузить друзей GoodLuck: ${String(e)}`);
+    }
+  };
+
+  const handleFriendSearch = async () => {
+    if (friendQuery.trim().length < 2) {
+      setShareError("Введи минимум 2 символа для поиска.");
+      return;
+    }
+    setFriendSearchLoading(true);
+    setShareError(null);
+    setFriendNotice(null);
+    try {
+      const { goodluckSearchUsers } = await import("@/lib/tauri");
+      const data = await goodluckSearchUsers(friendQuery.trim());
+      setFriendResults(data.filter((user) => !friends.some((friend) => friend.id === user.id)));
+      if (data.length === 0) setFriendNotice("Пользователи не найдены.");
+    } catch (e) {
+      setShareError(`Не удалось найти пользователя: ${String(e)}`);
+    } finally {
+      setFriendSearchLoading(false);
+    }
+  };
+
+  const handleSendFriendRequest = async (user: GoodLuckFriend) => {
+    setFriendRequestSending(user.id);
+    setShareError(null);
+    setFriendNotice(null);
+    try {
+      const { goodluckSendFriendRequest } = await import("@/lib/tauri");
+      await goodluckSendFriendRequest(user.id);
+      setFriendResults((prev) => prev.filter((item) => item.id !== user.id));
+      setFriendNotice(`Заявка отправлена: ${user.display_name}. Друг появится в списке после её принятия.`);
+    } catch (e) {
+      setShareError(`Не удалось отправить заявку: ${String(e)}`);
+    } finally {
+      setFriendRequestSending(null);
     }
   };
 
@@ -1381,15 +1431,58 @@ export default function AccountsPage() {
               <div className="font-medium">{shareTarget?.RiotId}</div>
               <div className="text-xs text-muted-foreground">{shareTarget?.Server}</div>
             </div>
-            <div className="space-y-1">
+            <div className="space-y-2">
               <label className="text-sm text-muted-foreground">Друг GoodLuck</label>
-              <Select value={shareFriend} onValueChange={(value) => value && setShareFriend(value)}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга" /></SelectTrigger>
-                <SelectContent>
-                  {friends.map((friend) => <SelectItem key={friend.id} value={friend.id}>{friend.display_name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              {friends.length === 0 && <p className="text-xs text-muted-foreground">Сначала добавь получателя в друзья на GoodLuck.</p>}
+              {friends.length > 0 ? (
+                <>
+                  <Select value={shareFriend} onValueChange={(value) => value && setShareFriend(value)}>
+                    <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга" /></SelectTrigger>
+                    <SelectContent>
+                      {friends.map((friend) => <SelectItem key={friend.id} value={friend.id}>{friend.display_name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs" onClick={() => setFriendSearchOpen((open) => !open)}>
+                    <UserPlus className="mr-1 h-3.5 w-3.5" /> Добавить друга
+                  </Button>
+                </>
+              ) : (
+                <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                  Друзей пока нет. Найди пользователя и отправь заявку — открывать пустой список не нужно.
+                </p>
+              )}
+              {friendSearchOpen && (
+                <div className="space-y-2 rounded-md border p-3">
+                  <div className="flex gap-2">
+                    <Input
+                      value={friendQuery}
+                      onChange={(event) => setFriendQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void handleFriendSearch();
+                        }
+                      }}
+                      placeholder="Ник или имя на GoodLuck"
+                      autoComplete="off"
+                    />
+                    <Button type="button" variant="outline" onClick={() => void handleFriendSearch()} disabled={friendSearchLoading || friendQuery.trim().length < 2}>
+                      {friendSearchLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Найти"}
+                    </Button>
+                  </div>
+                  {friendResults.map((user) => (
+                    <div key={user.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">{user.display_name}</div>
+                        {user.username && <div className="truncate text-xs text-muted-foreground">@{user.username}</div>}
+                      </div>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void handleSendFriendRequest(user)} disabled={friendRequestSending !== null}>
+                        {friendRequestSending === user.id ? <Loader2 className="h-4 w-4 animate-spin" /> : "Добавить"}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {friendNotice && <p className="text-xs text-muted-foreground">{friendNotice}</p>}
             </div>
             <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Срок доступа</label>

@@ -212,6 +212,34 @@ pub async fn goodluck_get_friends(
 }
 
 #[tauri::command]
+pub async fn goodluck_search_users(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::goodluck::GoodLuckFriend>, AppError> {
+    let query = query.trim();
+    if query.chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    state.goodluck.search_users(query).await
+}
+
+#[tauri::command]
+pub async fn goodluck_send_friend_request(
+    addressee_user_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if addressee_user_id.trim().is_empty() {
+        return Err(AppError::Custom(
+            "Не выбран пользователь GoodLuck".to_string(),
+        ));
+    }
+    state
+        .goodluck
+        .send_friend_request(addressee_user_id.trim())
+        .await
+}
+
+#[tauri::command]
 pub async fn goodluck_get_shared_accounts(
     state: State<'_, AppState>,
 ) -> Result<crate::models::goodluck::SharedAccountsResponse, AppError> {
@@ -228,6 +256,11 @@ pub async fn goodluck_share_account(
     state: State<'_, AppState>,
 ) -> Result<crate::models::goodluck::SharedAccount, AppError> {
     request.server = map_lm_server_for_goodluck_platform(&request.server);
+    request.puuid = request.puuid.trim().to_string();
+    if !crate::models::account::is_valid_puuid(&request.puuid) {
+        // PUUID is optional for sharing; Riot ID remains the cleanup fallback.
+        request.puuid.clear();
+    }
     let session = state.cloud_sync.get_valid_totp_session_public();
     state
         .goodluck

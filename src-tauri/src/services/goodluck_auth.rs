@@ -1080,6 +1080,28 @@ impl GoodLuckAuthService {
             .await
     }
 
+    pub async fn search_users(
+        &self,
+        query: &str,
+    ) -> Result<Vec<crate::models::goodluck::GoodLuckFriend>, AppError> {
+        let path = format!("/user/search?q={}&limit=20", urlencode(query.trim()));
+        let response: crate::models::goodluck::GoodLuckUserSearchResponse = self
+            .api_json(reqwest::Method::GET, &path, None, None)
+            .await?;
+        Ok(response.users)
+    }
+
+    pub async fn send_friend_request(&self, addressee_user_id: &str) -> Result<(), AppError> {
+        self.api_request(
+            reqwest::Method::POST,
+            "/friends/request",
+            Some(serde_json::json!({ "addresseeUserId": addressee_user_id })),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_shared_accounts(
         &self,
     ) -> Result<crate::models::goodluck::SharedAccountsResponse, AppError> {
@@ -1165,6 +1187,11 @@ impl GoodLuckAuthService {
         server: &str,
         count: u32,
     ) -> Result<Vec<serde_json::Value>, AppError> {
+        if !crate::models::account::is_valid_puuid(puuid) {
+            return Err(AppError::Custom(
+                "У аккаунта нет корректного PUUID — обнови профиль «Из клиента».".to_string(),
+            ));
+        }
         let path = format!(
             "/auth/rustlm/recent-matches?puuid={}&server={}&count={}",
             urlencode(puuid),

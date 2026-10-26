@@ -3,6 +3,15 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Real Riot PUUIDs are 78-character base64url strings. In particular, this
+/// rejects locally generated placeholders before they reach Riot or GoodLuck.
+pub fn is_valid_puuid(puuid: &str) -> bool {
+    puuid.len() == 78
+        && puuid
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AccountRecord {
@@ -271,4 +280,20 @@ pub struct TotpValidateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TotpStatusResponse {
     pub enabled: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_valid_puuid;
+
+    #[test]
+    fn puuid_requires_the_exact_riot_format() {
+        assert!(is_valid_puuid(&"a".repeat(78)));
+        assert!(is_valid_puuid(&format!("{}_-", "A1".repeat(38))));
+        assert!(!is_valid_puuid(""));
+        assert!(!is_valid_puuid("rustlm-0123456789abcdef0123456789abcdef"));
+        assert!(!is_valid_puuid(&"a".repeat(77)));
+        assert!(!is_valid_puuid(&"a".repeat(79)));
+        assert!(!is_valid_puuid(&format!("{}!", "a".repeat(77))));
+    }
 }

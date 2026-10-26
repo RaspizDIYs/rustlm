@@ -186,6 +186,8 @@ pub fn run() {
             commands::goodluck::goodluck_import_profile_accounts,
             commands::goodluck::goodluck_refresh_profile,
             commands::goodluck::goodluck_get_friends,
+            commands::goodluck::goodluck_search_users,
+            commands::goodluck::goodluck_send_friend_request,
             commands::goodluck::goodluck_get_shared_accounts,
             commands::goodluck::goodluck_share_account,
             commands::goodluck::goodluck_revoke_shared_account,
