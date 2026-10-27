@@ -63,6 +63,12 @@ impl CloudSyncService {
     }
 
     pub fn get_status(&self) -> SyncStatus {
+        let Some(user) = self.goodluck.get_user() else {
+            return SyncStatus::Disconnected;
+        };
+        if !super::vault::path(&user.user_id).exists() {
+            return SyncStatus::Idle;
+        }
         self.sync_status.lock().unwrap().clone()
     }
 
@@ -328,8 +334,8 @@ impl CloudSyncService {
             .clone()
             .unwrap_or_else(|| serde_json::json!({"accounts":{}}));
         let merged = match mode {
-            "local" => local.clone(),
-            "remote" => document.clone(),
+            "local" => super::vault::merge_with_choice(&base, &local, &document, Some(true))?,
+            "remote" => super::vault::merge_with_choice(&base, &local, &document, Some(false))?,
             _ => super::vault::merge(&base, &local, &document)?,
         };
         if merged != document || revision.is_none() {
@@ -359,6 +365,15 @@ impl CloudSyncService {
         Ok(())
     }
     async fn push_inner(&self) -> Result<(), AppError> {
+        if let Some(user) = self.goodluck.get_user() {
+            if !super::vault::path(&user.user_id).exists() {
+                self.set_status(SyncStatus::Idle);
+                return Ok(());
+            }
+        } else {
+            self.set_status(SyncStatus::Disconnected);
+            return Ok(());
+        }
         self.set_status(SyncStatus::Syncing);
         let result = self.vault_cycle("merge").await;
         if let Err(ref e) = result {

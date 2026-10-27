@@ -73,6 +73,8 @@ pub struct Report {
     pub context: RunContext,
     pub dns: Vec<DnsResult>,
     pub probes: Vec<Probe>,
+    #[serde(default)]
+    pub service_domains: Vec<String>,
     pub cancelled: bool,
     pub path: String,
     #[serde(default)]
@@ -102,6 +104,18 @@ fn domains() -> BTreeSet<String> {
         .filter(|s| valid_domain(s))
         .map(str::to_owned)
         .collect()
+}
+fn infrastructure_domain(domain: &str) -> bool {
+    [
+        ".pacloudflare.com",
+        ".akamai.net",
+        ".akamaiedge.net",
+        ".edgekey.net",
+        ".edgesuite.net",
+        ".cdn.cloudflare.net",
+    ]
+    .iter()
+    .any(|suffix| domain.ends_with(suffix))
 }
 fn valid_domain(s: &str) -> bool {
     s.len() <= 253
@@ -346,6 +360,10 @@ pub async fn diagnose<F: Fn(Progress) + Send + Sync>(
         context,
         dns: vec![],
         probes: vec![],
+        service_domains: domains()
+            .into_iter()
+            .filter(|d| !infrastructure_domain(d))
+            .collect(),
         cancelled: false,
         path: path.to_string_lossy().into(),
         discovery_limited: false,
@@ -401,6 +419,9 @@ pub async fn diagnose<F: Fn(Progress) + Send + Sync>(
     }
     let mut endpoints = BTreeSet::new();
     for dns in &report.dns {
+        if !report.service_domains.contains(&dns.domain) {
+            continue;
+        }
         for &ip in &dns.addresses {
             if !public_ip(ip) {
                 continue;
@@ -1189,6 +1210,16 @@ pub fn history(root: &Path) -> Result<Vec<Report>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn routing_aliases_are_dns_evidence_not_standalone_https_services() {
+        assert!(super::infrastructure_domain("opaque.pacloudflare.com"));
+        assert!(super::infrastructure_domain(
+            "auth.riotgames.com.cdn.cloudflare.net"
+        ));
+        assert!(!super::infrastructure_domain("auth.riotgames.com"));
+        assert!(!super::infrastructure_domain("lolstore-a.akamaihd.net"));
+    }
+
     use super::*;
     #[test]
     fn external_backups_profiles_and_legacy_migration_preserve_original_files() {

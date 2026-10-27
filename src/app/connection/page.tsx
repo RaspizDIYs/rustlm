@@ -1,4 +1,6 @@
 "use client";
+import Link from "next/link";
+import {networkSummary,noIpv6Route,infrastructureDomain} from "@/lib/network-summary";
 import { RepairError } from "@/components/repair-error";
 
 import { useEffect, useRef, useState } from "react";
@@ -21,7 +23,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { NetworkHosts } from "@/components/network-hosts";
 import {
   Select,
@@ -189,6 +190,7 @@ export default function ConnectionPage() {
       }
     });
   const report = reports.find((r) => r.id === selected);
+  const summary = report ? networkSummary(report) : null;
   const before = reports.find((r) => r.id === comparison);
   const diff = report && before ? compareReports(before, report) : null;
   const probes =
@@ -213,16 +215,27 @@ export default function ConnectionPage() {
           Подключение к League of Legends
         </h1>
         <p className="text-xs text-muted-foreground">
-          Проверьте адреса Riot, настройте свой Zapret и сравните результат на
-          этом ПК и подключении.
+          Здесь объясняем сетевой замер. Для обычной настройки откройте мастер — он сам выполнит шаги.
         </p>
       </header>
+      <Link href="/repair-tools" className="w-fit rounded border bg-primary px-3 py-1 text-xs text-primary-foreground">Открыть мастер восстановления</Link>
+      {summary && <Card size="sm"><CardHeader><CardTitle>Что показал замер</CardTitle></CardHeader><CardContent className="space-y-2 text-xs">
+        <p>{summary.responding} сервисов отвечают; {summary.restricted} отвечают с ограничением доступа; {summary.needsCheck.length} требуют дополнительной проверки.</p>
+        <p className="text-muted-foreground">Считаем сервисы, а не отдельные IP: недоступный запасной адрес не означает поломку всего сервиса. Ответ 403/404 или Cloudflare — отдельный результат, не повод автоматически менять DNS.</p>
+        {summary.ipv6Unavailable>0&&<p>IPv6 недоступен на этом ПК: {summary.ipv6Unavailable} проб исключены из оценки, когда есть проверка IPv4. Включать IPv6 ради исправления League не требуется.</p>}
+        {summary.infrastructure>0&&<p>Служебные DNS-узлы CDN ({summary.infrastructure}) показаны только в подробностях: они направляют трафик, но не обязаны открываться как сайты.</p>}
+        {summary.brokenSystemDns.length>0?<p>У {summary.brokenSystemDns.length} имён системный DNS не вернул адрес, а другие DNS вернули. Мастер проверит рабочий HTTPS и при подтверждении предложит исправление hosts.</p>:<p>Подтверждённой разницы между системным и внешними DNS не найдено. Добавлять весь каталог в hosts не нужно.</p>}
+        {summary.unresolved.length>0&&<p>У {summary.unresolved.length} имён нет адресов во всех проверенных DNS. По этому замеру нельзя отличить неиспользуемое имя от временного сбоя; такие адреса в hosts не подставляются.</p>}
+        {summary.needsCheck.length>0&&<details><summary className="cursor-pointer">Какие сервисы требуют проверки</summary><ul className="mt-1 list-inside list-disc break-all">{summary.needsCheck.map(g=><li key={g.name}>{g.name}</li>)}</ul><p>Один сбой не доказывает, что игра не запускается. Повторите замер; если игра работает, принудительная перенастройка не требуется.</p></details>}
+        <p className="text-muted-foreground">Это сетевой замер, а не подтверждение входа, матча или голосового чата.{report?.cancelled?" Проверка прервана: результаты неполные.":""}</p>
+      </CardContent></Card>}
       {error && <RepairError error={error} />}
       {notice && (
         <p role="status" className="text-xs">
           {notice}
         </p>
       )}
+      <details><summary className="cursor-pointer text-xs text-muted-foreground">Ручные настройки и подготовка замера</summary><div className="mt-2 flex flex-col gap-2">
       <Card size="sm">
         <CardHeader>
           <CardTitle>1. Укажите подключение и стратегию</CardTitle>
@@ -399,9 +412,7 @@ export default function ConnectionPage() {
         <CardHeader>
           <CardTitle>3. Подготовьте изменения</CardTitle>
           <CardDescription>
-            Профиль Riot использует параметры выбранной стратегии и идёт перед
-            её общими исключениями. Системные hosts, DNS адаптера и брандмауэр
-            автоматически не меняются.
+            Здесь меняется список Riot и параметры выбранного Zapret: это помогает при фильтрации трафика, даже если DNS работает. Основной мастер отдельно исправляет hosts только при подтверждённой ошибке DNS и проверенном рабочем HTTPS. Вручную добавить проверенные адреса можно ниже; DNS адаптера и брандмауэр этот шаг не меняет.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
@@ -444,12 +455,12 @@ export default function ConnectionPage() {
           </p>
         </CardContent>
       </Card>
+      </div></details>
       <Card size="sm">
         <CardHeader>
-          <CardTitle>4. Сравните результаты</CardTitle>
+          <CardTitle>Сохранённые проверки</CardTitle>
           <CardDescription>
-            Сопоставляются только одинаковые домен, IP и порт. Изменившиеся
-            DNS-адреса не считаются улучшением или ухудшением.
+            Выберите дату проверки. Сравнение и все отдельные IP доступны при необходимости.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
@@ -466,7 +477,7 @@ export default function ConnectionPage() {
                   aria-labelledby="network-result"
                   className="w-full"
                 >
-                  <SelectValue placeholder="Замеров пока нет" />
+                  <SelectValue>{report ? new Date(report.created_at).toLocaleString("ru-RU") : "Замеров пока нет"}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
@@ -532,32 +543,16 @@ export default function ConnectionPage() {
           {report && (
             <>
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="secondary">
-                  DNS без адресов: {dnsFailures.length}
-                </Badge>
-                <Badge variant="secondary">
-                  TCP: {report.probes.filter((p) => p.tcp).length}
-                </Badge>
-                <Badge variant="secondary">
-                  TLS: {report.probes.filter((p) => p.tls).length}
-                </Badge>
-                <Badge variant="outline">
-                  Cloudflare:{" "}
-                  {
-                    report.probes.filter(
-                      (p) => p.classification === "cloudflare_block",
-                    ).length
-                  }
-                </Badge>
                 <Button
                   variant="outline"
                   size="xs"
                   onClick={() => exportReport(report)}
                 >
                   <Download data-icon="inline-start" />
-                  Экспорт JSON
+                  Сохранить отчёт для разработчика
                 </Button>
               </div>
+              <details><summary className="cursor-pointer text-xs">Технические подробности · {report.probes.length} отдельных проб</summary>
               <p className="break-all text-xs text-muted-foreground">
                 {report.path}
               </p>
@@ -605,12 +600,11 @@ export default function ConnectionPage() {
                           </div>
                         </TableCell>
                         <TableCell>
-                          {p.tcp ? "Да" : "Нет"} / {p.tls ? "Да" : "Нет"}
+                          {noIpv6Route(p) ? "IPv6 недоступен" : `${p.tcp ? "Да" : "Нет"} / ${p.tls ? "Да" : "Нет"}`}
                         </TableCell>
                         <TableCell className="max-w-sm whitespace-normal">
                           <div>
-                            {classificationLabels[p.classification] ??
-                              p.classification}
+                            {noIpv6Route(p) ? "Нет маршрута IPv6 с этого ПК" : infrastructureDomain(p.domain) ? "Служебный DNS-узел; прямой HTTPS не обязателен" : classificationLabels[p.classification] ?? p.classification}
                             {p.http ? ` · ${p.http}` : ""}
                           </div>
                           <p className="break-words text-xs text-muted-foreground">
@@ -623,6 +617,7 @@ export default function ConnectionPage() {
                   </TableBody>
                 </Table>
               </div>
+              </details>
             </>
           )}
         </CardContent>

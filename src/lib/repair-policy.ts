@@ -1,6 +1,6 @@
 import type { NetworkReport, Pin } from "./network";
 
-function critical(domain: string, port: number, region: string) {
+export function critical(domain: string, port: number, region: string) {
   const server = region === "RU" ? "ru" : region === "EUW" ? "euw1" : "eun1";
   if (domain.endsWith(".chat.si.riotgames.com"))
     return (

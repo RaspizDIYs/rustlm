@@ -97,6 +97,14 @@ pub fn open(user: &str, key: &str, envelope: &Envelope) -> Result<Value, AppErro
 }
 // Missing entries are deletions. Conflicting changes never silently overwrite another PC.
 pub fn merge(base: &Value, local: &Value, remote: &Value) -> Result<Value, AppError> {
+    merge_with_choice(base, local, remote, None)
+}
+pub fn merge_with_choice(
+    base: &Value,
+    local: &Value,
+    remote: &Value,
+    prefer_local: Option<bool>,
+) -> Result<Value, AppError> {
     if local == remote {
         return Ok(local.clone());
     }
@@ -111,10 +119,11 @@ pub fn merge(base: &Value, local: &Value, remote: &Value) -> Result<Value, AppEr
             b.keys().chain(l.keys()).chain(r.keys()).collect();
         let mut result = serde_json::Map::new();
         for key in keys {
-            let value = merge(
+            let value = merge_with_choice(
                 b.get(key).unwrap_or(&Value::Null),
                 l.get(key).unwrap_or(&Value::Null),
                 r.get(key).unwrap_or(&Value::Null),
+                prefer_local,
             )?;
             if !value.is_null() {
                 result.insert(key.clone(), value);
@@ -122,12 +131,38 @@ pub fn merge(base: &Value, local: &Value, remote: &Value) -> Result<Value, AppEr
         }
         return Ok(Value::Object(result));
     }
-    Err(AppError::Custom("SYNC_CONFLICT: оба ПК изменили одну запись; выберите «Сохранить этот ПК» или «Взять из облака» в настройках".into()))
+    if let Some(local_wins) = prefer_local {
+        return Ok(if local_wins {
+            local.clone()
+        } else {
+            remote.clone()
+        });
+    }
+    Err(AppError::Custom("SYNC_CONFLICT: оба ПК изменили одну запись; выберите данные для совпавших записей в настройках".into()))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn first_join_and_conflict_choice_keep_accounts_unique_to_either_pc() {
+        let base = json!({"accounts":{}});
+        let local = json!({"accounts":{"home":{"password":"home"},"shared":{"password":"new"}}});
+        let remote = json!({"accounts":{"work":{"password":"work"},"shared":{"password":"old"}}});
+        assert!(merge(&base, &local, &remote).is_err());
+        let chosen = merge_with_choice(&base, &local, &remote, Some(true)).unwrap();
+        assert_eq!(chosen["accounts"].as_object().unwrap().len(), 3);
+        assert_eq!(chosen["accounts"]["shared"]["password"], "new");
+        assert_eq!(
+            merge(
+                &base,
+                &json!({"accounts":{"home":1}}),
+                &json!({"accounts":{"work":2}})
+            )
+            .unwrap(),
+            json!({"accounts":{"home":1,"work":2}})
+        );
+    }
     #[test]
     fn authenticated_cipher_rejects_wrong_user_key_and_tampering() {
         let key = new_key();

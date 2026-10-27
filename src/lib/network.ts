@@ -39,6 +39,7 @@ export interface NetworkReport {
   context: RunContext;
   dns: DnsResult[];
   probes: Probe[];
+  service_domains?: string[];
   cancelled: boolean;
   path: string;
   discovery_limited: boolean;

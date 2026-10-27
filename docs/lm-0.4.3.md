@@ -6,7 +6,7 @@ Sign into the same GoodLuck profile on both PCs. On the first PC, open Settings 
 
 AES-256-GCM encrypts the account document on the client with user/protocol associated data and a fresh random nonce. The key, baseline and pending rotation key are stored under Windows DPAPI separately from synchronised settings. There is no plaintext upload fallback. Existing cloud-only records migrate; local records take precedence on initial migration. Previous server backups may still contain legacy plaintext data: client migration cannot erase those backups.
 
-Synchronization performs a three-way merge against the last encrypted local baseline. Deletions propagate; conflicting edits require choosing this PC or cloud in Settings. The server uses an atomic compare-and-update revision; old clients cannot overwrite an encrypted vault. A missing/deleted vault never silently clears local accounts. Corrupt local storage cannot be uploaded as an empty document. Synchronisation runs after changes and every 30 seconds while connected.
+Synchronization performs a three-way merge against the last encrypted local baseline. Deletions propagate; conflicting edits require choosing this PC or cloud only for overlapping records in Settings; accounts unique to either PC survive either choice. The server uses an atomic compare-and-update revision; old clients cannot overwrite an encrypted vault. A missing/deleted vault never silently clears local accounts. Corrupt local storage cannot be uploaded as an empty document. Synchronisation runs after changes and every 30 seconds while connected.
 
 A recovery code grants full access to the vault. Changing the key disconnects other PCs from future synchronization; their existing local copies remain. Reconnect them using the new saved code. This is not remote erasure or a hardware security boundary against a compromised PC. Account sharing with friends uses its separate existing transport and is not covered by the vault encryption claim.
 
@@ -23,3 +23,9 @@ WebSocket accepts on ready-check events with a slow polling fallback. Polling us
 ## Validation limits
 
 Tests cover authenticated encryption rejection, merge conflicts/deletions, safe migration, stale/corrupt storage, UIA name restrictions, verified mutual rosters, legacy downgrade prevention and PostgreSQL concurrent writes using real migrations. Real play, two physical PCs and live UIA acceptance still require user-side checks. No account vault was created or migrated for the user during development.
+
+## Simplified diagnostics and settings
+
+The vault panel has two primary actions; conflict choices appear only on a real conflict, while disconnect/rotation/deletion live under Advanced. A missing vault is a neutral not-connected state, not a background error. This panel replaces the duplicate cloud card next to GoodLuck integration.
+
+Diagnostics summarises service reachability instead of counting every IP failure. Unsupported IPv6 routes and CDN routing names do not become game service failures; DNS-only names stay unconfirmed rather than being called obsolete or essential. Raw probes and manual controls are collapsed. CDN aliases remain in DNS discovery and Zapret lists but are not tested as standalone HTTPS services; normal service probes retain their original host/SNI. Hosts changes still require proven system DNS failure plus a verified HTTPS endpoint.

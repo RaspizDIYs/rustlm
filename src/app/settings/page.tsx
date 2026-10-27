@@ -375,7 +375,6 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <VaultPanel authorize={runCloudSyncAfterTotpIfNeeded} />
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
@@ -494,127 +493,10 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {glUser && (
-          <Card>
-            <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-4">
-              <CardTitle className="text-base flex items-center gap-2">
-                <Cloud className="h-4 w-4" />
-                Облачное хранилище
-              </CardTitle>
-              <WithTooltip
-                label="Облако синхронизируется автоматически после входа в аккаунт и при изменениях. Ручная синхронизация — кнопками ниже."
-                side="left"
-              >
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-foreground -mt-0.5 shrink-0 rounded-md p-1 outline-offset-2"
-                  aria-label="Как работает синхронизация с облаком"
-                >
-                  <Info className="h-4 w-4" aria-hidden />
-                </button>
-              </WithTooltip>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="text-sm">
-                  Статус:{" "}
-                  <span className={
-                    cloudSyncStatus.type === "Success" ? "text-green-500" :
-                    cloudSyncStatus.type === "Error" ? "text-destructive" :
-                    cloudSyncStatus.type === "Syncing" ? "text-yellow-500" :
-                    "text-muted-foreground"
-                  }>
-                    {cloudSyncStatus.type === "Success" ? "Синхронизировано" :
-                     cloudSyncStatus.type === "Error" && cloudSyncStatus.message === "totp_required" ? "Нужен код 2FA" :
-                     cloudSyncStatus.type === "Error" && cloudSyncStatus.message === "goodluck_reauth" ? "Войдите в GoodLuck снова" :
-                     cloudSyncStatus.type === "Error" ? `Ошибка: ${cloudSyncStatus.message}` :
-                     cloudSyncStatus.type === "Syncing" ? "Синхронизация..." :
-                     cloudSyncStatus.type === "Idle" ? "Готово" :
-                     "Не подключено"}
-                  </span>
-                </div>
-              </div>
-              {"lastSynced" in cloudSyncStatus && cloudSyncStatus.type === "Success" && (
-                <p className="text-xs text-muted-foreground">
-                  Последняя синхронизация: {new Date(cloudSyncStatus.lastSynced).toLocaleString()}
-                </p>
-              )}
-              {glUser && needsCloudTotp && (
-                <p className="text-xs text-amber-600 dark:text-amber-500">
-                  Нужен код из Authenticator для облака (~1 ч). Окно ввода откроется само при истечении сессии; вручную — «Код для облака» или иконка облака в сайдбаре.
-                </p>
-              )}
-              <div className="flex flex-wrap items-center gap-2">
-                <WithTooltip label="Полная синхронизация с облаком (отправка и загрузка)">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9"
-                    disabled={cloudSyncing}
-                    aria-label="Синхронизировать с облаком"
-                    onClick={async () => {
-                      await runCloudSyncAfterTotpIfNeeded(async () => {
-                        setCloudSyncing(true);
-                        try {
-                          const { cloudSync } = await import("@/lib/tauri");
-                          await cloudSync();
-                          toast.success("Синхронизация завершена");
-                        } catch (e) {
-                          toast.error(`Ошибка: ${e}`);
-                        } finally {
-                          setCloudSyncing(false);
-                          loadCloudState();
-                        }
-                      });
-                    }}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${cloudSyncing ? "animate-spin" : ""}`} />
-                  </Button>
-                </WithTooltip>
-                <WithTooltip label="Загрузить новые аккаунты из облака">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9"
-                    aria-label="Загрузить из облака"
-                    onClick={async () => {
-                      await runCloudSyncAfterTotpIfNeeded(async () => {
-                        try {
-                          const { cloudPull } = await import("@/lib/tauri");
-                          const count = await cloudPull();
-                          toast.success(`Загружено из облака: ${count} новых`);
-                          loadCloudState();
-                        } catch (e) {
-                          toast.error(`Ошибка: ${e}`);
-                        }
-                      });
-                    }}
-                  >
-                    <Download className="h-4 w-4" />
-                  </Button>
-                </WithTooltip>
-                <WithTooltip label="Удалить данные из облака">
-                  <Button
-                    variant="destructive"
-                    size="icon"
-                    className="h-9 w-9"
-                    disabled={cloudDeleting}
-                    aria-label="Удалить данные из облака"
-                    onClick={() => {
-                      setCloudDeleteTotpCode("");
-                      setCloudDeleteDialogOpen(true);
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </WithTooltip>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        <VaultPanel authorize={runCloudSyncAfterTotpIfNeeded} status={cloudSyncStatus} onDelete={()=>{setCloudDeleteTotpCode("");setCloudDeleteDialogOpen(true);}} />
 
         {glUser && (
-          <Card>
+        <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
                 <ShieldCheck className="h-4 w-4" />
