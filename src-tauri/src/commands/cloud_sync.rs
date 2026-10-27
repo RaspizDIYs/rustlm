@@ -59,3 +59,34 @@ pub async fn cloud_delete_data(
     let _ = app.emit("cloud-sync-complete", ());
     Ok(())
 }
+
+#[tauri::command]
+pub fn vault_connected(state: State<'_, AppState>) -> bool {
+    state.cloud_sync.vault_connected()
+}
+#[tauri::command]
+pub async fn vault_connect(
+    code: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, AppError> {
+    state.cloud_sync.connect_vault(code).await
+}
+#[tauri::command]
+pub async fn vault_resolve(mode: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    if !matches!(mode.as_str(), "merge" | "local" | "remote") {
+        return Err(AppError::Custom("Неизвестное действие".into()));
+    }
+    state.cloud_sync.resolve_vault(&mode).await
+}
+
+#[tauri::command]
+pub fn vault_recovery_code(state: State<'_, AppState>) -> Result<String, AppError> {
+    state.cloud_sync.vault_recovery_code()
+}
+#[tauri::command]
+pub async fn vault_rotate(state: State<'_, AppState>) -> Result<String, AppError> {
+    state.cloud_sync.rotate_vault().await
+}
+
+#[tauri::command]
+pub async fn vault_disconnect(state: State<'_,AppState>) -> Result<(),AppError> {state.cloud_sync.disconnect_vault().await}

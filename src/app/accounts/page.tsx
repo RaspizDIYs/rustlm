@@ -1,4 +1,5 @@
 "use client";
+import { LmFriends } from "@/components/lm-friends";
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -131,6 +132,7 @@ export default function AccountsPage() {
   const [sharedAccounts, setSharedAccounts] = useState<SharedAccountsResponse>({ available_to_me: [], shared_by_me: [] });
   const [sharedLoading, setSharedLoading] = useState(false);
   const [shareTarget, setShareTarget] = useState<AccountRecord | null>(null);
+  const [friendsTab, setFriendsTab] = useState(false);
   const [friends, setFriends] = useState<GoodLuckFriend[]>([]);
   const [shareFriend, setShareFriend] = useState("");
   const [shareDuration, setShareDuration] = useState("168");
@@ -567,7 +569,7 @@ export default function AccountsPage() {
     }
   };
 
-  const openShareDialog = async (account: AccountRecord) => {
+  const openShareDialog = async (account: AccountRecord, recipient?: GoodLuckFriend) => {
     if (!account.RiotId) {
       toast.error("Сначала обнови аккаунт «Из клиента», чтобы привязать Riot ID для безопасного отзыва.");
       return;
@@ -584,12 +586,14 @@ export default function AccountsPage() {
     try {
       const { goodluckGetFriends } = await import("@/lib/tauri");
       const data = await goodluckGetFriends();
-      setFriends(data);
-      setFriendSearchOpen(data.length === 0);
+      setFriends(recipient && !data.some(f=>f.id===recipient.id) ? [recipient,...data] : data);
+      if (recipient) setShareFriend(recipient.id);
+      setFriendSearchOpen(data.length === 0 && !recipient);
     } catch (e) {
-      setFriends([]);
-      setFriendSearchOpen(true);
-      setShareError(`Не удалось загрузить друзей GoodLuck: ${String(e)}`);
+      setFriends(recipient ? [recipient] : []);
+      if (recipient) setShareFriend(recipient.id);
+      setFriendSearchOpen(!recipient);
+      if (!recipient) setShareError(`Не удалось загрузить друзей GoodLuck: ${String(e)}`);
     }
   };
 
@@ -695,6 +699,7 @@ export default function AccountsPage() {
     ? `до ${new Date(account.expires_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`
     : "бессрочно";
 
+  if (friendsTab) return <div className="space-y-3"><div className="flex gap-2"><Button size="sm" variant="outline" onClick={()=>setFriendsTab(false)}>Аккаунты</Button><Button size="sm">Друзья</Button></div><LmFriends accounts={accounts} onShare={(account,friend)=>{setFriendsTab(false);void openShareDialog(account,friend);}}/></div>;
   return (
     <div className="flex min-h-0 min-w-0 flex-col gap-4">
       {loginError && (
@@ -706,6 +711,7 @@ export default function AccountsPage() {
       <div className="sticky top-0 z-10 flex shrink-0 flex-col gap-3 border-b border-border/60 bg-background/95 pb-3 backdrop-blur-sm sm:flex-row sm:items-start sm:justify-between sm:border-0 sm:bg-transparent sm:pb-0 sm:backdrop-blur-none">
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
           <h1 className="shrink-0 text-2xl font-bold">Аккаунты</h1>
+          <Button size="xs" variant="outline" onClick={()=>setFriendsTab(true)}>Друзья</Button>
           <AutoAcceptSwitch />
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">

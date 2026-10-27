@@ -592,3 +592,61 @@ unsafe fn send_char(ch: char) {
     ];
     SendInput(&mut inputs, std::mem::size_of::<INPUT>() as i32);
 }
+
+/// Invoke only a named, enabled button inside the League client process; never move the mouse.
+pub fn accept_league_match() -> Result<()> {
+    unsafe {
+        CoInitializeEx(Some(std::ptr::null()), COINIT_APARTMENTTHREADED).ok()?;
+    }
+    let result = unsafe {
+        (|| {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
+            let hwnd = find_process_main_window("LeagueClientUx").ok_or_else(|| {
+                Error::new(
+                    E_FAIL,
+                    "Окно League не найдено: UIA требует открытый клиент",
+                )
+            })?;
+            let root = automation.ElementFromHandle(hwnd)?;
+            let condition = automation.CreatePropertyCondition(
+                UIA_ControlTypePropertyId,
+                &VARIANT::from(UIA_ButtonControlTypeId.0),
+            )?;
+            let buttons = root.FindAll(TreeScope_Descendants, &condition)?;
+            for i in 0..buttons.Length()? {
+                let button = buttons.GetElement(i)?;
+                let name = button.CurrentName()?.to_string();
+                if is_accept_button(&name) && button.CurrentIsEnabled()?.as_bool() {
+                    let invoke: IUIAutomationInvokePattern =
+                        button.GetCurrentPattern(UIA_InvokePatternId)?.cast()?;
+                    return invoke.Invoke();
+                }
+            }
+            Err(Error::new(
+                E_FAIL,
+                "Кнопка принятия матча недоступна для UIA; откройте клиент или выберите Polling",
+            ))
+        })()
+    };
+    unsafe {
+        CoUninitialize();
+    }
+    result
+}
+fn is_accept_button(name: &str) -> bool {
+    matches!(
+        name.trim().to_lowercase().as_str(),
+        "accept" | "accept match" | "принять" | "принять игру" | "принять матч"
+    )
+}
+#[cfg(test)]
+mod accept_tests {
+    #[test]
+    fn only_exact_accept_buttons_are_invoked() {
+        assert!(super::is_accept_button("ПРИНЯТЬ"));
+        assert!(super::is_accept_button("Accept"));
+        assert!(!super::is_accept_button("Не принимать"));
+        assert!(!super::is_accept_button("Accept friend request"));
+    }
+}

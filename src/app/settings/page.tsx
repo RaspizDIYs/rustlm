@@ -29,6 +29,7 @@ import { TotpSetupDialog } from "@/components/totp-setup-dialog";
 import { TotpVerifyDialog } from "@/components/totp-verify-dialog";
 import { needsCloudTotpVerification } from "@/lib/cloud-totp";
 import { toast } from "sonner";
+import { VaultPanel } from "@/components/vault-panel";
 
 export default function SettingsPage() {
   const [hideLogins, setHideLogins] = useState(false);
@@ -365,9 +366,16 @@ export default function SettingsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="mt-2 space-y-1 text-xs leading-normal text-muted-foreground">
+              <p><strong>WebSocket:</strong> получает сигнал от клиента сразу после нахождения игры — основной способ для обычного использования.</p>
+              <p><strong>Polling:</strong> регулярно спрашивает клиент, найдена ли игра — резервный способ при сбоях WebSocket.</p>
+              <p><strong>UIA:</strong> нажимает доступную кнопку «Принять» в открытом окне League средствами Windows — используйте, если приём через API не подходит.</p>
+
+            </div>
           </CardContent>
         </Card>
 
+        <VaultPanel authorize={runCloudSyncAfterTotpIfNeeded} />
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">

@@ -335,7 +335,10 @@ impl AutoAcceptService {
         }
 
         // Auto-accept only when enabled toggle is on
-        if is_ready_check && self.enabled.load(Ordering::SeqCst) {
+        if is_ready_check
+            && self.enabled.load(Ordering::SeqCst)
+            && self.settings.read().await.auto_accept_method == "WebSocket"
+        {
             self.handle_ready_check(message).await;
         }
 
@@ -382,10 +385,25 @@ impl AutoAcceptService {
             return;
         }
 
-        let result = self
-            .riot_client
-            .lcu_post("/lol-matchmaking/v1/ready-check/accept", "{}")
-            .await;
+        let method = self.settings.read().await.auto_accept_method.clone();
+        let result = if method == "UIA" {
+            #[cfg(windows)]
+            {
+                tokio::task::spawn_blocking(super::uia_login::accept_league_match)
+                    .await
+                    .map_err(|e| AppError::Custom(e.to_string()))
+                    .and_then(|r| r.map_err(|e| AppError::Custom(e.to_string())))
+            }
+            #[cfg(not(windows))]
+            {
+                Err(AppError::Custom("UIA доступен только в Windows".into()))
+            }
+        } else {
+            self.riot_client
+                .lcu_post("/lol-matchmaking/v1/ready-check/accept", "{}")
+                .await
+                .map(|_| ())
+        };
 
         self.accept_in_progress.store(false, Ordering::SeqCst);
 
@@ -1072,7 +1090,9 @@ impl AutoAcceptService {
             }
 
             // Only poll when WS is failing (force_polling) or as periodic fallback
-            if !self.force_polling.load(Ordering::SeqCst) {
+            if self.settings.read().await.auto_accept_method == "WebSocket"
+                && !self.force_polling.load(Ordering::SeqCst)
+            {
                 // Even when WS is primary, do a slow poll every 5s as safety net
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(5)) => {},
@@ -1147,7 +1167,9 @@ impl AutoAcceptService {
             }
 
             // Faster polling when WS is down
-            let delay = if self.force_polling.load(Ordering::SeqCst) {
+            let delay = if self.settings.read().await.auto_accept_method != "WebSocket"
+                || self.force_polling.load(Ordering::SeqCst)
+            {
                 300
             } else {
                 5000

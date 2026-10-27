@@ -338,6 +338,19 @@ impl AccountsStorage {
         &self,
         cloud_accounts: Vec<crate::models::account::CloudAccountData>,
     ) -> Result<usize, AppError> {
+        self.import_cloud_records(cloud_accounts, true)
+    }
+    pub fn migrate_missing_cloud_accounts(
+        &self,
+        records: Vec<crate::models::account::CloudAccountData>,
+    ) -> Result<usize, AppError> {
+        self.import_cloud_records(records, false)
+    }
+    fn import_cloud_records(
+        &self,
+        cloud_accounts: Vec<crate::models::account::CloudAccountData>,
+        overwrite: bool,
+    ) -> Result<usize, AppError> {
         self.edit(|accounts, removed| {
             let mut imported = 0;
             for ca in cloud_accounts {
@@ -368,6 +381,9 @@ impl AccountsStorage {
                     .iter_mut()
                     .find(|a| a.username.eq_ignore_ascii_case(&record.username))
                 {
+                    if !overwrite {
+                        continue;
+                    }
                     if record.encrypted_password.is_empty() {
                         record.encrypted_password = existing.encrypted_password.clone();
                     }
@@ -386,6 +402,77 @@ impl AccountsStorage {
         })
     }
 
+    pub fn vault_document(&self) -> Result<serde_json::Value, AppError> {
+        let cache = self.cached_accounts.lock().unwrap();
+        let records = match cache.as_ref() {
+            Some(records) => records.clone(),
+            None => self.read_from_disk()?,
+        };
+        self.vault_document_from(&records)
+    }
+    fn vault_document_from(
+        &self,
+        accounts: &[AccountRecord],
+    ) -> Result<serde_json::Value, AppError> {
+        let mut records = serde_json::Map::new();
+        for a in accounts {
+            let mut value = serde_json::to_value(a)?;
+            let obj = value.as_object_mut().unwrap();
+            obj.remove("EncryptedPassword");
+            obj.remove("IsSelected");
+            obj.insert(
+                "password".into(),
+                serde_json::Value::String(self.unprotect(&a.encrypted_password)?),
+            );
+            records.insert(a.username.to_lowercase(), value);
+        }
+        Ok(serde_json::json!({"accounts":records}))
+    }
+    pub fn apply_vault_document(
+        &self,
+        expected: &serde_json::Value,
+        document: &serde_json::Value,
+    ) -> Result<(), AppError> {
+        let records = document
+            .get("accounts")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| AppError::Custom("Повреждён формат хранилища".into()))?;
+        let mut prepared = Vec::new();
+        for (key, value) in records {
+            let mut a: AccountRecord = serde_json::from_value(value.clone())?;
+            if a.username.is_empty() || key != &a.username.to_lowercase() {
+                return Err(AppError::Custom("Некорректный идентификатор записи".into()));
+            }
+            let password = value
+                .get("password")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AppError::Custom("Нет поля пароля в хранилище".into()))?;
+            a.encrypted_password = self.protect(password)?;
+            prepared.push(a);
+        }
+        self.edit(|accounts, removed| {
+            if &self.vault_document_from(accounts)? != expected {
+                return Err(AppError::Custom(
+                    "Аккаунты изменились во время синхронизации. Повторите попытку".into(),
+                ));
+            }
+            for old in accounts.iter().filter(|old| {
+                !prepared
+                    .iter()
+                    .any(|a| a.username.eq_ignore_ascii_case(&old.username))
+            }) {
+                removed.usernames.insert(login_key(&old.username));
+                if let Some(key) = profile_key(old) {
+                    removed.profiles.insert(key);
+                }
+            }
+            for a in &prepared {
+                removed.restore(a);
+            }
+            *accounts = prepared;
+            Ok(())
+        })
+    }
     pub fn protect(&self, plain: &str) -> Result<String, AppError> {
         if plain.is_empty() {
             return Ok(String::new());
@@ -652,6 +739,66 @@ fn aes_decrypt(
 #[cfg(test)]
 mod storage_tests {
     use super::*;
+    #[test]
+    fn vault_migration_adds_cloud_only_accounts_without_overwriting_local_credentials() {
+        let store = storage();
+        store
+            .save(AccountRecord {
+                username: "local".into(),
+                encrypted_password: store.protect("current").unwrap(),
+                ..Default::default()
+            })
+            .unwrap();
+        let accounts=serde_json::from_value(serde_json::json!([{"username":"local","password":"stale"},{"username":"cloud-only","password":"remote"}])).unwrap();
+        assert_eq!(store.migrate_missing_cloud_accounts(accounts).unwrap(), 1);
+        let records = store.load_all();
+        assert_eq!(records.len(), 2);
+        let local = records.iter().find(|a| a.username == "local").unwrap();
+        assert_eq!(
+            store.unprotect(&local.encrypted_password).unwrap(),
+            "current"
+        );
+        cleanup(store);
+    }
+
+    #[test]
+    fn vault_deletion_is_atomic_and_survives_reload_without_restoring_placeholders() {
+        let store = storage();
+        let account = AccountRecord {
+            username: "vault-login".into(),
+            encrypted_password: store.protect("synthetic-password").unwrap(),
+            ..Default::default()
+        };
+        store.save(account.clone()).unwrap();
+        let before = store.vault_document().unwrap();
+        let empty = serde_json::json!({"accounts":{}});
+        store.apply_vault_document(&before, &empty).unwrap();
+        assert!(store.load_all().is_empty());
+        assert!(
+            store.apply_vault_document(&before, &before).is_err(),
+            "stale apply must not restore deleted account"
+        );
+        store
+            .import_from_cloud(vec![crate::models::account::CloudAccountData {
+                username: "vault-login".into(),
+                password: "synthetic-password".into(),
+                ..serde_json::from_value(serde_json::json!({})).unwrap()
+            }])
+            .unwrap();
+        assert!(
+            store.load_all().is_empty(),
+            "automatic legacy import must respect deletion"
+        );
+        cleanup(store);
+    }
+    #[test]
+    fn corrupt_storage_cannot_be_uploaded_as_an_empty_vault() {
+        let store = storage();
+        std::fs::write(&store.accounts_path, "invalid-json").unwrap();
+        assert!(store.vault_document().is_err());
+        cleanup(store);
+    }
+
     #[test]
     fn stale_profile_refresh_preserves_new_credentials_notes_and_pin() {
         let store = storage();

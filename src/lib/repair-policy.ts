@@ -99,3 +99,18 @@ export function nextRepairVariant(
     return null;
   return repairSignals(report).tlsFailures > 0 ? current + 1 : null;
 }
+
+// Compare services, not individual CDN addresses or unavailable IPv6 routes.
+export function lostRepairServices(before: NetworkReport, after: NetworkReport): string[] {
+  const grouped = (report: NetworkReport) => {
+    const result = new Map<string, boolean>();
+    for (const p of report.probes) {
+      if (p.ip.includes(":") || !critical(p.domain, p.port, report.context.region)) continue;
+      const key = `${p.domain}:${p.port}${p.request_path}`;
+      result.set(key, Boolean(result.get(key)) || p.tls);
+    }
+    return result;
+  };
+  const a = grouped(before), b = grouped(after);
+  return [...a].filter(([key, worked]) => worked && b.get(key) === false).map(([key]) => key);
+}

@@ -70,6 +70,7 @@ import {
 } from "@/lib/repair";
 import {
   dnsRepairPins,
+  lostRepairServices,
   nextRepairVariant,
   repairSignals,
 } from "@/lib/repair-policy";
@@ -123,7 +124,7 @@ function Notice({
     <div
       role={tone === "error" ? "alert" : "note"}
       className={cn(
-        "flex items-start gap-3 rounded-xl border p-4 text-sm leading-relaxed",
+        "flex items-start gap-2 rounded-lg border p-2.5 text-xs leading-normal",
         tone === "info" && "border-primary/25 bg-primary/10 text-foreground",
         tone === "warning" && "border-chart-4/30 bg-chart-4/10 text-foreground",
         tone === "error" &&
@@ -131,7 +132,7 @@ function Notice({
         tone === "success" && "border-chart-2/30 bg-chart-2/10 text-foreground",
       )}
     >
-      <Icon aria-hidden className="mt-0.5 size-5 shrink-0" />
+      <Icon aria-hidden className="mt-0.5 size-4 shrink-0" />
       <div className="min-w-0">{children}</div>
     </div>
   );
@@ -145,7 +146,7 @@ function Ring({ percent }: { percent: number }) {
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={value}
-      className="relative size-32 shrink-0"
+      className="relative size-20 shrink-0"
     >
       <svg aria-hidden viewBox="0 0 100 100" className="size-full -rotate-90">
         <circle
@@ -170,7 +171,7 @@ function Ring({ percent }: { percent: number }) {
           className="text-primary transition-all duration-500"
         />
       </svg>
-      <div className="absolute inset-0 flex items-center justify-center text-xl font-semibold tabular-nums">
+      <div className="absolute inset-0 flex items-center justify-center text-lg font-semibold tabular-nums">
         {value}%
       </div>
     </div>
@@ -184,6 +185,7 @@ export default function RepairToolsPage() {
   const region: RunContext["region"] = "ALL";
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
+  const [controlSeconds, setControlSeconds] = useState<number | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [backup, setBackup] = useState<Backup | null>(null);
   const backupRef = useRef<Backup | null>(null);
@@ -211,9 +213,8 @@ export default function RepairToolsPage() {
     if (selectedRoot) localStorage.setItem("rustlm-repair-selection",JSON.stringify({root:selectedRoot,strategy}));
   }, [selectedRoot,strategy]);
   useEffect(() => {
-    setReadiness(null);
-    setStateError("");
     if (!isTauri() || busy) return;
+    setStateError("");
     let active = true;
     setCheckingState(true);
     void checkRepairReadiness(selectedRoot ?? "", strategy)
@@ -222,6 +223,21 @@ export default function RepairToolsPage() {
       .finally(() => { if (active) setCheckingState(false); });
     return () => { active = false; };
   }, [selectedRoot, strategy, busy]);
+
+  useEffect(() => {
+    if (controlSeconds === null) return;
+    const timer = setInterval(() => setControlSeconds((n) => n === null ? null : n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [controlSeconds === null]);
+
+  async function restartSelected(root: string, selected: string) {
+    setControlSeconds(0);
+    try {
+      const message = await restartZapret(root, selected);
+      setReadiness(await checkRepairReadiness(root, selected));
+      event(message || "Выбранный Zapret запущен, состояние обновлено.");
+    } finally { setControlSeconds(null); }
+  }
 
   async function refreshReadiness() {
     setCheckingState(true);
@@ -379,7 +395,7 @@ export default function RepairToolsPage() {
       event(
         "Перезапускаем Zapret с исходными настройками. Windows может запросить права администратора.",
       );
-      await restartZapret(b.root, b.strategy);
+      await restartSelected(b.root, b.strategy);
     }
     persist(null);
     event("Исходные файлы восстановлены");
@@ -469,7 +485,7 @@ export default function RepairToolsPage() {
       event(
         "Проверяем параметры и перезапускаем только выбранный Zapret. Подтвердите запрос Windows, если он появится.",
       );
-      await restartZapret(installation!.root, strategy);
+      await restartSelected(installation!.root, strategy);
       checkCancelled();
       const after = await measure(30 + variant * 15, 45 + variant * 15);
       const diff = compareReports(baseline, after);
@@ -484,7 +500,15 @@ export default function RepairToolsPage() {
       event(
         `Сопоставлено ${diff.shared} проверок: восстановлено TLS ${diff.tlsGained}, потеряно ${diff.tlsLost}`,
       );
-      const pins = dnsRepairPins(after);
+      const lost = lostRepairServices(baseline, after);
+      if (lost.length) {
+        event(`Потеря доступности ${lost.length} сервисов. Повторяем замер перед решением об откате.`);
+        const confirmed = lostRepairServices(baseline, await measure(45, 48));
+        if (lost.some((key) => confirmed.includes(key))) {
+          throw new Error("Новая настройка ухудшила доступность сервисов Riot в двух замерах. Исходные параметры будут восстановлены.");
+        }
+      }
+      const pins = dnsRepairPins(latestRef.current ?? after);
       if (pins.length && !backupRef.current?.hostsId) {
         event(
           `Найдена ошибка системного DNS. Фиксируем ${pins.length} адресов, подтверждённых успешным HTTPS.`,
@@ -573,7 +597,7 @@ export default function RepairToolsPage() {
       if (state.vpn_signals.length) throw new Error(`VPN_DETECTED: ${state.vpn_signals.join("; ")}`);
       if (!state.running || !state.strategy_matches) {
         event("Включаем выбранную стратегию Zapret. Подтвердите запрос Windows.");
-        await restartZapret(installation.root,strategy);
+        await restartSelected(installation.root,strategy);
         checkCancelled();
         const confirmed=await refreshReadiness();
         if (!confirmed?.running || !confirmed.strategy_matches) throw new Error("ZAPRET_DETAILS_UNAVAILABLE: не удалось подтвердить запуск выбранной стратегии");
@@ -691,7 +715,7 @@ export default function RepairToolsPage() {
         changed = true;
       }
       event("Включаем выбранную стратегию. Подтвердите запрос Windows.");
-      await restartZapret(installation.root,chosenStrategy);
+      await restartSelected(installation.root,chosenStrategy);
       setInstallation(await inspectZapret(installation.root));
       setReadiness(await checkRepairReadiness(installation.root,chosenStrategy));
       event("Стратегия включена. Состояние обновлено.");
@@ -715,14 +739,14 @@ export default function RepairToolsPage() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
-      <header className="flex flex-wrap items-start justify-between gap-3">
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 repair-compact">
+      <header className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex flex-col gap-2">
-          <h1 className="flex items-center gap-3 text-xl font-semibold">
+          <h1 className="flex items-center gap-2 text-lg font-semibold">
             <Wrench aria-hidden className="size-6 text-primary" />
             Repair Tools
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Мастер восстановления подключения к League of Legends
           </p>
         </div>
@@ -760,7 +784,7 @@ export default function RepairToolsPage() {
           Стратегия: {!strategy ? "не выбрана" : readiness?.details_unavailable ? "нужны права" : readiness?.strategy_matches ? "совпадает" : "не запущена / другая"}
         </span>
         <Button size="icon-sm" variant="ghost" aria-label="Обновить состояние" title="Обновить состояние" disabled={busy || checkingState} onClick={() => {void refreshReadiness().catch(() => {});}}><RefreshCw className={checkingState ? "animate-spin" : ""} /></Button>
-        <Button size="sm" disabled={busy || !strategy || !installation || checkingState || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate();}}><Play />Включить</Button>
+        <Button size="xs" disabled={busy || !strategy || !installation || checkingState || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate();}}><Play />Включить</Button>
         <Button size="icon-sm" variant="ghost" aria-label="Открыть папку Repair Tools" title="Открыть папку Repair Tools" onClick={() => {void openRepairFolder().catch((e) => setError(String(e)));}}><FolderOpen /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="Сохранить отчёт для разработчика" title="Сохранить отчёт для разработчика" disabled={busy} onClick={() => {void exportRepairReport().catch((e) => setError(String(e)));}}><Download /></Button>
       </div>
@@ -808,11 +832,11 @@ export default function RepairToolsPage() {
               : ""}
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3">
+        <CardContent className="flex flex-col gap-2">
           {step === 1 && (
             <>
               <p className="text-xs text-muted-foreground">Выберите папку и стратегию — LM включит её сам. VPN можно открыть по чипу сверху.</p>
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   onClick={detect}
@@ -843,7 +867,7 @@ export default function RepairToolsPage() {
                     {installation.root}
                   </p>
                   <div className="flex flex-col gap-2">
-                    <span id="repair-strategy" className="text-sm font-medium">
+                    <span id="repair-strategy" className="text-xs font-medium">
                       Стратегия Zapret
                     </span>
                     <Select
@@ -871,15 +895,15 @@ export default function RepairToolsPage() {
               )}
               {managedProfile && <div className="flex flex-wrap items-center gap-2 rounded-lg border p-2">
                 <span className="mr-auto text-xs text-muted-foreground">Версия файла: {managedProfile.state === "configured" ? "настроена для Riot" : managedProfile.state === "original" ? "исходная" : "изменена вручную"}</span>
-                <Button size="sm" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(false);}}>Исходная</Button>
-                <Button size="sm" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(true);}}>С настройкой Riot</Button>
+                <Button size="xs" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(false);}}>Исходная</Button>
+                <Button size="xs" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(true);}}>С настройкой Riot</Button>
               </div>}
               <details className="text-xs text-muted-foreground">
                 <summary className="cursor-pointer">Что изменится и где сохраняются копии</summary>
                 <p className="mt-2">Меняется выбранная стратегия и её списки Riot; hosts — только при подтверждённой ошибке DNS. Копии и логи: RustLM → Repair Tools. Службы и Zapret2 пока не поддерживаются. Windows может запросить права для включения стратегии.</p>
               </details>
               <Button
-                size="sm"
+                size="xs"
                 disabled={
                   !installation ||
                   !strategy ||
@@ -894,18 +918,20 @@ export default function RepairToolsPage() {
             </>
           )}
           {busy && (
-            <div className="flex flex-col items-center gap-5 sm:flex-row">
+            <div className="flex flex-col items-center gap-2 sm:flex-row">
               <Ring percent={percent} />
-              <div className="flex min-w-0 flex-1 flex-col gap-3">
+              <div className="flex min-w-0 flex-1 flex-col gap-2">
                 <p
                   role="status"
                   aria-live="polite"
-                  className="break-all text-sm"
+                  className="break-all text-xs"
                 >
-                  {current}
+                  {current}{controlSeconds !== null && ` · ${controlSeconds} с`}
                 </p>
                 <Notice>
-                  {step === 2
+                  {controlSeconds !== null
+                    ? "Windows запрашивает права только при необходимости. Если окна нет, операция может выполняться без него. Ожидание помощника ограничено; отсутствие окна само по себе не означает ошибку."
+                    : step === 2
                     ? "Резервная копия создаётся до изменения настроек. Кнопка отката останется сверху."
                     : step === 5
                       ? "Запускаем существующий клиент и проверяем авторизацию League и ответ API чата. Одного появления процесса недостаточно."
@@ -946,7 +972,7 @@ export default function RepairToolsPage() {
                 стратегии. Игровой матч, UDP и голос не подтверждаются проверкой
                 HTTPS или запуском клиента.
               </Notice>
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={exportBundle}>
                   <Download data-icon="inline-start" />
                   Сохранить отчёт
@@ -985,12 +1011,12 @@ export default function RepairToolsPage() {
       )}
       {evidence && (
         <details className="rounded-xl border border-border bg-card p-4">
-          <summary className="cursor-pointer text-sm font-medium">
+          <summary className="cursor-pointer text-xs font-medium">
             Автоматически собранные ошибки
           </summary>
           <div className="mt-3 flex flex-col gap-2">
             {evidence.errors.map((item, i) => (
-              <div key={i} className="flex flex-wrap gap-2 text-sm">
+              <div key={i} className="flex flex-wrap gap-2 text-xs">
                 <Badge variant="outline">{item.category}</Badge>
                 <span>
                   {item.source} · {item.count}
@@ -998,7 +1024,7 @@ export default function RepairToolsPage() {
               </div>
             ))}
             {evidence.errors.length === 0 && (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 В доступных журналах подходящие ошибки не найдены.
               </p>
             )}
@@ -1015,7 +1041,7 @@ export default function RepairToolsPage() {
       )}
       {events.length > 0 && (
         <details className="rounded-xl border border-border bg-card p-4">
-          <summary className="cursor-pointer text-sm font-medium">
+          <summary className="cursor-pointer text-xs font-medium">
             Журнал шагов
           </summary>
           <ol className="mt-3 flex max-h-64 flex-col gap-2 overflow-auto text-xs text-muted-foreground">
@@ -1028,7 +1054,7 @@ export default function RepairToolsPage() {
       {!busy && (
         <Link
           href="/connection"
-          className="text-sm text-muted-foreground underline underline-offset-4"
+          className="text-xs text-muted-foreground underline underline-offset-4"
         >
           Подробная диагностика и ручная настройка
         </Link>

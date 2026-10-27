@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 import {
   Users,
   Zap,
-  Palette,
   Search,
   SlidersHorizontal,
   Info,
@@ -44,7 +43,6 @@ import { needsCloudTotpVerification } from "@/lib/cloud-totp";
 const navItems = [
   { href: "/accounts", label: "Аккаунты", icon: Users },
   { href: "/automation", label: "Автоматизация", icon: Zap },
-  { href: "/customization", label: "Кастомизация", icon: Palette },
   { href: "/configs", label: "Конфиги", icon: SlidersHorizontal },
   { href: "/repair-tools", label: "Repair Tools", icon: Network },
   { href: "/spy", label: "Разведка", icon: Search },

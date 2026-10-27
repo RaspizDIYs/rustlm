@@ -418,3 +418,50 @@ mod tests {
         assert_eq!(shared_identity_matches("", "", "", "Personal", "EUW"), None);
     }
 }
+
+#[tauri::command]
+pub async fn lm_friends(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    state.goodluck.lm_friends().await
+}
+#[tauri::command]
+pub async fn lm_set_visibility(enabled: bool, state: State<'_, AppState>) -> Result<(), AppError> {
+    if !enabled {
+        state.goodluck.lm_delete_presence().await?;
+    }
+    state.settings.save_setting("LmFriendsVisible", &enabled)?;
+    Ok(())
+}
+pub async fn publish_lm_friends(state: &AppState) -> Result<serde_json::Value, AppError> {
+    if !state.settings.load_setting("LmFriendsVisible", false) {
+        return Err(AppError::Custom("Включите обнаружение друзей LM".into()));
+    }
+    let current: serde_json::Value = serde_json::from_str(
+        &state
+            .riot_client
+            .lcu_get("/lol-summoner/v1/current-summoner")
+            .await?,
+    )?;
+    let puuid = current
+        .get("puuid")
+        .and_then(|v| v.as_str())
+        .filter(|p| crate::models::account::is_valid_puuid(p))
+        .ok_or_else(|| AppError::Custom("Войдите в League, чтобы обновить Riot-друзей".into()))?;
+    let friends: serde_json::Value =
+        serde_json::from_str(&state.riot_client.lcu_get("/lol-chat/v1/friends").await?)?;
+    let list = friends
+        .as_array()
+        .ok_or_else(|| AppError::Custom("Клиент Riot вернул неизвестный формат друзей".into()))?;
+    let puuids: Vec<_> = list
+        .iter()
+        .filter_map(|f| f.get("puuid").and_then(|p| p.as_str()))
+        .filter(|p| crate::models::account::is_valid_puuid(p))
+        .collect();
+    state
+        .goodluck
+        .lm_presence(serde_json::json!({"puuid":puuid,"friends":puuids}))
+        .await
+}
+#[tauri::command]
+pub async fn lm_publish_friends(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    publish_lm_friends(&state).await
+}

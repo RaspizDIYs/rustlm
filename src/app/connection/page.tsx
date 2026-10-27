@@ -207,23 +207,23 @@ export default function ConnectionPage() {
     : [];
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="repair-compact flex flex-col gap-2">
       <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">
+        <h1 className="text-lg font-semibold">
           Подключение к League of Legends
         </h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Проверьте адреса Riot, настройте свой Zapret и сравните результат на
           этом ПК и подключении.
         </p>
       </header>
       {error && <RepairError error={error} />}
       {notice && (
-        <p role="status" className="text-sm">
+        <p role="status" className="text-xs">
           {notice}
         </p>
       )}
-      <Card>
+      <Card size="sm">
         <CardHeader>
           <CardTitle>1. Укажите подключение и стратегию</CardTitle>
           <CardDescription>
@@ -231,10 +231,10 @@ export default function ConnectionPage() {
             запускает неизвестные BAT-файлы.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
+        <CardContent className="flex flex-col gap-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             <div className="flex flex-col gap-2">
-              <span id="network-region" className="text-sm">
+              <span id="network-region" className="text-xs">
                 Регион аккаунта
               </span>
               <Select
@@ -260,7 +260,7 @@ export default function ConnectionPage() {
               </Select>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={choose} disabled={!!busy}>
               <FolderOpen data-icon="inline-start" />
               Выбрать папку Zapret
@@ -272,7 +272,7 @@ export default function ConnectionPage() {
           </div>
           {installation && (
             <div className="flex flex-col gap-2">
-              <span id="network-strategy" className="text-sm">
+              <span id="network-strategy" className="text-xs">
                 Точный файл стратегии
               </span>
               <Select
@@ -304,7 +304,7 @@ export default function ConnectionPage() {
           )}
         </CardContent>
       </Card>
-      <Card>
+      <Card size="sm">
         <CardHeader>
           <CardTitle>2. Сохраните сетевой замер</CardTitle>
           <CardDescription>
@@ -313,10 +313,10 @@ export default function ConnectionPage() {
             26.10.2026; новые CNAME проверяются автоматически.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-end gap-3">
+        <CardContent className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-end gap-2">
             <div className="flex flex-col gap-2">
-              <span id="network-mode" className="text-sm">
+              <span id="network-mode" className="text-xs">
                 Фактический режим подключения
               </span>
               <Select
@@ -372,7 +372,7 @@ export default function ConnectionPage() {
               aria-live="polite"
               className="flex flex-col gap-2"
             >
-              <span className="text-sm">
+              <span className="text-xs">
                 {progress.phase === "dns" ? "DNS" : "Сетевые ответы"}:{" "}
                 {progress.completed} / {progress.total || "…"}
               </span>
@@ -395,7 +395,7 @@ export default function ConnectionPage() {
           </p>
         </CardContent>
       </Card>
-      <Card>
+      <Card size="sm">
         <CardHeader>
           <CardTitle>3. Подготовьте изменения</CardTitle>
           <CardDescription>
@@ -404,8 +404,8 @@ export default function ConnectionPage() {
             автоматически не меняются.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-wrap gap-3">
+        <CardContent className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               disabled={!!busy || !installation || !strategy}
@@ -444,7 +444,7 @@ export default function ConnectionPage() {
           </p>
         </CardContent>
       </Card>
-      <Card>
+      <Card size="sm">
         <CardHeader>
           <CardTitle>4. Сравните результаты</CardTitle>
           <CardDescription>
@@ -452,10 +452,10 @@ export default function ConnectionPage() {
             DNS-адреса не считаются улучшением или ухудшением.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="grid gap-3 sm:grid-cols-2">
+        <CardContent className="flex flex-col gap-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             <div className="flex flex-col gap-2">
-              <span id="network-result" className="text-sm">
+              <span id="network-result" className="text-xs">
                 Показать замер
               </span>
               <Select
@@ -483,7 +483,7 @@ export default function ConnectionPage() {
               </Select>
             </div>
             <div className="flex flex-col gap-2">
-              <span id="network-before" className="text-sm">
+              <span id="network-before" className="text-xs">
                 Сравнить с
               </span>
               <Select
@@ -512,7 +512,7 @@ export default function ConnectionPage() {
             </div>
           </div>
           {diff && (
-            <div role="status" className="text-sm">
+            <div role="status" className="text-xs">
               Совпадающих проверок: {diff.shared}. TLS восстановлен:{" "}
               {diff.tlsGained}, потерян: {diff.tlsLost}. Отказов Cloudflare:{" "}
               {diff.blocksBefore} → {diff.blocksAfter}.
@@ -551,7 +551,7 @@ export default function ConnectionPage() {
                 </Badge>
                 <Button
                   variant="outline"
-                  size="sm"
+                  size="xs"
                   onClick={() => exportReport(report)}
                 >
                   <Download data-icon="inline-start" />
@@ -562,13 +562,13 @@ export default function ConnectionPage() {
                 {report.path}
               </p>
               {report.discovery_limited && (
-                <p role="alert" className="text-sm text-destructive">
+                <p role="alert" className="text-xs text-destructive">
                   Достигнут предел обхода DNS-цепочек; каталог проверен не
                   полностью.
                 </p>
               )}
               {dnsFailures.length > 0 && (
-                <details className="text-sm">
+                <details className="text-xs">
                   <summary className="cursor-pointer">
                     Имена без DNS-адресов
                   </summary>

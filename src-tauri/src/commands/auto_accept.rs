@@ -51,6 +51,9 @@ pub async fn set_automation_settings(
     mut settings: AutomationSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    if !matches!(settings.auto_accept_method.as_str(), "WebSocket" | "Polling" | "UIA") {
+        return Err("Неизвестный метод автопринятия".into());
+    }
     normalize_empty_champion_names(&mut settings);
     // Resolve champion names → numeric IDs
     resolve_champion_id(
@@ -115,6 +118,7 @@ pub fn load_persisted_automation_settings(state: &AppState) {
     let mut settings: AutomationSettings = state
         .settings
         .load_setting(AUTOMATION_SETTINGS_KEY, AutomationSettings::default());
+    settings.auto_accept_method = state.settings.load_setting("AutoAcceptMethod", settings.auto_accept_method);
     state.auto_accept.set_enabled_flag_only(settings.is_enabled);
     let auto_accept = state.auto_accept.clone();
     let data_dragon = state.data_dragon.clone();

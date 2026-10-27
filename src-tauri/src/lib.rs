@@ -186,6 +186,9 @@ pub fn run() {
             commands::goodluck::goodluck_import_profile_accounts,
             commands::goodluck::goodluck_refresh_profile,
             commands::goodluck::goodluck_get_friends,
+            commands::goodluck::lm_friends,
+            commands::goodluck::lm_set_visibility,
+            commands::goodluck::lm_publish_friends,
             commands::goodluck::goodluck_search_users,
             commands::goodluck::goodluck_send_friend_request,
             commands::goodluck::goodluck_get_shared_accounts,
@@ -193,6 +196,12 @@ pub fn run() {
             commands::goodluck::goodluck_revoke_shared_account,
             commands::goodluck::goodluck_process_shared_cleanups,
             commands::cloud_sync::cloud_sync,
+            commands::cloud_sync::vault_connected,
+            commands::cloud_sync::vault_disconnect,
+            commands::cloud_sync::vault_recovery_code,
+            commands::cloud_sync::vault_rotate,
+            commands::cloud_sync::vault_connect,
+            commands::cloud_sync::vault_resolve,
             commands::cloud_sync::cloud_push,
             commands::cloud_sync::cloud_pull,
             commands::cloud_sync::cloud_get_status,
@@ -260,6 +269,16 @@ pub fn run() {
                 }
             });
 
+            let friends_handle=app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let st=friends_handle.state::<AppState>();
+                    if st.goodluck.is_connected() && st.settings.load_setting("LmFriendsVisible",false) {
+                        if let Err(error)=commands::goodluck::publish_lm_friends(&st).await {log::debug!("LM friend roster not refreshed: {}",error);}
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            });
             let gl_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let st = gl_handle.state::<AppState>();

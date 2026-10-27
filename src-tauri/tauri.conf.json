@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RustLM",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "identifier": "com.rustlm.app",
   "build": {
     "frontendDist": "../out",
@@ -31,7 +31,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
@@ -44,7 +46,9 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["rustlm"]
+        "schemes": [
+          "rustlm"
+        ]
       }
     },
     "updater": {

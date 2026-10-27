@@ -13,7 +13,7 @@ const javascript = ts.transpileModule(source, {
     target: ts.ScriptTarget.ES2022,
   },
 }).outputText;
-const { repairSignals, dnsRepairPins, nextRepairVariant } = await import(
+const { lostRepairServices, repairSignals, dnsRepairPins, nextRepairVariant } = await import(
   `data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`
 );
 const probe = (overrides = {}) => ({
@@ -122,4 +122,12 @@ test("hosts changes require broken system DNS and successful pinned HTTPS withou
     }),
     [],
   );
+});
+
+test("regression compares IPv4 services across changing addresses", () => {
+  const before = report({probes:[probe(), probe({ip:"::1"})]});
+  assert.deepEqual(lostRepairServices(before, report({probes:[probe({ip:"1.1.1.1"})]})), []);
+  assert.deepEqual(lostRepairServices(before, report({probes:[probe({tls:false})]})), ["auth.riotgames.com:443/"]);
+  assert.deepEqual(lostRepairServices(before, report({probes:[probe({tls:false}),probe({ip:"1.1.1.1"})]})), []);
+  assert.deepEqual(lostRepairServices(before, report()), []);
 });

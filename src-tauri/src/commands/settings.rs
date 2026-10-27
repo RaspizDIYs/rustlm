@@ -108,11 +108,24 @@ pub fn load_setting(
 }
 
 #[tauri::command]
-pub fn save_setting(
+pub async fn save_setting(
     key: &str,
     value: serde_json::Value,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<(), String> {
+    if key == "AutoAcceptMethod" {
+        let method = value.as_str().ok_or("Метод должен быть строкой")?;
+        if !matches!(method, "WebSocket" | "Polling" | "UIA") {
+            return Err("Неизвестный метод автопринятия".into());
+        }
+        let mut automation = state.auto_accept.get_settings().await;
+        automation.auto_accept_method = method.to_owned();
+        state
+            .settings
+            .save_setting("AutomationSettings", &automation)
+            .map_err(|e| e.to_string())?;
+        state.auto_accept.set_settings(automation).await;
+    }
     state
         .settings
         .save_setting(key, &value)

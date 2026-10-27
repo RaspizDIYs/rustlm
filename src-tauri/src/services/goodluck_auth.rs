@@ -729,117 +729,6 @@ impl GoodLuckAuthService {
 // --- Cloud accounts API ---
 
 impl GoodLuckAuthService {
-    pub async fn upload_cloud_profile(
-        &self,
-        profile: crate::models::account::CloudProfilePayload,
-        totp_session: Option<&str>,
-    ) -> Result<crate::models::account::CloudSyncMeta, AppError> {
-        let url = format!("{}/auth/rustlm/cloud-accounts", GOODLUCK_API_BASE);
-
-        for attempt in 0..2u8 {
-            let token = self.get_token().await?;
-            let mut req = self
-                .http_client
-                .put(&url)
-                .bearer_auth(&token)
-                .json(&profile);
-            if let Some(session) = totp_session {
-                req = req.header("X-TOTP-Session", session);
-            }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| AppError::Custom(format!("Cloud upload failed: {}", e)))?;
-
-            if resp.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                self.refresh_token().await?;
-                continue;
-            }
-
-            if resp.status() == reqwest::StatusCode::FORBIDDEN {
-                return Err(AppError::Custom("totp_required".to_string()));
-            }
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                if body.to_ascii_lowercase().contains("totp_required") {
-                    return Err(AppError::Custom("totp_required".to_string()));
-                }
-                return Err(AppError::Custom(format!(
-                    "Cloud upload returned {}: {}",
-                    status, body
-                )));
-            }
-
-            return resp.json().await.map_err(|e| {
-                AppError::Custom(format!("Failed to parse cloud upload response: {}", e))
-            });
-        }
-
-        Err(AppError::Custom(
-            "Cloud upload failed after retry".to_string(),
-        ))
-    }
-
-    pub async fn download_cloud_accounts(
-        &self,
-        totp_session: Option<&str>,
-    ) -> Result<Option<crate::models::account::CloudProfilePayload>, AppError> {
-        let url = format!("{}/auth/rustlm/cloud-accounts", GOODLUCK_API_BASE);
-
-        for attempt in 0..2u8 {
-            let token = self.get_token().await?;
-            let mut req = self.http_client.get(&url).bearer_auth(&token);
-            if let Some(session) = totp_session {
-                req = req.header("X-TOTP-Session", session);
-            }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| AppError::Custom(format!("Cloud download failed: {}", e)))?;
-
-            if resp.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                self.refresh_token().await?;
-                continue;
-            }
-
-            if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                return Ok(None);
-            }
-
-            if resp.status() == reqwest::StatusCode::FORBIDDEN {
-                return Err(AppError::Custom("totp_required".to_string()));
-            }
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                if body.to_ascii_lowercase().contains("totp_required") {
-                    return Err(AppError::Custom("totp_required".to_string()));
-                }
-                return Err(AppError::Custom(format!(
-                    "Cloud download returned {}: {}",
-                    status, body
-                )));
-            }
-
-            let body_text = resp.text().await.map_err(|e| {
-                AppError::Custom(format!("Failed to read cloud accounts response: {}", e))
-            })?;
-            let payload: crate::models::account::CloudProfilePayload =
-                serde_json::from_str(&body_text).map_err(|e| {
-                    log::error!("Cloud profile response body: {}", body_text);
-                    AppError::Custom(format!("Failed to parse cloud profile: {}", e))
-                })?;
-            return Ok(Some(payload));
-        }
-
-        Err(AppError::Custom(
-            "Cloud download failed after retry".to_string(),
-        ))
-    }
-
     pub async fn delete_cloud_accounts(&self, totp_session: Option<&str>) -> Result<(), AppError> {
         let token = self.get_token().await?;
         let mut req = self
@@ -1073,6 +962,21 @@ impl GoodLuckAuthService {
             .map_err(|e| AppError::Custom(format!("Failed to parse GoodLuck response: {}", e)))
     }
 
+    pub async fn legacy_cloud_for_migration(&self,session:Option<&str>) -> Result<crate::models::account::CloudProfilePayload,AppError> {
+        self.api_json(reqwest::Method::GET,"/auth/rustlm/cloud-accounts",None,session).await
+    }
+    pub async fn vault_request(&self, method: reqwest::Method, body: Option<serde_json::Value>, session: Option<&str>) -> Result<serde_json::Value, AppError> {
+        self.api_json(method,"/auth/rustlm/vault",body,session).await
+    }
+    pub async fn lm_delete_presence(&self) -> Result<(),AppError> {
+        self.api_request(reqwest::Method::DELETE,"/auth/rustlm/lm-presence",None,None).await?; Ok(())
+    }
+    pub async fn lm_friends(&self) -> Result<serde_json::Value, AppError> {
+        self.api_json(reqwest::Method::GET,"/auth/rustlm/lm-friends",None,None).await
+    }
+    pub async fn lm_presence(&self, body: serde_json::Value) -> Result<serde_json::Value, AppError> {
+        self.api_json(reqwest::Method::PUT,"/auth/rustlm/lm-presence",Some(body),None).await
+    }
     pub async fn get_friends(
         &self,
     ) -> Result<Vec<crate::models::goodluck::GoodLuckFriend>, AppError> {

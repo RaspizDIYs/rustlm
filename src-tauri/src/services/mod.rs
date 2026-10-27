@@ -18,3 +18,5 @@ pub mod repair;
 pub mod repair_paths;
 #[cfg(windows)]
 pub mod uia_login;
+
+pub mod vault;

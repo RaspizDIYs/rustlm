@@ -4,33 +4,15 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use tauri::Emitter;
 
-use crate::cloud_profile_apply;
 use crate::error::AppError;
-use crate::models::account::{CloudAccountData, CloudProfilePayload, SyncStatus, TotpSession};
+use crate::models::account::{SyncStatus, TotpSession};
 use crate::services::accounts_storage::AccountsStorage;
 use crate::services::goodluck_auth::GoodLuckAuthService;
 use crate::services::rune_pages_storage::RunePagesStorage;
 use crate::services::settings::SettingsService;
 
-fn classify_cloud_sync_error_message(raw: &str) -> String {
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains("totp_required") {
-        return "totp_required".to_string();
-    }
-    if raw.contains("401")
-        && (lower.contains("cloud upload returned")
-            || lower.contains("cloud download returned")
-            || lower.contains("cloud delete returned"))
-    {
-        return "goodluck_reauth".to_string();
-    }
-    raw.to_string()
-}
-
 pub struct CloudSyncService {
     accounts: Arc<AccountsStorage>,
-    settings: Arc<SettingsService>,
-    rune_pages: Arc<RunePagesStorage>,
     goodluck: Arc<GoodLuckAuthService>,
     totp_session: Mutex<Option<TotpSession>>,
     totp_expiry_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -44,14 +26,12 @@ pub struct CloudSyncService {
 impl CloudSyncService {
     pub fn new(
         accounts: Arc<AccountsStorage>,
-        settings: Arc<SettingsService>,
-        rune_pages: Arc<RunePagesStorage>,
+        _settings: Arc<SettingsService>,
+        _rune_pages: Arc<RunePagesStorage>,
         goodluck: Arc<GoodLuckAuthService>,
     ) -> Self {
         Self {
             accounts,
-            settings,
-            rune_pages,
             goodluck,
             totp_session: Mutex::new(None),
             totp_expiry_task: Mutex::new(None),
@@ -180,39 +160,6 @@ impl CloudSyncService {
         self.get_valid_totp_session().is_none()
     }
 
-    fn build_cloud_accounts(&self) -> Vec<CloudAccountData> {
-        self.accounts
-            .load_all_with_passwords()
-            .into_iter()
-            .map(|(record, password)| CloudAccountData {
-                username: record.username,
-                password,
-                note: record.note,
-                created_at: record.created_at,
-                avatar_url: record.avatar_url,
-                summoner_name: record.summoner_name,
-                rank: record.rank,
-                rank_display: record.rank_display,
-                riot_id: record.riot_id,
-                puuid: record.puuid,
-                rank_icon_url: record.rank_icon_url,
-                server: record.server,
-                summoner_level: record.summoner_level,
-                pinned: record.pinned,
-            })
-            .collect()
-    }
-
-    fn build_profile_payload(&self) -> CloudProfilePayload {
-        CloudProfilePayload {
-            accounts: self.build_cloud_accounts(),
-            updated_at: Utc::now(),
-            settings: Some(self.settings.export_settings_json_map()),
-            rune_pages: Some(self.rune_pages.load_all()),
-            update_settings: Some(self.settings.load_update_settings()),
-        }
-    }
-
     pub async fn push(&self) -> Result<(), AppError> {
         let _guard = self.sync_lock.lock().await;
         self.push_inner().await
@@ -226,93 +173,215 @@ impl CloudSyncService {
     pub async fn sync(&self, app: &crate::state::AppState) -> Result<(), AppError> {
         let _guard = self.sync_lock.lock().await;
         self.pull_inner(app).await?;
-        self.push_inner().await?;
         Ok(())
     }
 
-    async fn push_inner(&self) -> Result<(), AppError> {
-        if !self.goodluck.is_connected() {
-            self.set_status(SyncStatus::Disconnected);
-            return Err(AppError::Custom("Not connected to GoodLuck".to_string()));
-        }
-
-        self.set_status(SyncStatus::Syncing);
-
-        let profile = self.build_profile_payload();
-        let session = self.get_valid_totp_session();
-
-        match self
+    fn vault_user(&self) -> Result<String, AppError> {
+        self.goodluck
+            .get_user()
+            .map(|u| u.user_id)
+            .ok_or_else(|| AppError::Custom("Войдите в GoodLuck".into()))
+    }
+    pub fn vault_connected(&self) -> bool {
+        self.vault_user()
+            .ok()
+            .is_some_and(|id| super::vault::load(&id).is_ok())
+    }
+    pub async fn connect_vault(&self, code: Option<String>) -> Result<Option<String>, AppError> {
+        let _lock = self.sync_lock.lock().await;
+        let user = self.vault_user()?;
+        let remote = self
             .goodluck
-            .upload_cloud_profile(profile, session.as_deref())
-            .await
-        {
-            Ok(_meta) => {
-                let now = Utc::now();
-                *self.last_synced_at.lock().unwrap() = Some(now);
-                self.set_status(SyncStatus::Success {
-                    last_synced: now.to_rfc3339(),
-                });
-                Ok(())
+            .vault_request(
+                reqwest::Method::GET,
+                None,
+                self.get_valid_totp_session().as_deref(),
+            )
+            .await?;
+        if super::vault::load(&user).is_ok() {
+            return Err(AppError::Custom("Этот ПК уже подключён к хранилищу".into()));
+        }
+        let creating = code.is_none();
+        let key = code.unwrap_or_else(super::vault::new_key);
+        let mut state = super::vault::LocalVault {
+            key: key.trim().into(),
+            ..Default::default()
+        };
+        if let Some(envelope) = remote.get("envelope").filter(|v| !v.is_null()) {
+            if creating {
+                return Err(AppError::Custom(
+                    "Хранилище уже существует. Введите код с первого ПК".into(),
+                ));
             }
-            Err(e) => {
-                let msg = classify_cloud_sync_error_message(&e.to_string());
-                self.set_status(SyncStatus::Error {
-                    message: msg.clone(),
-                });
-                if msg == "totp_required" {
-                    self.clear_cloud_totp_session();
-                    self.emit_cloud_totp_required();
-                }
-                Err(e)
-            }
+            let envelope = serde_json::from_value(envelope.clone())?;
+            super::vault::open(&user, &state.key, &envelope)?;
+            state.baseline = Some(serde_json::json!({"accounts":{}}));
+            state.revision = remote
+                .get("revision")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+        } else if !creating {
+            return Err(AppError::Custom(
+                "Хранилище ещё не создано на первом ПК".into(),
+            ));
+        }
+        if creating && remote.get("legacy").and_then(|v| v.as_bool()) == Some(true) {
+            let legacy = self
+                .goodluck
+                .legacy_cloud_for_migration(self.get_valid_totp_session().as_deref())
+                .await?;
+            self.accounts
+                .migrate_missing_cloud_accounts(legacy.accounts)?;
+        }
+        // First merge has an empty base: disjoint accounts merge; differing copies require a choice.
+        super::vault::save(&user, &state)?;
+        if creating {
+            self.vault_cycle("merge").await?;
+            Ok(Some(state.key))
+        } else {
+            Ok(None)
         }
     }
-
-    async fn pull_inner(&self, app: &crate::state::AppState) -> Result<usize, AppError> {
-        if !self.goodluck.is_connected() {
-            self.set_status(SyncStatus::Disconnected);
-            return Err(AppError::Custom("Not connected to GoodLuck".to_string()));
+    pub async fn disconnect_vault(&self) -> Result<(), AppError> {
+        let _lock = self.sync_lock.lock().await;
+        let path = super::vault::path(&self.vault_user()?);
+        if path.exists() {
+            std::fs::remove_file(path)?;
         }
-
-        self.set_status(SyncStatus::Syncing);
-
-        let session = self.get_valid_totp_session();
-
-        match self
+        self.set_status(SyncStatus::Idle);
+        Ok(())
+    }
+    pub fn vault_recovery_code(&self) -> Result<String, AppError> {
+        Ok(super::vault::load(&self.vault_user()?)?.key)
+    }
+    pub async fn rotate_vault(&self) -> Result<String, AppError> {
+        let _lock = self.sync_lock.lock().await;
+        self.vault_cycle("merge").await?;
+        let user = self.vault_user()?;
+        let mut state = super::vault::load(&user)?;
+        let document = state
+            .baseline
+            .clone()
+            .ok_or_else(|| AppError::Custom("Сначала синхронизируйте хранилище".into()))?;
+        let key = super::vault::new_key();
+        let envelope = super::vault::seal(&user, &key, &document)?;
+        // Keep the pending key locally before the remote write so interruption cannot lose access.
+        state.pending_key = Some(key.clone());
+        super::vault::save(&user, &state)?;
+        let result = self
             .goodluck
-            .download_cloud_accounts(session.as_deref())
-            .await
-        {
-            Ok(Some(payload)) => {
-                let imported = cloud_profile_apply::apply_cloud_profile(app, &payload).await?;
-                let now = Utc::now();
-                *self.last_synced_at.lock().unwrap() = Some(now);
-                self.set_status(SyncStatus::Success {
-                    last_synced: now.to_rfc3339(),
-                });
-                Ok(imported)
-            }
-            Ok(None) => {
-                self.set_status(SyncStatus::Idle);
-                Ok(0)
-            }
-            Err(e) => {
-                let msg = classify_cloud_sync_error_message(&e.to_string());
-                self.set_status(SyncStatus::Error {
-                    message: msg.clone(),
-                });
-                if msg == "totp_required" {
-                    self.clear_cloud_totp_session();
-                    self.emit_cloud_totp_required();
-                }
-                Err(e)
-            }
+            .vault_request(
+                reqwest::Method::PUT,
+                Some(serde_json::json!({"expectedRevision":state.revision,"envelope":envelope})),
+                self.get_valid_totp_session().as_deref(),
+            )
+            .await?;
+        state.key = key.clone();
+        state.pending_key = None;
+        state.revision = result
+            .get("revision")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        super::vault::save(&user, &state)?;
+        Ok(key)
+    }
+    pub async fn resolve_vault(&self, mode: &str) -> Result<(), AppError> {
+        let _lock = self.sync_lock.lock().await;
+        self.vault_cycle(mode).await
+    }
+    async fn vault_cycle(&self, mode: &str) -> Result<(), AppError> {
+        let user = self.vault_user()?;
+        let mut state = super::vault::load(&user)?;
+        let local = self.accounts.vault_document()?;
+        let session = self.get_valid_totp_session();
+        let remote = self
+            .goodluck
+            .vault_request(reqwest::Method::GET, None, session.as_deref())
+            .await?;
+        let revision = remote
+            .get("revision")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        if revision.is_none() && state.revision.is_some() {
+            return Err(AppError::Custom("Облачное хранилище удалено. Локальные аккаунты сохранены; подключите хранилище заново".into()));
         }
+        let document = if let Some(value) = remote.get("envelope").filter(|v| !v.is_null()) {
+            let envelope = serde_json::from_value(value.clone())?;
+            match super::vault::open(&user, &state.key, &envelope) {
+                Ok(value) => value,
+                Err(error) => {
+                    if let Some(pending) = state.pending_key.clone() {
+                        let value = super::vault::open(&user, &pending, &envelope)?;
+                        state.key = pending;
+                        state.pending_key = None;
+                        value
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        } else {
+            serde_json::json!({"accounts":{}})
+        };
+        let base = state
+            .baseline
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({"accounts":{}}));
+        let merged = match mode {
+            "local" => local.clone(),
+            "remote" => document.clone(),
+            _ => super::vault::merge(&base, &local, &document)?,
+        };
+        if merged != document || revision.is_none() {
+            let envelope = super::vault::seal(&user, &state.key, &merged)?;
+            let saved = self
+                .goodluck
+                .vault_request(
+                    reqwest::Method::PUT,
+                    Some(serde_json::json!({"expectedRevision":revision,"envelope":envelope})),
+                    session.as_deref(),
+                )
+                .await?;
+            state.revision = saved
+                .get("revision")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+        } else {
+            state.revision = revision;
+        }
+        self.accounts.apply_vault_document(&local, &merged)?;
+        state.baseline = Some(merged);
+        super::vault::save(&user, &state)?;
+        self.set_status(SyncStatus::Success {
+            last_synced: Utc::now().to_rfc3339(),
+        });
+        self.emit_cloud_sync_complete();
+        Ok(())
+    }
+    async fn push_inner(&self) -> Result<(), AppError> {
+        self.set_status(SyncStatus::Syncing);
+        let result = self.vault_cycle("merge").await;
+        if let Err(ref e) = result {
+            self.set_status(SyncStatus::Error {
+                message: e.to_string(),
+            });
+        }
+        result
+    }
+    async fn pull_inner(&self, _app: &crate::state::AppState) -> Result<usize, AppError> {
+        self.push_inner().await?;
+        Ok(0)
     }
 
     pub async fn delete_cloud_data(&self, totp_code: Option<&str>) -> Result<(), AppError> {
         let _guard = self.sync_lock.lock().await;
         self.goodluck.delete_cloud_accounts(totp_code).await?;
+        if let Ok(user) = self.vault_user() {
+            let path = super::vault::path(&user);
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+        }
         *self.last_synced_at.lock().unwrap() = None;
         self.set_status(SyncStatus::Idle);
         Ok(())
@@ -326,13 +395,15 @@ impl CloudSyncService {
         let this = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             loop {
-                this.debounce_notify.notified().await;
+                tokio::select! {
+                    _=this.debounce_notify.notified()=>{},
+                    _=tokio::time::sleep(std::time::Duration::from_secs(30))=>{},
+                }
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                 if !this.goodluck.is_connected() {
                     continue;
                 }
-                // This notification means local data changed. Upload it directly:
-                // pulling the older server snapshot first undoes fresh LCU updates.
+                // Merge against the encrypted baseline; concurrent changes never overwrite silently.
                 let _ = this.push().await;
                 this.emit_cloud_sync_complete();
             }
