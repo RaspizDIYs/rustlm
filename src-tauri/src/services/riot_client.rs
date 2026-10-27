@@ -177,29 +177,45 @@ impl RiotClientService {
 
     #[cfg(windows)]
     fn find_league_lockfile_from_process() -> Option<PathBuf> {
-        use std::os::windows::process::CommandExt;
-        let output = Command::new("wmic")
-            .args([
-                "process",
-                "where",
-                "name='LeagueClientUx.exe'",
-                "get",
-                "ExecutablePath",
-                "/VALUE",
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some(path_str) = line.strip_prefix("ExecutablePath=") {
-                let path = PathBuf::from(path_str.trim());
-                if let Some(parent) = path.parent() {
-                    return Some(parent.join("lockfile"));
+        Self::find_process_pids("LeagueClientUx.exe")
+            .into_iter()
+            .find_map(|pid| {
+                let path = Self::process_path(pid)?;
+                if !path
+                    .file_name()?
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("LeagueClientUx.exe")
+                {
+                    return None;
                 }
-            }
+                Some(path.parent()?.join("lockfile"))
+            })
+    }
+    #[cfg(windows)]
+    fn process_path(pid: u32) -> Option<PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut buffer = vec![0u16; 32768];
+            let mut length = buffer.len() as u32;
+            let result = QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                PWSTR(buffer.as_mut_ptr()),
+                &mut length,
+            );
+            let _ = CloseHandle(handle);
+            result.ok()?;
+            Some(PathBuf::from(std::ffi::OsString::from_wide(
+                &buffer[..length as usize],
+            )))
         }
-        None
     }
 
     /// Check if a process is running by name using Windows ToolHelp API.
@@ -1296,4 +1312,16 @@ fn platform_to_server(platform: &str) -> String {
         _ => return upper,
     }
     .to_string()
+}
+
+#[cfg(all(test, windows))]
+mod native_process_tests {
+    #[test]
+    fn queries_current_executable_without_starting_system_utilities() {
+        assert_eq!(
+            super::RiotClientService::process_path(std::process::id()).unwrap(),
+            std::env::current_exe().unwrap()
+        );
+        assert!(super::RiotClientService::process_path(0).is_none());
+    }
 }
