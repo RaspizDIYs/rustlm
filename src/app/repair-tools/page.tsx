@@ -839,6 +839,8 @@ export default function RepairToolsPage() {
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
+                  size="sm"
+                  className="h-7! w-40 shrink-0"
                   onClick={detect}
                   disabled={busy || detecting}
                 >
@@ -854,6 +856,8 @@ export default function RepairToolsPage() {
                 </Button>
                 <Button
                   variant="outline"
+                  size="sm"
+                  className="h-7! w-40 shrink-0"
                   disabled={busy || detecting}
                   onClick={choose}
                 >
@@ -893,17 +897,18 @@ export default function RepairToolsPage() {
                   </div>
                 </>
               )}
-              {managedProfile && <div className="flex flex-wrap items-center gap-2 rounded-lg border p-2">
-                <span className="mr-auto text-xs text-muted-foreground">Версия файла: {managedProfile.state === "configured" ? "настроена для Riot" : managedProfile.state === "original" ? "исходная" : "изменена вручную"}</span>
-                <Button size="xs" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(false);}}>Исходная</Button>
-                <Button size="xs" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(true);}}>С настройкой Riot</Button>
+              {managedProfile && <div className="flex flex-col gap-2">
+                <span className="text-xs text-muted-foreground">Версия файла: {managedProfile.state === "configured" ? "настроена для Riot" : managedProfile.state === "original" ? "исходная" : "изменена вручную"}</span>
+                <div className="flex flex-wrap gap-2"><Button size="sm" className="h-7! w-40 shrink-0" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(false);}}>Исходная</Button>
+                <Button size="sm" className="h-7! w-40 shrink-0" variant="outline" disabled={busy || managedProfile.state === "modified" || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate(true);}}>С настройкой Riot</Button></div>
               </div>}
               <details className="text-xs text-muted-foreground">
                 <summary className="cursor-pointer">Что изменится и где сохраняются копии</summary>
                 <p className="mt-2">Меняется выбранная стратегия и её списки Riot; hosts — только при подтверждённой ошибке DNS. Копии и логи: RustLM → Repair Tools. Службы и Zapret2 пока не поддерживаются. Windows может запросить права для включения стратегии.</p>
               </details>
               <Button
-                size="xs"
+                size="sm"
+                className="h-8! w-60 max-w-full self-start"
                 disabled={
                   !installation ||
                   !strategy ||
@@ -913,7 +918,7 @@ export default function RepairToolsPage() {
                 onClick={start}
               >
                 <Wrench data-icon="inline-start" />
-                Проверить и настроить автоматически
+                Проверить и настроить
               </Button>
             </>
           )}

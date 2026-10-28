@@ -1,8 +1,15 @@
 "use client";
 import {useCallback,useEffect,useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
+import {RefreshCw, ListRestart, Send, Cloud, Swords, Users} from "lucide-react";
+import {Card,CardHeader,CardTitle,CardDescription,CardContent,CardAction} from "@/components/ui/card";
+import {Select,SelectTrigger,SelectValue,SelectContent,SelectGroup,SelectItem} from "@/components/ui/select";
+import {Switch} from "@/components/ui/switch";
+import {WithTooltip} from "@/components/ui/with-tooltip";
+import {Table,TableBody,TableRow,TableCell} from "@/components/ui/table";
+import {Skeleton} from "@/components/ui/skeleton";
 import {Button} from "@/components/ui/button";
-import {friendsError} from "@/lib/friends";
+import {friendsError,mergeFriends} from "@/lib/friends";
 import type {AccountRecord,GoodLuckFriend} from "@/lib/tauri";
 export type LmFriend=GoodLuckFriend & {accounts:string[];riot_accounts?:{puuid:string;riot_id:string}[];updated_at:string};
 export function LmFriends({accounts,onShare}:{accounts:AccountRecord[];onShare:(account:AccountRecord,friend:GoodLuckFriend)=>void}){
@@ -19,9 +26,34 @@ export function LmFriends({accounts,onShare}:{accounts:AccountRecord[];onShare:(
  useEffect(()=>{if(!enabled)return;let cancelled=false,running=false;const refresh=async()=>{if(running)return;running=true;try{const result=await invoke<{friends_count:number;riot_id:string}>("lm_publish_friends");if(!cancelled){setScan(result);await reload();}}catch(error){if(!cancelled){setScan(null);setErrors([friendsError(error)]);};}finally{running=false;}};void refresh();const timer=setInterval(()=>void refresh(),60000);return()=>{cancelled=true;clearInterval(timer);};},[enabled,reload]);
  const update=async()=>{setBusy(true);try{setScan(await invoke<{friends_count:number;riot_id:string}>("lm_publish_friends"));await reload();}catch(e){setScan(null);setErrors([friendsError(e)]);}finally{setBusy(false);}};
  const selected=accounts.find(a=>a.Username===target);
- const render=(list:GoodLuckFriend[])=>list.length?list.map(friend=><div key={friend.id} className="flex items-center justify-between gap-2 rounded border p-2"><div><p>{friend.display_name}</p>{"riot_accounts" in friend&&(friend as LmFriend).riot_accounts?.map(a=><p className="text-muted-foreground" key={a.puuid}>{a.riot_id}</p>)}{"updated_at" in friend&&<p className="text-muted-foreground">Обновлено {new Date(String(friend.updated_at)).toLocaleString("ru-RU")}</p>}</div><Button size="xs" disabled={!selected||!selected.EncryptedPassword} onClick={()=>selected&&onShare(selected,friend)}>Передать аккаунт</Button></div>):<p className="text-muted-foreground">{loaded?"Совпадений пока нет. Проверьте, что друг тоже включил обнаружение в LM и открыл League хотя бы один раз.":"Загружаем друзей…"}</p>;
- return <section className="space-y-3 text-xs"><div className="rounded border border-primary/25 bg-primary/5 p-3 space-y-2"><p>Находим друзей из открытого клиента League по Riot-аккаунтам, связанным с профилями LM. У обоих должно быть включено обнаружение и подтверждено владение Riot-аккаунтом в профиле GoodLuck; добавлять друг друга в друзья GoodLuck не нужно.</p><label className="flex items-center gap-2"><input type="checkbox" checked={enabled} disabled={busy} onChange={async e=>{const next=e.target.checked;setBusy(true);try{await invoke("lm_set_visibility",{enabled:next});setEnabled(next);await reload();}catch(error){setErrors([friendsError(error)]);}finally{setBusy(false);}}}/>Разрешить моим Riot-друзьям находить меня в LM</label><p className="text-muted-foreground">Обновляем друзей только вошедшего в League аккаунта; для общего списка войдите по очереди в каждый. Списки хранятся на сервере до 30 дней и обновляются, пока LM и League открыты. Пароли для поиска друзей не отправляются.</p><Button size="xs" disabled={busy||!enabled} onClick={()=>void update()}>Обновить друзей текущего Riot-аккаунта</Button>{scan&&<p role="status" className="text-muted-foreground">Из клиента {scan.riot_id} получено друзей: {scan.friends_count}. Ниже показаны те, у кого есть LM и включено обнаружение.</p>}</div>
- <div className="flex flex-wrap gap-2"><label>Друзья аккаунта <select aria-label="Друзья аккаунта" className="rounded border bg-background p-1" value={scope} onChange={e=>setScope(e.target.value)}><option value="all">Все аккаунты</option>{accounts.filter(a=>a.Puuid).map(a=><option key={a.Username} value={a.Puuid}>{a.RiotId||a.Username}</option>)}</select></label><label>Передавать <select aria-label="Аккаунт для передачи" className="rounded border bg-background p-1" value={target} onChange={e=>setTarget(e.target.value)}><option value="">Выберите аккаунт</option>{accounts.filter(a=>a.EncryptedPassword).map(a=><option key={a.Username} value={a.Username}>{a.RiotId||a.Username}</option>)}</select></label></div>
- {errors.map((error,i)=><p role="alert" className="break-words text-amber-500" key={i}>{error}</p>)}
- <div className="grid gap-3 sm:grid-cols-2"><section className="space-y-2"><h2 className="font-semibold">Друзья Riot в LM</h2>{render(lm.filter(f=>scope==="all"||f.accounts.includes(scope)))}</section><section className="space-y-2"><h2 className="font-semibold">Друзья GoodLuck</h2>{gl.length?render(gl):<p className="text-muted-foreground">{loaded?"В GoodLuck пока нет друзей. Это не мешает находить друзей из League.":"Загружаем друзей…"}</p>}</section></div></section>;
+ const visible=mergeFriends(gl,lm.filter(f=>scope==="all"||f.accounts.includes(scope)));
+ return <Card size="sm">
+  <CardHeader>
+   <CardTitle>Друзья</CardTitle>
+   <CardDescription>Для поиска Riot-друзей оба включают обнаружение и подтверждают Riot-аккаунт.</CardDescription>
+   <CardAction><div className="flex items-center gap-2">
+    <WithTooltip label="Разрешить Riot-друзьям находить вас в LM"><Switch size="sm" aria-label="Обнаружение друзей LM" checked={enabled} disabled={busy} onCheckedChange={async next=>{setBusy(true);try{await invoke("lm_set_visibility",{enabled:next});setEnabled(next);await reload();}catch(error){setErrors([friendsError(error)]);}finally{setBusy(false);}}}/></WithTooltip>
+    <WithTooltip label="Прочитать друзей из открытого клиента League"><Button aria-label="Обновить друзей League" size="icon-sm" variant="outline" disabled={busy||!enabled} onClick={()=>void update()}><RefreshCw className={busy?"animate-spin":undefined}/></Button></WithTooltip>
+    <WithTooltip label="Обновить списки LM и GoodLuck"><Button aria-label="Обновить списки друзей" size="icon-sm" variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{await reload();}finally{setBusy(false);}}}><ListRestart/></Button></WithTooltip>
+   </div></CardAction>
+  </CardHeader>
+  <CardContent className="flex flex-col gap-3">
+   <div className="flex flex-wrap items-center gap-2">
+    <Select value={scope} onValueChange={value=>value&&setScope(value)}>
+     <SelectTrigger size="sm" aria-label="Друзья аккаунта"><SelectValue>{scope==="all"?"Все аккаунты":accounts.find(a=>a.Puuid===scope)?.RiotId||"Аккаунт"}</SelectValue></SelectTrigger>
+     <SelectContent><SelectGroup><SelectItem value="all">Все аккаунты</SelectItem>{accounts.filter(a=>a.Puuid).map(a=><SelectItem key={a.Username} value={a.Puuid!}>{a.RiotId||a.Username}</SelectItem>)}</SelectGroup></SelectContent>
+    </Select>
+    <Select value={target||null} onValueChange={value=>setTarget(value||"")}>
+     <SelectTrigger size="sm" aria-label="Аккаунт для передачи"><SelectValue placeholder="Аккаунт для передачи">{selected?(selected.RiotId||selected.Username):null}</SelectValue></SelectTrigger>
+     <SelectContent><SelectGroup>{accounts.filter(a=>a.EncryptedPassword).map(a=><SelectItem key={a.Username} value={a.Username}>{a.RiotId||a.Username}</SelectItem>)}</SelectGroup></SelectContent>
+    </Select>
+    {scan&&<WithTooltip label={`Прочитано из ${scan.riot_id}; показываем совпадения с пользователями LM`}><span tabIndex={0} role="status" className="text-xs text-muted-foreground">Из League: {scan.friends_count}</span></WithTooltip>}
+   </div>
+   {errors.map((error,i)=><p role="alert" className="text-xs text-destructive" key={i}>{error}</p>)}
+   {!loaded?<Skeleton className="h-16 w-full"/>:visible.length?<Table><TableBody>{visible.map(friend=><TableRow key={friend.id}>
+    <TableCell><div className="flex items-center gap-2"><span className="font-medium">{friend.display_name}</span>{friend.sources.includes("riot")&&<WithTooltip label="Друг из League"><span tabIndex={0} aria-label="League" className="text-muted-foreground"><Swords className="size-3.5"/></span></WithTooltip>}{friend.sources.includes("goodluck")&&<WithTooltip label="Друг из GoodLuck"><span tabIndex={0} aria-label="GoodLuck" className="text-muted-foreground"><Cloud className="size-3.5"/></span></WithTooltip>}</div>{friend.riot_accounts?.map(a=><p className="text-xs text-muted-foreground" key={a.puuid}>{a.riot_id}</p>)}</TableCell>
+    <TableCell className="w-10"><WithTooltip label={selected?"Передать выбранный аккаунт":"Сначала выберите аккаунт для передачи"}><Button size="icon-sm" variant="outline" aria-label={`Передать аккаунт: ${friend.display_name}`} disabled={!selected?.EncryptedPassword} onClick={()=>selected&&onShare(selected,friend)}><Send/></Button></WithTooltip></TableCell>
+   </TableRow>)}</TableBody></Table>:<div role="status" className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground"><Users className="size-4"/>Друзья пока не найдены</div>}
+  </CardContent>
+ </Card>;
 }
