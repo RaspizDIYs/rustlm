@@ -32,7 +32,7 @@ import {
 import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff, ChevronDown, Share2, ShieldOff, UserPlus } from "lucide-react";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import type { AccountRecord, ClientConnectivityStatus, GoodLuckFriend, GoodLuckRiotAccount, MatchSummary, SharedAccount, SharedAccountsResponse } from "@/lib/tauri";
-import { championIconUrl, formatTimeAgo, positionLabel } from "@/lib/lol-assets";
+import { championIconUrl } from "@/lib/lol-assets";
 import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
 import { toast } from "sonner";
 
@@ -53,38 +53,36 @@ function rankToNumber(rankDisplay: string): number {
 
 type SortMode = "default" | "rank-asc" | "rank-desc";
 
-/** Одна игра в раскрывающемся аккаунте: чемпион, исход, KDA, режим, когда. */
+/** Одна игра в раскрывающемся аккаунте. Карточка намеренно узкая: пять
+ *  таких должны влезать в строку таблицы, не растягивая её. */
 function MatchChip({ match }: { match: MatchSummary }) {
   const icon = championIconUrl(match.champion_id);
-  const position = positionLabel(match.position);
+  const kda = `${match.kills}/${match.deaths}/${match.assists}`;
 
   return (
     <div
-      title={`${match.champion_name} · ${match.queue_name || "Режим не указан"} · ${formatTimeAgo(match.created_at_ms)}`}
-      className={`flex min-w-[120px] flex-1 items-center gap-1.5 rounded-md border px-1.5 py-1 ${
+      title={`${match.win ? "Победа" : "Поражение"} · ${match.champion_name || "Чемпион"} · ${kda}${match.queue_name ? ` · ${match.queue_name}` : ""}`}
+      className={`flex min-w-0 items-center gap-1 rounded border px-1 py-0.5 ${
         match.win ? "border-green-500/40 bg-green-500/10" : "border-red-500/40 bg-red-500/10"
       }`}
     >
-      {icon && (
+      {icon ? (
         <img
           src={icon}
           alt=""
-          className="h-6 w-6 shrink-0 rounded bg-muted object-cover"
+          className="h-5 w-5 shrink-0 rounded bg-muted object-cover"
           onError={(e) => {
             e.currentTarget.style.display = "none";
           }}
         />
+      ) : (
+        <div className="h-5 w-5 shrink-0 rounded bg-muted" />
       )}
       <div className="min-w-0 flex-1">
-        <div className={`truncate text-[11px] font-medium ${match.win ? "text-green-500" : "text-red-500"}`}>
-          {match.win ? "Победа" : "Поражение"}
-          <span className="ml-1 text-foreground">{match.champion_name}</span>
+        <div className={`truncate text-[10px] font-medium leading-tight ${match.win ? "text-green-500" : "text-red-500"}`}>
+          {match.champion_name || "—"}
         </div>
-        <div className="truncate text-[10px] text-muted-foreground">
-          {match.kills}/{match.deaths}/{match.assists}
-          {position ? ` · ${position}` : ""}
-          {` · ${match.queue_name || "—"} · ${formatTimeAgo(match.created_at_ms)}`}
-        </div>
+        <div className="truncate text-[9px] leading-tight text-muted-foreground">{kda}</div>
       </div>
     </div>
   );
@@ -1171,7 +1169,7 @@ export default function AccountsPage() {
                                   Матчей не нашлось. Проверь подключение GoodLuck и сервер аккаунта.
                                 </p>
                               ) : (
-                                <div className="flex flex-nowrap gap-1.5 overflow-x-auto pb-1">
+                                <div className="grid w-full min-w-0 grid-cols-[repeat(auto-fill,minmax(100px,1fr))] gap-1.5 overflow-hidden">
                                   {matchesByAccount[account.Username]?.map((match) => (
                                     <MatchChip key={match.match_id} match={match} />
                                   ))}

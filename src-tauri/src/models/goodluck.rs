@@ -170,3 +170,19 @@ pub struct SharedAccountCredentials {
     pub username: String,
     pub password: String,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoodLuckFriendRequest {
+    pub id: String,
+    #[serde(default)]
+    pub requester_id: String,
+    #[serde(default)]
+    pub requester_username: String,
+    #[serde(default)]
+    pub requester_display_name: String,
+    #[serde(default)]
+    pub requester_avatar_url: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+}

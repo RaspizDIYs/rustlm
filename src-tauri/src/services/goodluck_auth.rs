@@ -1006,6 +1006,31 @@ impl GoodLuckAuthService {
         Ok(())
     }
 
+    pub async fn get_friend_requests(
+        &self,
+    ) -> Result<Vec<crate::models::goodluck::GoodLuckFriendRequest>, AppError> {
+        self.api_json(reqwest::Method::GET, "/friends/requests", None, None)
+            .await
+    }
+
+    pub async fn accept_friend_request(&self, request_id: &str) -> Result<(), AppError> {
+        let path = format!("/friends/requests/{}/accept", urlencode(request_id));
+        self.api_request(reqwest::Method::POST, &path, None, None).await?;
+        Ok(())
+    }
+
+    pub async fn decline_friend_request(&self, request_id: &str) -> Result<(), AppError> {
+        let path = format!("/friends/requests/{}/decline", urlencode(request_id));
+        self.api_request(reqwest::Method::POST, &path, None, None).await?;
+        Ok(())
+    }
+
+    pub async fn remove_friend(&self, friend_id: &str) -> Result<(), AppError> {
+        let path = format!("/friends/{}", urlencode(friend_id));
+        self.api_request(reqwest::Method::DELETE, &path, None, None).await?;
+        Ok(())
+    }
+
     pub async fn get_shared_accounts(
         &self,
     ) -> Result<crate::models::goodluck::SharedAccountsResponse, AppError> {

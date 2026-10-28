@@ -240,6 +240,46 @@ pub async fn goodluck_send_friend_request(
 }
 
 #[tauri::command]
+pub async fn goodluck_get_friend_requests(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::goodluck::GoodLuckFriendRequest>, AppError> {
+    state.goodluck.get_friend_requests().await
+}
+
+#[tauri::command]
+pub async fn goodluck_accept_friend_request(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if request_id.trim().is_empty() {
+        return Err(AppError::Custom("Не выбрана заявка в друзья".to_string()));
+    }
+    state.goodluck.accept_friend_request(request_id.trim()).await
+}
+
+#[tauri::command]
+pub async fn goodluck_decline_friend_request(
+    request_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if request_id.trim().is_empty() {
+        return Err(AppError::Custom("Не выбрана заявка в друзья".to_string()));
+    }
+    state.goodluck.decline_friend_request(request_id.trim()).await
+}
+
+#[tauri::command]
+pub async fn goodluck_remove_friend(
+    friend_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    if friend_id.trim().is_empty() {
+        return Err(AppError::Custom("Не выбран друг".to_string()));
+    }
+    state.goodluck.remove_friend(friend_id.trim()).await
+}
+
+#[tauri::command]
 pub async fn goodluck_get_shared_accounts(
     state: State<'_, AppState>,
 ) -> Result<crate::models::goodluck::SharedAccountsResponse, AppError> {
