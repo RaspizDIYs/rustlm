@@ -423,8 +423,12 @@ mod tests {
 pub async fn lm_friends(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     state.goodluck.lm_friends().await
 }
+// Serialize opt-out with roster writes so an in-flight refresh cannot restore presence.
+static LM_DISCOVERY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tauri::command]
 pub async fn lm_set_visibility(enabled: bool, state: State<'_, AppState>) -> Result<(), AppError> {
+    let _guard = LM_DISCOVERY_LOCK.lock().await;
     if !enabled {
         state.goodluck.lm_delete_presence().await?;
     }
@@ -432,6 +436,7 @@ pub async fn lm_set_visibility(enabled: bool, state: State<'_, AppState>) -> Res
     Ok(())
 }
 pub async fn publish_lm_friends(state: &AppState) -> Result<serde_json::Value, AppError> {
+    let _guard = LM_DISCOVERY_LOCK.lock().await;
     if !state.settings.load_setting("LmFriendsVisible", false) {
         return Err(AppError::Custom("Включите обнаружение друзей LM".into()));
     }
@@ -456,10 +461,14 @@ pub async fn publish_lm_friends(state: &AppState) -> Result<serde_json::Value, A
         .filter_map(|f| f.get("puuid").and_then(|p| p.as_str()))
         .filter(|p| crate::models::account::is_valid_puuid(p))
         .collect();
-    state
-        .goodluck
+    let mut result = state.goodluck
         .lm_presence(serde_json::json!({"puuid":puuid,"friends":puuids}))
-        .await
+        .await?;
+    result["friends_count"] = serde_json::json!(puuids.len());
+    result["riot_id"] = serde_json::json!(format!("{}#{}",
+        current.get("gameName").and_then(|v| v.as_str()).unwrap_or(""),
+        current.get("tagLine").and_then(|v| v.as_str()).unwrap_or("")));
+    Ok(result)
 }
 #[tauri::command]
 pub async fn lm_publish_friends(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
