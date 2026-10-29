@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { MatchSummary } from "@/lib/tauri";
-import { championIconUrl, formatTimeAgo } from "@/lib/lol-assets";
+import { championIconUrl } from "@/lib/lol-assets";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 
 export function AccountMatches({ matches }: { matches: MatchSummary[] }) {
@@ -53,7 +53,7 @@ export function AccountMatches({ matches }: { matches: MatchSummary[] }) {
         {matches.slice(0, 20).map((match) => (
           <WithTooltip
             key={match.match_id}
-            label={`${match.champion_name} · ${match.win ? "Победа" : "Поражение"} · ${match.queue_name || "—"} · ${formatTimeAgo(match.created_at_ms)}`}
+            label={`${match.champion_name} · ${match.win ? "Победа" : "Поражение"}`}
           >
             <div
               role="listitem"
