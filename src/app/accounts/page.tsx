@@ -29,66 +29,60 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, Upload, Loader2, Lock, ArrowUpDown, Pencil, Cloud, RefreshCw, LogIn, Trash2, KeyRound, X, Pin, PinOff, ChevronDown, Share2, ShieldOff, UserPlus } from "lucide-react";
+import {
+  Download,
+  Upload,
+  Loader2,
+  Lock,
+  ArrowUpDown,
+  Pencil,
+  Cloud,
+  RefreshCw,
+  LogIn,
+  Trash2,
+  KeyRound,
+  X,
+  Pin,
+  PinOff,
+  ChevronDown,
+  Share2,
+  ShieldOff,
+  UserPlus,
+  Search,
+  Plus,
+  Ellipsis,
+  History,
+  ChevronUp,
+} from "lucide-react";
 import { WithTooltip } from "@/components/ui/with-tooltip";
-import type { AccountRecord, ClientConnectivityStatus, GoodLuckFriend, GoodLuckRiotAccount, MatchSummary, SharedAccount, SharedAccountsResponse } from "@/lib/tauri";
-import { championIconUrl, formatTimeAgo, positionLabel } from "@/lib/lol-assets";
+import type {
+  AccountRecord,
+  ClientConnectivityStatus,
+  GoodLuckFriend,
+  GoodLuckRiotAccount,
+  MatchSummary,
+  SharedAccount,
+  SharedAccountsResponse,
+} from "@/lib/tauri";
+import { AccountMatches } from "@/components/account-matches";
+import {
+  visibleAccounts,
+  type AccountSort,
+  type AccountSortKey,
+} from "@/lib/accounts-view";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
 import { toast } from "sonner";
 
-const RANK_ORDER: Record<string, number> = {
-  IRON: 1, BRONZE: 2, SILVER: 3, GOLD: 4, PLATINUM: 5,
-  EMERALD: 6, DIAMOND: 7, MASTER: 8, GRANDMASTER: 9, CHALLENGER: 10,
-};
-const DIVISION_ORDER: Record<string, number> = { IV: 1, III: 2, II: 3, I: 4 };
 const hasValidPuuid = (value: string) => /^[A-Za-z0-9_-]{78}$/.test(value);
-
-function rankToNumber(rankDisplay: string): number {
-  if (!rankDisplay) return 0;
-  const parts = rankDisplay.toUpperCase().split(" ");
-  const tier = RANK_ORDER[parts[0]] || 0;
-  const div = DIVISION_ORDER[parts[1]] || 0;
-  return tier * 10 + div;
-}
-
-type SortMode = "default" | "rank-asc" | "rank-desc";
-
-/** Одна игра в раскрывающемся аккаунте: чемпион, исход, KDA, режим, когда. */
-function MatchChip({ match }: { match: MatchSummary }) {
-  const icon = championIconUrl(match.champion_id);
-  const position = positionLabel(match.position);
-
-  return (
-    <div
-      title={`${match.champion_name} · ${match.queue_name || "Режим не указан"} · ${formatTimeAgo(match.created_at_ms)}`}
-      className={`flex min-w-[120px] flex-1 items-center gap-1.5 rounded-md border px-1.5 py-1 ${
-        match.win ? "border-green-500/40 bg-green-500/10" : "border-red-500/40 bg-red-500/10"
-      }`}
-    >
-      {icon && (
-        <img
-          src={icon}
-          alt=""
-          className="h-6 w-6 shrink-0 rounded bg-muted object-cover"
-          onError={(e) => {
-            e.currentTarget.style.display = "none";
-          }}
-        />
-      )}
-      <div className="min-w-0 flex-1">
-        <div className={`truncate text-[11px] font-medium ${match.win ? "text-green-500" : "text-red-500"}`}>
-          {match.win ? "Победа" : "Поражение"}
-          <span className="ml-1 text-foreground">{match.champion_name}</span>
-        </div>
-        <div className="truncate text-[10px] text-muted-foreground">
-          {match.kills}/{match.deaths}/{match.assists}
-          {position ? ` · ${position}` : ""}
-          {` · ${match.queue_name || "—"} · ${formatTimeAgo(match.created_at_ms)}`}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
@@ -104,7 +98,9 @@ export default function AccountsPage() {
   } | null>(null);
   const [dialogPassword, setDialogPassword] = useState("");
   const [dialogError, setDialogError] = useState<string | null>(null);
-  const [sortMode, setSortMode] = useState<SortMode>("default");
+  const [sort, setSort] = useState<AccountSort | null>(null);
+  const [query, setQuery] = useState("");
+  const cycleSort = (key: AccountSortKey) => setSort(current => ({key, descending: current?.key === key ? !current.descending : false}));
   const [addOpen, setAddOpen] = useState(false);
   const [addUsername, setAddUsername] = useState("");
   const [addPassword, setAddPassword] = useState("");
@@ -228,7 +224,7 @@ export default function AccountsPage() {
       });
       try {
         const { getRecentMatches } = await import("@/lib/tauri");
-        const matches = await getRecentMatches(account.Puuid, account.Server, 5);
+        const matches = await getRecentMatches(account.Puuid, account.Server, 20);
         setMatchesByAccount((prev) => ({ ...prev, [key]: matches }));
       } catch (e) {
         setMatchesError((prev) => ({ ...prev, [key]: String(e) }));
@@ -699,357 +695,329 @@ export default function AccountsPage() {
     ? `до ${new Date(account.expires_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`
     : "бессрочно";
 
-  if (friendsTab) return <div className="space-y-3"><div className="flex gap-2"><Button size="sm" variant="outline" onClick={()=>setFriendsTab(false)}>Аккаунты</Button><Button size="sm">Друзья</Button></div><LmFriends accounts={accounts} onShare={(account,friend)=>{setFriendsTab(false);void openShareDialog(account,friend);}}/></div>;
   return (
-    <div className="flex min-h-0 min-w-0 flex-col gap-4">
+    <div className="accounts-page flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
       {loginError && (
         <div className="shrink-0 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           {loginError}
         </div>
       )}
 
-      <div className="sticky top-0 z-10 flex shrink-0 flex-col gap-3 border-b border-border/60 bg-background/95 pb-3 backdrop-blur-sm sm:flex-row sm:items-start sm:justify-between sm:border-0 sm:bg-transparent sm:pb-0 sm:backdrop-blur-none">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-          <h1 className="shrink-0 text-2xl font-bold">Аккаунты</h1>
-          <Button size="xs" variant="outline" onClick={()=>setFriendsTab(true)}>Друзья</Button>
-          <AutoAcceptSwitch />
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div className="inline-flex overflow-hidden rounded-md border border-input shadow-xs">
-            <WithTooltip label="Экспорт аккаунтов в файл">
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-none border-0 shadow-none"
-                onClick={handleExport}
-              >
-                <Download className="h-3.5 w-3.5" />
-              </Button>
-            </WithTooltip>
-            <div className="w-px shrink-0 bg-border" aria-hidden />
-            <WithTooltip label="Импорт аккаунтов из файла">
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-none border-0 shadow-none"
-                onClick={handleImport}
-              >
-                <Upload className="h-3.5 w-3.5" />
-              </Button>
-            </WithTooltip>
+      <div className="accounts-header">
+        <div className="accounts-header-left">
+          <h1 className="shrink-0 text-lg font-semibold tracking-tight">
+            Аккаунты
+          </h1>
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-2 top-2 size-3.5 text-muted-foreground" />
+            <Input
+              aria-label="Поиск аккаунтов и друзей"
+              placeholder="Поиск"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              className="h-[30px] pl-7 text-xs"
+            />
           </div>
-          <Button variant="outline" size="sm" onClick={openGlImportDialog}>
-            <Cloud className="h-3.5 w-3.5 mr-1" /> Из GoodLuck
-          </Button>
-          <WithTooltip label="Ник, аватар, ранг из текущей сессии League (клиент должен быть запущен и залогинен)">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={lcuProfileRefreshing}
-              onClick={async () => {
-                setLcuProfileRefreshing(true);
-                try {
-                  const { refreshAccountProfileFromLcu } = await import("@/lib/tauri");
-                  const { notifyCloudAfterGoodluckSession } = await import("@/lib/post-login-sync");
-                  const r = await refreshAccountProfileFromLcu();
-                  await fetchAccounts();
-                  if (r.matchedUsername) {
-                    const username = r.matchedUsername;
-                    setMatchesError((prev) => {
-                      const next = { ...prev };
-                      delete next[username];
-                      return next;
-                    });
-                    setMatchesByAccount((prev) => {
-                      const next = { ...prev };
-                      delete next[username];
-                      return next;
-                    });
-                    setExpandedAccount((current) => current === username ? null : current);
-                  }
-                  await notifyCloudAfterGoodluckSession();
-                  if (r.updated) toast.success(r.message);
-                  else toast.info(r.message);
-                } catch (e) {
-                  toast.error(String(e));
-                } finally {
-                  setLcuProfileRefreshing(false);
-                }
-              }}
-            >
-              <RefreshCw className={`h-3.5 w-3.5 mr-1 ${lcuProfileRefreshing ? "animate-spin" : ""}`} />{" "}
-              Из клиента
-            </Button>
-          </WithTooltip>
-          <Button onClick={() => setAddOpen(true)}>Добавить</Button>
         </div>
-      </div>
-
-      {(sharedLoading || sharedAccounts.available_to_me.length > 0 || sharedAccounts.shared_by_me.length > 0) && (
-        <section className="shrink-0 space-y-3 rounded-xl border border-primary/25 bg-primary/[0.03] p-3">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold">Аккаунты GoodLuck</h2>
-            <Button variant="ghost" size="sm" onClick={() => void fetchSharedAccounts(true)} disabled={sharedLoading}>
-              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${sharedLoading ? "animate-spin" : ""}`} /> Обновить
-            </Button>
-          </div>
-          {sharedAccounts.available_to_me.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Доступно мне</p>
-              <div className="grid gap-2 lg:grid-cols-2">
-                {sharedAccounts.available_to_me.map((account) => (
-                  <Card key={account.id} className="border-primary/20">
-                    <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="truncate font-medium">{account.riot_id}</span>
-                          <Badge variant="secondary">от {account.owner_display_name}</Badge>
-                        </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{account.server} · {sharedExpiry(account)} · пароль не хранится локально</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button size="sm" disabled={loginInProgress !== null} onClick={() => void handleSharedLogin(account)}>
-                          {loginInProgress === `shared:${account.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="mr-1 h-4 w-4" />}
-                          {loginInProgress === `shared:${account.id}` ? loginProgress || "Вход…" : "Войти"}
-                        </Button>
-                        <WithTooltip label="Отказаться от доступа и выйти из этого Riot-аккаунта">
-                          <Button variant="outline" size="icon" aria-label="Отказаться от доступа" onClick={() => void handleRevokeShared(account, true)}>
-                            <ShieldOff className="h-4 w-4" />
-                          </Button>
-                        </WithTooltip>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          )}
-          {sharedAccounts.shared_by_me.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Выданные мной</p>
-              <div className="grid gap-2 lg:grid-cols-2">
-                {sharedAccounts.shared_by_me.map((account) => (
-                  <Card key={account.id}>
-                    <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
-                      <div className="min-w-0">
-                        <div className="truncate font-medium">{account.riot_id}</div>
-                        <p className="mt-1 text-xs text-muted-foreground">для {account.recipient_display_name} · {sharedExpiry(account)} · выдач пароля: {account.access_count}</p>
-                      </div>
-                      <Button variant="destructive" size="sm" onClick={() => void handleRevokeShared(account, false)}>
-                        <ShieldOff className="mr-1 h-4 w-4" /> Отозвать доступ
-                      </Button>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
-        {loading ? (
-          <Card>
-            <CardContent className="p-8 text-center text-muted-foreground">
-              Загрузка...
-            </CardContent>
-          </Card>
-        ) : accounts.length === 0 ? (
-          <Card>
-            <CardContent className="p-8 text-center text-muted-foreground">
-              <p>Нет добавленных аккаунтов</p>
-              <p className="text-sm mt-2">
-                Нажмите «Добавить» чтобы начать
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="rounded-xl border border-border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Логин</TableHead>
-                  <TableHead>Заметка</TableHead>
-                  <TableHead>
-                    <button
-                      className="flex items-center gap-1 hover:text-foreground transition-colors"
-                      onClick={() => setSortMode((m) => m === "default" ? "rank-desc" : m === "rank-desc" ? "rank-asc" : "default")}
-                    >
-                      Аккаунт
-                      <ArrowUpDown className={`h-3 w-3 ${sortMode !== "default" ? "text-primary" : "opacity-50"}`} />
-                    </button>
-                  </TableHead>
-                  <TableHead>Сервер</TableHead>
-                  <TableHead className="w-[212px] min-w-[212px]">Действия</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(() => {
-                  let sorted = [...accounts];
-                  if (sortMode === "rank-desc") {
-                    sorted.sort((a, b) => rankToNumber(b.RankDisplay) - rankToNumber(a.RankDisplay));
-                  } else if (sortMode === "rank-asc") {
-                    sorted.sort((a, b) => rankToNumber(a.RankDisplay) - rankToNumber(b.RankDisplay));
-                  }
-
-                  const PINNED_LABEL = "__pinned__";
-                  const pinnedAccounts = sorted.filter((a) => a.Pinned);
-                  const rest = sorted.filter((a) => !a.Pinned);
-
-                  const servers = new Map<string, AccountRecord[]>();
-                  for (const acc of rest) {
-                    const srv = acc.Server || "Без сервера";
-                    if (!servers.has(srv)) servers.set(srv, []);
-                    servers.get(srv)!.push(acc);
-                  }
-
-                  const hasMultipleServers = servers.size > 1 || (servers.size === 1 && !servers.has("Без сервера"));
-                  const showServerHeaders = hasMultipleServers || pinnedAccounts.length > 0;
-
-                  const NO_SERVER_LABEL = "Без сервера";
-                  const serverOrderRank = (name: string): number => {
-                    if (name === NO_SERVER_LABEL) return 3;
-                    const u = name.toUpperCase();
-                    if (u === "RU") return 0;
-                    if (u === "EUW") return 1;
-                    return 2;
-                  };
-                  const serverEntries = [...servers.entries()].sort(([a], [b]) => {
-                    const ra = serverOrderRank(a);
-                    const rb = serverOrderRank(b);
-                    if (ra !== rb) return ra - rb;
-                    return a.localeCompare(b, "ru");
-                  });
-
-                  const sections: [string, AccountRecord[]][] =
-                    pinnedAccounts.length > 0
-                      ? [[PINNED_LABEL, pinnedAccounts], ...serverEntries]
-                      : serverEntries;
-
-                  const rows: React.ReactNode[] = [];
-                  for (const [server, group] of sections) {
-                    const isPinnedSection = server === PINNED_LABEL;
-                    if (isPinnedSection || showServerHeaders) {
-                      rows.push(
-                        <TableRow key={`srv-${server}`}>
-                          <TableCell colSpan={5} className="bg-muted/30 py-1.5 px-3">
-                            <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                              {isPinnedSection && <Pin className="h-3 w-3" />}
-                              {isPinnedSection ? "Закреплённые" : server} ({group.length})
-                            </span>
-                          </TableCell>
-                        </TableRow>
+        <Tabs
+          value={friendsTab ? "friends" : "accounts"}
+          onValueChange={(value) => setFriendsTab(value === "friends")}
+          className="accounts-tabs"
+        >
+          <TabsList className="h-[30px] w-full">
+            <TabsTrigger value="accounts">Аккаунты</TabsTrigger>
+            <TabsTrigger value="friends">Друзья</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {!friendsTab && (
+          <>
+            <div className="accounts-header-imports">
+              <Button variant="outline" size="sm" onClick={openGlImportDialog}>
+                <Cloud data-icon="inline-start" />
+                GoodLuck
+              </Button>
+              <WithTooltip label="Ник, аватар, ранг из текущей сессии League (клиент должен быть запущен и залогинен)">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={lcuProfileRefreshing}
+                  onClick={async () => {
+                    setLcuProfileRefreshing(true);
+                    try {
+                      const { refreshAccountProfileFromLcu } = await import(
+                        "@/lib/tauri"
                       );
+                      const { notifyCloudAfterGoodluckSession } = await import(
+                        "@/lib/post-login-sync"
+                      );
+                      const r = await refreshAccountProfileFromLcu();
+                      await fetchAccounts();
+                      if (r.matchedUsername) {
+                        const username = r.matchedUsername;
+                        setMatchesError((prev) => {
+                          const next = { ...prev };
+                          delete next[username];
+                          return next;
+                        });
+                        setMatchesByAccount((prev) => {
+                          const next = { ...prev };
+                          delete next[username];
+                          return next;
+                        });
+                        setExpandedAccount((current) =>
+                          current === username ? null : current,
+                        );
+                      }
+                      await notifyCloudAfterGoodluckSession();
+                      if (r.updated) toast.success(r.message);
+                      else toast.info(r.message);
+                    } catch (e) {
+                      toast.error(String(e));
+                    } finally {
+                      setLcuProfileRefreshing(false);
                     }
-                    for (const account of group) {
-                      const isNotActivated = !account.EncryptedPassword;
-                      const displayUsername = account.Username.startsWith("gl:")
-                        ? account.Username.slice(3)
-                        : account.Username;
-                      rows.push(
-                        <TableRow key={account.Username} className={isNotActivated ? "opacity-70" : ""}>
-                          <TableCell className="font-medium">
-                            <div className="flex items-center gap-2">
-                              <span>{hideLogins ? "••••••••" : displayUsername}</span>
-                              {isNotActivated && (
-                                <Badge variant="outline" className="text-xs text-amber-500 border-amber-500/50">
-                                  Не активирован
-                                </Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-muted-foreground">
-                            {account.Note || "—"}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              {(account.AvatarUrl || account.SummonerLevel > 0) && (
-                                <div className="relative shrink-0">
-                                  {account.AvatarUrl ? (
-                                    <img
-                                      src={account.AvatarUrl}
-                                      alt=""
-                                      className="w-9 h-9 rounded-full"
-                                      onError={(e) => {
-                                        const img = e.currentTarget;
-                                        img.style.display = "none";
-                                      }}
-                                    />
-                                  ) : (
-                                    <div className="w-9 h-9 rounded-full bg-muted" />
+                  }}
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 mr-1 ${lcuProfileRefreshing ? "animate-spin" : ""}`}
+                  />{" "}
+                  Из клиента
+                </Button>
+              </WithTooltip>
+              <WithTooltip label="Импорт аккаунтов из файла">
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Импорт аккаунтов"
+                  onClick={handleImport}
+                >
+                  <Download />
+                </Button>
+              </WithTooltip>
+              <WithTooltip label="Экспорт аккаунтов в файл">
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Экспорт аккаунтов"
+                  onClick={handleExport}
+                >
+                  <Upload />
+                </Button>
+              </WithTooltip>
+            </div>
+            <div className="accounts-header-controls">
+              <AutoAcceptSwitch className="accounts-autoaccept" />
+              <Button size="sm" onClick={() => setAddOpen(true)}>
+                <Plus data-icon="inline-start" />
+                Добавить
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+      {friendsTab ? (
+        <LmFriends
+          accounts={accounts}
+          query={query}
+          onShare={(account, friend) => void openShareDialog(account, friend)}
+        />
+      ) : (
+        <>
+          {(sharedLoading ||
+            sharedAccounts.available_to_me.length > 0 ||
+            sharedAccounts.shared_by_me.length > 0) && (
+            <section className="shrink-0 overflow-hidden rounded-xl border border-border" aria-label="Доступ к аккаунтам">
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <h2 className="text-xs font-medium">Доступ к аккаунтам</h2>
+                <WithTooltip label="Обновить доступы"><Button variant="ghost" size="icon-xs" aria-label="Обновить доступы" disabled={sharedLoading} onClick={()=>void fetchSharedAccounts(true)}><RefreshCw className={sharedLoading?'animate-spin':undefined}/></Button></WithTooltip>
+              </div>
+              <div className="max-h-44 overflow-auto">
+              {sharedAccounts.available_to_me.length>0&&<>
+                <div className="bg-muted/20 px-3 py-1 text-[10px] text-muted-foreground">Доступно мне · {sharedAccounts.available_to_me.length}</div>
+                {sharedAccounts.available_to_me.map(account=><div key={account.id} className="flex items-center justify-between gap-3 border-t px-3 py-2">
+                  <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-xs font-medium">{account.riot_id}</span><Badge variant="outline" className="text-[10px]">{account.server}</Badge></div><p className="mt-0.5 truncate text-[11px] text-muted-foreground">От {account.owner_display_name} · {sharedExpiry(account)}</p></div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <WithTooltip label={loginInProgress===`shared:${account.id}`?loginProgress||'Вход…':'Войти'}><Button size="icon-sm" aria-label={`Войти: ${account.riot_id}`} disabled={loginInProgress!==null} onClick={()=>void handleSharedLogin(account)}>{loginInProgress===`shared:${account.id}`?<Loader2 className="animate-spin"/>:<LogIn/>}</Button></WithTooltip>
+                    <WithTooltip label="Отказаться от доступа и выйти"><Button size="icon-sm" variant="outline" aria-label={`Отказаться от доступа: ${account.riot_id}`} onClick={()=>void handleRevokeShared(account,true)}><ShieldOff/></Button></WithTooltip>
+                  </div>
+                </div>)}
+              </>}
+              {sharedAccounts.shared_by_me.length>0&&<>
+                <div className="border-t bg-muted/20 px-3 py-1 text-[10px] text-muted-foreground">Выданные мной · {sharedAccounts.shared_by_me.length}</div>
+                {sharedAccounts.shared_by_me.map(account=><div key={account.id} className="flex items-center justify-between gap-3 border-t px-3 py-2">
+                  <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-xs font-medium">{account.riot_id}</span><Badge variant="outline" className="text-[10px]">{account.server}</Badge><WithTooltip label={`Выдач пароля: ${account.access_count}`}><span className="text-muted-foreground"><Share2 className="size-3"/></span></WithTooltip></div><p className="mt-0.5 truncate text-[11px] text-muted-foreground">Для {account.recipient_display_name} · {sharedExpiry(account)}</p></div>
+                  <WithTooltip label="Отозвать доступ"><Button size="icon-sm" variant="destructive" aria-label={`Отозвать доступ: ${account.riot_id}`} onClick={()=>void handleRevokeShared(account,false)}><ShieldOff/></Button></WithTooltip>
+                </div>)}
+              </>}
+              {sharedLoading&&<div role="status" className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin"/>Обновляем…</div>}
+              </div>
+            </section>
+          )}
+
+          <div className="accounts-table-shell flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border">
+            <div className="accounts-table-scroll min-h-0 min-w-0 flex-1 overflow-auto">
+              {loading ? (
+                <Card>
+                  <CardContent className="p-8 text-center text-muted-foreground">
+                    Загрузка...
+                  </CardContent>
+                </Card>
+              ) : accounts.length === 0 ? (
+                <Card>
+                  <CardContent className="p-8 text-center text-muted-foreground">
+                    <p>Нет добавленных аккаунтов</p>
+                    <p className="text-sm mt-2">
+                      Нажмите «Добавить» чтобы начать
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div>
+                  <Table
+                    className="min-w-[580px] table-fixed"
+                    containerClassName="overflow-visible"
+                  >
+                    <colgroup>
+                      <col style={{ width: "16%" }} />
+                      <col style={{ width: "32%" }} />
+                      <col style={{ width: "12%" }} />
+                      <col style={{ width: "24%" }} />
+                      <col style={{ width: "14%" }} />
+                    </colgroup>
+                    <TableHeader className="sticky top-0 z-10 bg-card">
+                      <TableRow>
+                        {(
+                          [
+                            ["Note", "Заметки"],
+                            ["RiotId", "Аккаунт"],
+                            ["Server", "Сервер"],
+                            ["Username", "Логин"],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <TableHead
+                            key={key}
+                            aria-sort={
+                              sort?.key === key
+                                ? sort.descending
+                                  ? "descending"
+                                  : "ascending"
+                                : "none"
+                            }
+                          >
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className="h-7 px-0"
+                              onClick={() => cycleSort(key)}
+                            >
+                              {label}
+                              <ArrowUpDown
+                                className={
+                                  sort?.key === key
+                                    ? "text-primary"
+                                    : "opacity-40"
+                                }
+                              />
+                            </Button>
+                          </TableHead>
+                        ))}
+                        <TableHead className="text-right">Действия</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(() => {
+                        const rows: React.ReactNode[] = [];
+                        for (const account of visibleAccounts(
+                          accounts,
+                          query,
+                          sort,
+                        )) {
+                          const isNotActivated = !account.EncryptedPassword;
+                          const displayUsername = account.Username.startsWith(
+                            "gl:",
+                          )
+                            ? account.Username.slice(3)
+                            : account.Username;
+                          rows.push(
+                            <TableRow
+                              key={account.Username}
+                              className={isNotActivated ? "opacity-70" : ""}
+                            >
+                              <TableCell className="truncate text-xs text-muted-foreground">
+                                {account.Note || "—"}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-2">
+                                  {(account.AvatarUrl ||
+                                    account.SummonerLevel > 0) && (
+                                    <div className="relative shrink-0">
+                                      {account.AvatarUrl ? (
+                                        <img
+                                          src={account.AvatarUrl}
+                                          alt=""
+                                          className="size-7 rounded-full"
+                                          onError={(e) => {
+                                            const img = e.currentTarget;
+                                            img.style.display = "none";
+                                          }}
+                                        />
+                                      ) : (
+                                        <div className="size-7 rounded-full bg-muted" />
+                                      )}
+                                      {account.SummonerLevel > 0 && (
+                                        <span
+                                          className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground ring-2 ring-background"
+                                          aria-label="Уровень призывателя"
+                                        >
+                                          {account.SummonerLevel}
+                                        </span>
+                                      )}
+                                    </div>
                                   )}
-                                  {account.SummonerLevel > 0 && (
-                                    <span
-                                      className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground ring-2 ring-background"
-                                      title="Уровень призывателя"
-                                    >
-                                      {account.SummonerLevel}
-                                    </span>
-                                  )}
+                                  <div className="min-w-0">
+                                    <div className="truncate text-xs font-medium">
+                                      {account.RiotId ||
+                                        account.SummonerName ||
+                                        "—"}
+                                    </div>
+                                    {account.RankDisplay && (
+                                      <Badge
+                                        variant="secondary"
+                                        className="text-[10px]"
+                                      >
+                                        {account.RankDisplay}
+                                      </Badge>
+                                    )}
+                                  </div>
                                 </div>
-                              )}
-                              <div>
-                                <div className="text-sm">
-                                  {account.RiotId || account.SummonerName || "—"}
-                                </div>
-                                {account.RankDisplay && (
-                                  <Badge variant="secondary" className="text-xs">
-                                    {account.RankDisplay}
-                                  </Badge>
-                                )}
-                              </div>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-muted-foreground text-sm">
-                            {account.Server || "—"}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-1">
-                              {loginInProgress === account.Username ? (
-                                <>
-                                  <WithTooltip label="Отменить вход">
-                                    <Button
+                              </TableCell>
+                              <TableCell className="text-muted-foreground text-sm">
+                                {account.Server || "—"}
+                              </TableCell>
+                              <TableCell className="break-all text-xs text-muted-foreground">
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <span>
+                                    {hideLogins ? "••••••••" : displayUsername}
+                                  </span>
+                                  {isNotActivated && (
+                                    <Badge
                                       variant="outline"
-                                      size="icon"
-                                      className="h-9 w-9"
-                                      onClick={async () => {
+                                      className="text-xs text-amber-500 border-amber-500/50"
+                                    >
+                                      Не активирован
+                                    </Badge>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                <WithTooltip label={loginInProgress===account.Username?'Отменить вход':isNotActivated?'Активировать':'Войти'}>
+                                {loginInProgress===account.Username?<Button size="icon-sm" variant="outline" aria-label="Отменить вход" onClick={async () => {
                                         try {
                                           const { cancelLogin } = await import("@/lib/tauri");
                                           await cancelLogin();
                                         } catch { }
-                                      }}
-                                      aria-label="Отменить вход"
-                                    >
-                                      <X className="h-4 w-4" />
-                                    </Button>
-                                  </WithTooltip>
-                                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
-                                  {loginProgress && (
-                                    <span className="max-w-32 truncate text-xs text-muted-foreground">{loginProgress}</span>
-                                  )}
-                                </>
-                              ) : isNotActivated ? (
-                                <WithTooltip label="Активировать — задать пароль Riot">
-                                  <Button
-                                    variant="outline"
-                                    size="icon"
-                                    className="h-9 w-9 text-amber-600 border-amber-500/50 hover:bg-amber-500/10"
-                                    disabled={loginInProgress !== null}
-                                    aria-label="Активировать"
-                                    onClick={() => openEditDialog(account)}
-                                  >
-                                    <KeyRound className="h-4 w-4" />
-                                  </Button>
-                                </WithTooltip>
-                              ) : (
-                                <WithTooltip label="Войти в аккаунт">
-                                  <Button
-                                    variant="default"
-                                    size="icon"
-                                    className="h-9 w-9"
-                                    disabled={loginInProgress !== null}
-                                    aria-label="Войти"
-                                    onClick={async () => {
+                                      }}><X/></Button>:isNotActivated?<Button size="icon-sm" variant="outline" aria-label="Активировать" disabled={loginInProgress!==null} onClick={()=>openEditDialog(account)}><KeyRound/></Button>:<Button size="icon-sm" aria-label={`Войти: ${account.RiotId||displayUsername}`} disabled={loginInProgress!==null} onClick={async () => {
                                       setLoginInProgress(account.Username);
                                       setLoginProgress("");
                                       setLoginError(null);
@@ -1077,178 +1045,215 @@ export default function AccountsPage() {
                                         setLoginInProgress(null);
                                         setLoginProgress("");
                                       }
-                                    }}
-                                  >
-                                    <LogIn className="h-4 w-4" />
-                                  </Button>
+                                    }}><LogIn/></Button>}
                                 </WithTooltip>
-                              )}
-                              <WithTooltip
-                                label={expandedAccount === account.Username ? "Скрыть матчи" : "Последние матчи"}
-                              >
-                                <Button
-                                  variant="outline"
-                                  size="icon"
-                                  className="h-9 w-9"
-                                  aria-label="Последние матчи"
-                                  onClick={() => void toggleAccountMatches(account)}
-                                >
-                                  <ChevronDown
-                                    className={`h-4 w-4 transition-transform ${expandedAccount === account.Username ? "rotate-180" : ""}`}
-                                  />
-                                </Button>
-                              </WithTooltip>
-                              {!isNotActivated && (
-                                <>
-                                  <WithTooltip label="Поделиться через GoodLuck">
-                                    <Button
-                                      variant="outline"
-                                      size="icon"
-                                      className="h-9 w-9"
-                                      disabled={loginInProgress !== null}
-                                      aria-label="Поделиться"
-                                      onClick={() => void openShareDialog(account)}
-                                    >
-                                      <Share2 className="h-4 w-4" />
-                                    </Button>
-                                  </WithTooltip>
-                                  <WithTooltip label="Редактировать аккаунт">
-                                    <Button
-                                      variant="outline"
-                                      size="icon"
-                                      className="h-9 w-9"
-                                      disabled={loginInProgress !== null}
-                                      aria-label="Редактировать"
-                                      onClick={() => openEditDialog(account)}
-                                    >
-                                      <Pencil className="h-4 w-4" />
-                                    </Button>
-                                  </WithTooltip>
-                                </>
-                              )}
-                              <WithTooltip label={account.Pinned ? "Открепить" : "Закрепить"}>
-                                <Button
-                                  variant="outline"
-                                  size="icon"
-                                  className={`h-9 w-9 ${account.Pinned ? "text-primary border-primary/50" : ""}`}
-                                  disabled={loginInProgress !== null}
-                                  aria-label={account.Pinned ? "Открепить" : "Закрепить"}
-                                  onClick={() => handleTogglePin(account)}
-                                >
-                                  {account.Pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-                                </Button>
-                              </WithTooltip>
-                              <WithTooltip label="Удалить аккаунт">
-                                <Button
-                                  variant="destructive"
-                                  size="icon"
-                                  className="h-9 w-9"
-                                  disabled={loginInProgress !== null}
-                                  aria-label="Удалить"
-                                  onClick={() => setDeleteTarget(account.Username)}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </WithTooltip>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      );
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger
+                                    render={
+                                      <Button
+                                        variant="outline"
+                                        size="icon-sm"
+                                        aria-label={`Действия: ${account.RiotId || displayUsername}`}
+                                      />
+                                    }
+                                  >
+                                    <Ellipsis />
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent
+                                    align="end"
+                                    className="w-48 accounts-dialog"
+                                  >
+                                    <DropdownMenuGroup>
 
-                      if (expandedAccount === account.Username) {
-                        rows.push(
-                          <TableRow key={`matches-${account.Username}`}>
-                            <TableCell colSpan={5} className="bg-muted/20 p-2">
-                              {matchesLoading === account.Username ? (
-                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  Загружаю последние матчи...
+                                      <DropdownMenuItem
+                                        disabled={loginInProgress !== null}
+                                        onClick={() => openEditDialog(account)}
+                                      >
+                                        <Pencil />
+                                        Редактировать
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        disabled={loginInProgress !== null}
+                                        onClick={() => handleTogglePin(account)}
+                                      >
+                                        {account.Pinned ? <PinOff /> : <Pin />}
+                                        {account.Pinned
+                                          ? "Открепить"
+                                          : "Закрепить"}
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        onClick={() =>
+                                          void toggleAccountMatches(account)
+                                        }
+                                      >
+                                        <History />
+                                        {expandedAccount === account.Username
+                                          ? "Скрыть матчи"
+                                          : "Последние матчи"}
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        disabled={
+                                          isNotActivated ||
+                                          loginInProgress !== null
+                                        }
+                                        onClick={() =>
+                                          void openShareDialog(account)
+                                        }
+                                      >
+                                        <Share2 />
+                                        Поделиться
+                                      </DropdownMenuItem>
+                                    </DropdownMenuGroup>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuGroup>
+                                      <DropdownMenuItem
+                                        variant="destructive"
+                                        disabled={loginInProgress !== null}
+                                        onClick={() =>
+                                          setDeleteTarget(account.Username)
+                                        }
+                                      >
+                                        <Trash2 />
+                                        Удалить
+                                      </DropdownMenuItem>
+                                    </DropdownMenuGroup>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                                 </div>
-                              ) : matchesError[account.Username] ? (
-                                <p className="text-xs text-destructive">{matchesError[account.Username]}</p>
-                              ) : (matchesByAccount[account.Username]?.length ?? 0) === 0 ? (
-                                <p className="text-xs text-muted-foreground">
-                                  Матчей не нашлось. Проверь подключение GoodLuck и сервер аккаунта.
-                                </p>
-                              ) : (
-                                <div className="flex flex-nowrap gap-1.5 overflow-x-auto pb-1">
-                                  {matchesByAccount[account.Username]?.map((match) => (
-                                    <MatchChip key={match.match_id} match={match} />
-                                  ))}
-                                </div>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      }
-                    }
-                  }
-                  return rows;
-                })()}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-      </div>
-      {connectivity && (
-        <div className="sticky bottom-0 z-10 mt-2 flex w-full min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl border border-border bg-card/95 px-4 py-2 text-sm shadow-md backdrop-blur-sm">
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              className={`h-2.5 w-2.5 shrink-0 rounded-full ${connectivity.lcu_http_ok
-                ? "bg-green-500"
-                : connectivity.is_riot_client_running
-                  ? "bg-yellow-500"
-                  : "bg-red-500"
-                }`}
-            />
-            <span className="text-muted-foreground">
-              {connectivity.lcu_http_ok
-                ? "League Client подключён"
-                : connectivity.is_riot_client_running
-                  ? "Riot Client запущен"
-                  : "Клиент не запущен"}
-            </span>
-          </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            {!connectivity.is_riot_client_running && (
-              <Button variant="outline" size="sm" onClick={handleStartRc}>
-                Запустить RC
-              </Button>
+                                {loginInProgress === account.Username && (
+                                  <span
+                                    role="status"
+                                    className="mt-1 flex items-center justify-end gap-1 text-[10px] text-muted-foreground"
+                                  >
+                                    <Loader2 className="size-3 animate-spin" />
+                                    <span className="max-w-24 truncate">
+                                      {loginProgress || "Вход…"}
+                                    </span>
+                                  </span>
+                                )}
+                              </TableCell>
+                            </TableRow>,
+                          );
+
+                          if (expandedAccount === account.Username) {
+                            rows.push(
+                              <TableRow key={`matches-${account.Username}`}>
+                                <TableCell
+                                  colSpan={5}
+                                  className="accounts-matches-cell bg-muted/20 p-2"
+                                >
+                                  <div className="mb-1 flex items-center justify-between">
+                                    <span className="text-[11px] font-medium">
+                                      Последние 20 матчей
+                                    </span>
+                                    <WithTooltip label="Свернуть матчи">
+                                      <Button
+                                        variant="outline"
+                                        size="icon-xs"
+                                        aria-label="Свернуть матчи"
+                                        onClick={() => setExpandedAccount(null)}
+                                      >
+                                        <ChevronUp />
+                                      </Button>
+                                    </WithTooltip>
+                                  </div>
+                                  {matchesLoading === account.Username ? (
+                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      Загружаю последние матчи...
+                                    </div>
+                                  ) : matchesError[account.Username] ? (
+                                    <p className="text-xs text-destructive">
+                                      {matchesError[account.Username]}
+                                    </p>
+                                  ) : (matchesByAccount[account.Username]
+                                      ?.length ?? 0) === 0 ? (
+                                    <p className="text-xs text-muted-foreground">
+                                      Матчей не нашлось. Проверь подключение
+                                      GoodLuck и сервер аккаунта.
+                                    </p>
+                                  ) : (
+                                    <AccountMatches
+                                      matches={
+                                        matchesByAccount[account.Username] || []
+                                      }
+                                    />
+                                  )}
+                                </TableCell>
+                              </TableRow>,
+                            );
+                          }
+                        }
+                        return rows;
+                      })()}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+            {connectivity && (
+              <div className="accounts-client-footer flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-card px-3 py-2 text-xs">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                      connectivity.lcu_http_ok
+                        ? "bg-green-500"
+                        : connectivity.is_riot_client_running
+                          ? "bg-yellow-500"
+                          : "bg-red-500"
+                    }`}
+                  />
+                  <span className="text-muted-foreground">
+                    {connectivity.lcu_http_ok
+                      ? "League Client подключён"
+                      : connectivity.is_riot_client_running
+                        ? "Riot Client запущен"
+                        : "Клиент не запущен"}
+                  </span>
+                </div>
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  {!connectivity.is_riot_client_running && (
+                    <Button variant="outline" size="sm" onClick={handleStartRc}>
+                      Запустить RC
+                    </Button>
+                  )}
+                  {connectivity.is_league_running && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRestartLeague}
+                      >
+                        Перезапустить LoL
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleKillLeague(false)}
+                      >
+                        Закрыть LoL
+                      </Button>
+                    </>
+                  )}
+                  {connectivity.is_riot_client_running && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleKillLeague(true)}
+                    >
+                      Закрыть всё
+                    </Button>
+                  )}
+                </div>
+              </div>
             )}
-            {connectivity.is_league_running && (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRestartLeague}
-                >
-                  Перезапустить LoL
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleKillLeague(false)}
-                >
-                  Закрыть LoL
-                </Button>
-              </>
-            )}
-            {connectivity.is_riot_client_running && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleKillLeague(true)}
-              >
-                Закрыть всё
-              </Button>
-            )}
           </div>
-        </div>
+        </>
       )}
 
       {/* Password dialog for encrypted export/import */}
       <Dialog open={passwordDialog !== null} onOpenChange={(open) => { if (!open) setPasswordDialog(null); }}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="accounts-dialog sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>
               <div className="flex items-center gap-2">
@@ -1280,7 +1285,7 @@ export default function AccountsPage() {
       </Dialog>
 
       <Dialog open={glImportOpen} onOpenChange={(open) => { if (!open) setGlImportOpen(false); }}>
-        <DialogContent className="sm:max-w-md max-h-[85vh] flex flex-col gap-0">
+        <DialogContent className="accounts-dialog sm:max-w-md max-h-[calc(100dvh-4rem)] overflow-y-auto max-h-[85vh] flex flex-col gap-0">
           <DialogHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
             <DialogTitle className="flex-1">Импорт из GoodLuck</DialogTitle>
             <WithTooltip label="GET /me — актуальный список Riot с GoodLuck">
@@ -1360,7 +1365,7 @@ export default function AccountsPage() {
 
       {/* Add account dialog */}
       <Dialog open={addOpen} onOpenChange={(open) => { if (!open) setAddOpen(false); }}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="accounts-dialog sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Добавить аккаунт</DialogTitle>
           </DialogHeader>
@@ -1389,7 +1394,7 @@ export default function AccountsPage() {
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Выберите сервер" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="accounts-dialog">
                   {SERVERS.map((s) => (
                     <SelectItem key={s.code} value={s.code}>
                       {s.code} — {s.name}
@@ -1418,7 +1423,7 @@ export default function AccountsPage() {
 
       {/* Delete confirmation dialog */}
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
-        <DialogContent className="sm:max-w-xs">
+        <DialogContent className="accounts-dialog sm:max-w-xs">
           <DialogHeader>
             <DialogTitle>Удалить аккаунт?</DialogTitle>
           </DialogHeader>
@@ -1443,7 +1448,7 @@ export default function AccountsPage() {
       </Dialog>
 
       <Dialog open={shareTarget !== null} onOpenChange={(open) => { if (!open) { setShareTarget(null); setSharePassword(""); } }}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="accounts-dialog sm:max-w-md max-h-[calc(100dvh-4rem)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Поделиться аккаунтом</DialogTitle>
           </DialogHeader>
@@ -1458,7 +1463,7 @@ export default function AccountsPage() {
                 <>
                   <Select value={shareFriend} onValueChange={(value) => value && setShareFriend(value)}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга" /></SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="accounts-dialog">
                       {friends.map((friend) => <SelectItem key={friend.id} value={friend.id}>{friend.display_name}</SelectItem>)}
                     </SelectContent>
                   </Select>
@@ -1509,7 +1514,7 @@ export default function AccountsPage() {
               <label className="text-sm text-muted-foreground">Срок доступа</label>
               <Select value={shareDuration} onValueChange={(value) => value && setShareDuration(value)}>
                 <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
+                <SelectContent className="accounts-dialog">
                   <SelectItem value="24">24 часа</SelectItem>
                   <SelectItem value="168">7 дней</SelectItem>
                   <SelectItem value="720">30 дней</SelectItem>
@@ -1521,7 +1526,7 @@ export default function AccountsPage() {
               <label className="text-sm text-muted-foreground">Пароль Riot-аккаунта</label>
               <Input type="password" value={sharePassword} onChange={(e) => setSharePassword(e.target.value)} placeholder="Только для зашифрованной передачи" autoComplete="off" />
             </div>
-            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+            <p className="rounded-md border border-primary/25 bg-primary/5 p-2 text-xs text-muted-foreground">
               Отзыв запрещает новую выдачу и ставит выход из Riot в очередь на устройстве друга. Если его RustLM офлайн, очистка произойдёт при следующей связи; при компрометации также смени пароль Riot. Передача аккаунта может нарушать правила Riot.
             </p>
             {shareError && <p className="text-sm text-destructive">{shareError}</p>}
@@ -1538,7 +1543,7 @@ export default function AccountsPage() {
 
       {/* Edit account dialog */}
       <Dialog open={editAccount !== null} onOpenChange={(open) => { if (!open) setEditAccount(null); }}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="accounts-dialog sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>
               {editAccount && !editAccount.EncryptedPassword ? "Активация аккаунта" : "Редактировать аккаунт"}
@@ -1580,7 +1585,7 @@ export default function AccountsPage() {
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Выберите сервер" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="accounts-dialog">
                   {SERVERS.map((s) => (
                     <SelectItem key={s.code} value={s.code}>
                       {s.code} — {s.name}
