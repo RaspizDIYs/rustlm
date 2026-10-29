@@ -133,6 +133,7 @@ export default function SpyPage() {
   }, [loadRevealConfig]);
 
   useEffect(() => {
+    let disposed = false;
     let un: (() => void) | undefined;
     void (async () => {
       const { isTauri } = await import("@tauri-apps/api/core");
@@ -142,8 +143,10 @@ export default function SpyPage() {
       un = await listen("cloud-sync-complete", () => {
         loadRevealConfig();
       });
+      if (disposed) un();
     })();
     return () => {
+      disposed = true;
       un?.();
     };
   }, [loadRevealConfig]);

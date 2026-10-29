@@ -233,6 +233,7 @@ export default function ConfigsPage() {
                   </span>
                 </div>
                 <Switch
+                  aria-label="Защита настроек игры от перезаписи"
                   checked={status?.readonly ?? false}
                   onCheckedChange={(v) => void handleToggleReadonly(Boolean(v))}
                   disabled={!canToggle}

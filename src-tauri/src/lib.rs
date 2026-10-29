@@ -117,6 +117,7 @@ pub fn run() {
             commands::settings::set_autostart_background,
             commands::settings::should_start_minimized,
             commands::logs::get_log_lines,
+            commands::logs::get_log_chunk,
             commands::logs::get_log_path,
             commands::logs::clear_logs,
             commands::accounts::load_accounts,

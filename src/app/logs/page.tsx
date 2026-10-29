@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { openRepairFolder, exportRepairReport } from "@/lib/repair";
+import { logLevel, appendLogLines } from "@/lib/logs";
 import { RepairError } from "@/components/repair-error";
 
 const LOG_FILTERS = ["LOGIN", "HTTP", "UI", "PROC", "INFO", "WARN", "ERROR"] as const;
@@ -26,14 +27,20 @@ export default function LogsPage() {
     Object.fromEntries(LOG_FILTERS.map((f) => [f, true]))
   );
 
+  const cursor = useRef({offset: 0, generation: 0});
+  const fetching = useRef(false);
   const fetchLogs = useCallback(async () => {
+    if (fetching.current) return;
+    fetching.current = true;
     try {
-      const { getLogLines } = await import("@/lib/tauri");
-      const lines = await getLogLines();
-      setLogLines(lines);
+      const { getLogChunk } = await import("@/lib/tauri");
+      const chunk = await getLogChunk(cursor.current.offset, cursor.current.generation);
+      cursor.current = {offset: chunk.offset, generation: chunk.generation};
+      setLogLines((old) => appendLogLines(old, chunk.lines, chunk.reset));
+      setError("");
     } catch {
-      // Not in Tauri
-    }
+      setError("Не удалось прочитать журнал. Повторите попытку.");
+    } finally { fetching.current = false; }
   }, []);
 
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -45,7 +52,7 @@ export default function LogsPage() {
 
   useEffect(() => {
     if (autoRefresh) {
-      intervalRef.current = setInterval(fetchLogs, 3000);
+      intervalRef.current = setInterval(() => { if (!document.hidden) void fetchLogs(); }, 3000);
     } else if (intervalRef.current) {
       clearInterval(intervalRef.current);
     }
@@ -57,8 +64,9 @@ export default function LogsPage() {
       const { clearLogs } = await import("@/lib/tauri");
       await clearLogs();
       setLogLines([]);
+      cursor.current = {offset: 0, generation: 0};
     } catch (e) {
-      console.error(e);
+      setError(String(e));
     }
   };
 
@@ -69,7 +77,7 @@ export default function LogsPage() {
       const path = await getLogPath();
       await open(path);
     } catch (e) {
-      console.error(e);
+      setError(String(e));
     }
   };
 
@@ -79,10 +87,8 @@ export default function LogsPage() {
 
   const filteredLines = useMemo(() => {
     return logLines.filter((line) => {
-      const match = line.match(/\[(\w+)\]/g);
-      if (!match || match.length < 2) return true;
-      const level = match[1].replace(/[\[\]]/g, "");
-      return filters[level] !== false;
+      const level = logLevel(line);
+      return !level || filters[level] !== false;
     });
   }, [logLines, filters]);
 
@@ -131,11 +137,12 @@ export default function LogsPage() {
               onChange={() => toggleFilter(filter)}
               className="rounded"
             />
-            <span className={LOG_COLORS[filter]}>{filter}</span>
+            <span className={LOG_COLORS[filter]}>{{LOGIN:"Вход", HTTP:"Запросы", UI:"Интерфейс", PROC:"Процессы", INFO:"Информация", WARN:"Предупреждения", ERROR:"Ошибки"}[filter]}</span>
           </label>
         ))}
       </div>
 
+      <p className="text-xs text-muted-foreground">Последние 2000 строк · полный журнал доступен в файле</p>
       <Card>
         <CardContent className="p-0">
           <ScrollArea className="h-[calc(100vh-240px)]">

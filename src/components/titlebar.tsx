@@ -18,13 +18,14 @@ export function Titlebar() {
 
   useEffect(() => {
     syncMaximized();
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
       getCurrentWindow().onResized(() => syncMaximized()).then((fn) => {
-        unlisten = fn;
+        if (disposed) fn(); else unlisten = fn;
       });
     }).catch(() => {});
-    return () => unlisten?.();
+    return () => { disposed = true; unlisten?.(); };
   }, [syncMaximized]);
 
   const handleMinimize = async () => {
@@ -72,12 +73,14 @@ export function Titlebar() {
       {/* Window controls */}
       <div className="flex items-center h-full">
         <button
+          aria-label="Свернуть окно"
           onClick={handleMinimize}
           className="titlebar-button h-full w-11 inline-flex items-center justify-center hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
         <button
+          aria-label={maximized ? "Восстановить окно" : "Развернуть окно"}
           onClick={handleMaximize}
           className="titlebar-button h-full w-11 inline-flex items-center justify-center hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
         >
@@ -88,6 +91,7 @@ export function Titlebar() {
           )}
         </button>
         <button
+          aria-label="Закрыть окно"
           onClick={handleClose}
           className={`titlebar-button h-full w-11 inline-flex items-center justify-center hover:bg-red-500 hover:text-white text-muted-foreground transition-colors ${maximized ? "" : "rounded-tr-lg"}`}
         >

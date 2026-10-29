@@ -37,15 +37,18 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
 
   useEffect(() => {
     void reload();
-    const timer = setInterval(() => void reload(), 60000);
+    const timer = setInterval(() => { if (!document.hidden) void reload(); }, 60000);
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
       const { isTauri } = await import("@tauri-apps/api/core");
       if (!isTauri()) return;
       const { listen } = await import("@tauri-apps/api/event");
       unlisten = await listen("cloud-sync-complete", () => void reload());
+      if (disposed) unlisten();
     })();
     return () => {
+      disposed = true;
       clearInterval(timer);
       unlisten?.();
     };

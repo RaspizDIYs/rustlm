@@ -32,7 +32,11 @@ import { toast } from "sonner";
 import { VaultPanel } from "@/components/vault-panel";
 
 export default function SettingsPage() {
+  const [settingsError, setSettingsError] = useState("");
+  const [savingSetting, setSavingSetting] = useState(false);
+  const settingPending = useRef(false);
   const [hideLogins, setHideLogins] = useState(false);
+  const [animations, setAnimations] = useState(true);
   const [autoAcceptMethod, setAutoAcceptMethod] = useState("Polling");
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [minimizeToTray, setMinimizeToTray] = useState(false);
@@ -124,20 +128,16 @@ export default function SettingsPage() {
   const loadSettings = useCallback(async () => {
     try {
       const { loadSetting, getAutostartEnabled, getAutostartBackground } = await import("@/lib/tauri");
-      const [hide, method, update, tray, autostartVal, bgVal] = await Promise.all([
-        loadSetting("HideLogins", false),
-        loadSetting("AutoAcceptMethod", "Polling"),
-        loadSetting("AutoUpdate", true),
-        loadSetting("MinimizeToTray", false),
-        getAutostartEnabled(),
-        getAutostartBackground(),
+      const results = await Promise.allSettled([
+        loadSetting("HideLogins", false).then(setHideLogins),
+        loadSetting("AutoAcceptMethod", "Polling").then(setAutoAcceptMethod),
+        loadSetting("AutoUpdate", true).then(setAutoUpdate),
+        loadSetting("MinimizeToTray", false).then(setMinimizeToTray),
+        getAutostartEnabled().then(setAutostart),
+        getAutostartBackground().then(setAutostartBackground),
+        loadSetting("AnimationsEnabled", true).then(setAnimations),
       ]);
-      setHideLogins(hide as boolean);
-      setAutoAcceptMethod(method as string);
-      setAutoUpdate(update as boolean);
-      setMinimizeToTray(tray as boolean);
-      setAutostart(autostartVal);
-      setAutostartBackground(bgVal);
+      if (results.some((r) => r.status === "rejected")) setSettingsError("Часть настроек не загружена. Откройте страницу ещё раз.");
     } catch {
       // Not in Tauri
     }
@@ -151,6 +151,7 @@ export default function SettingsPage() {
 
   // Listen for GoodLuck auth events (from deep link)
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
@@ -191,9 +192,10 @@ export default function SettingsPage() {
           void loadCloudState();
         });
         unlisten = () => { u1(); u2(); u3(); u4(); u5(); u6(); };
+        if (disposed) unlisten();
       } catch { }
     })();
-    return () => unlisten?.();
+    return () => { disposed = true; unlisten?.(); };
   }, [loadGlState, loadCloudState, loadSettings]);
 
   const handleGlLogin = async () => {
@@ -240,12 +242,30 @@ export default function SettingsPage() {
   };
 
   const save = async (key: string, value: unknown) => {
+    const previous: Record<string, unknown> = {HideLogins: hideLogins, AutoAcceptMethod: autoAcceptMethod,
+      AutoUpdate: autoUpdate, MinimizeToTray: minimizeToTray, GoodLuckAutoSync: glAutoSync, AnimationsEnabled: animations};
+    const restore = () => {
+      const old = previous[key];
+      switch (key) {
+        case "HideLogins": setHideLogins(Boolean(old)); break;
+        case "AutoAcceptMethod": setAutoAcceptMethod(String(old)); break;
+        case "AutoUpdate": setAutoUpdate(Boolean(old)); break;
+        case "MinimizeToTray": setMinimizeToTray(Boolean(old)); break;
+        case "GoodLuckAutoSync": setGlAutoSync(Boolean(old)); break;
+        case "AnimationsEnabled": setAnimations(Boolean(old)); document.documentElement.dataset.animations = old ? "on" : "off"; break;
+      }
+    };
+    if (settingPending.current) { restore(); return; }
+    settingPending.current = true;
+    setSavingSetting(true);
+    setSettingsError("");
     try {
       const { saveSetting } = await import("@/lib/tauri");
       await saveSetting(key, value);
     } catch {
-      // Not in Tauri
-    }
+      restore();
+      setSettingsError("Изменение не сохранено. Повторите попытку.");
+    } finally { settingPending.current = false; setSavingSetting(false); }
   };
 
   const handleCheckUpdate = async () => {
@@ -281,6 +301,7 @@ export default function SettingsPage() {
   return (
     <div className="space-y-3">
       <h1 className="text-lg font-semibold">Настройки</h1>
+      {settingsError && <p role="alert" className="text-xs text-destructive">{settingsError}</p>}
 
       <div className="grid items-start gap-3 xl:grid-cols-2">
         <Card>
@@ -289,8 +310,23 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
+              <span className="text-xs">Анимации</span>
+              <Switch
+                aria-label="Анимации"
+                disabled={savingSetting}
+                checked={animations}
+                onCheckedChange={(enabled) => {
+                  setAnimations(enabled);
+                  document.documentElement.dataset.animations = enabled ? "on" : "off";
+                  save("AnimationsEnabled", enabled);
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between">
               <span className="text-xs">Скрывать логины</span>
               <Switch
+                aria-label="Скрывать логины"
+                disabled={savingSetting}
                 checked={hideLogins}
                 onCheckedChange={(v) => {
                   setHideLogins(v);
@@ -301,6 +337,8 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <span className="text-xs">Сворачивать в трей</span>
               <Switch
+                aria-label="Сворачивать в трей"
+                disabled={savingSetting}
                 checked={minimizeToTray}
                 onCheckedChange={(v) => {
                   setMinimizeToTray(v);
@@ -311,6 +349,8 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <span className="text-xs">Запускать вместе с Windows</span>
               <Switch
+                aria-label="Запускать вместе с Windows"
+                disabled={savingSetting}
                 checked={autostart}
                 onCheckedChange={async (v) => {
                   setAutostart(v);
@@ -318,7 +358,7 @@ export default function SettingsPage() {
                   try {
                     const { setAutostartEnabled } = await import("@/lib/tauri");
                     await setAutostartEnabled(v);
-                  } catch { }
+                  } catch { setAutostart(autostart); setAutostartBackground(autostartBackground); setSettingsError("Не удалось изменить автозапуск."); }
                 }}
               />
             </div>
@@ -326,13 +366,15 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between pl-4">
                 <span className="text-xs text-muted-foreground">Запускать в фоне</span>
                 <Switch
-                  checked={autostartBackground}
+                  aria-label="Запускать в фоне"
+                disabled={savingSetting}
+                checked={autostartBackground}
                   onCheckedChange={async (v) => {
                     setAutostartBackground(v);
                     try {
                       const { setAutostartBackground } = await import("@/lib/tauri");
                       await setAutostartBackground(v);
-                    } catch { }
+                    } catch { setAutostartBackground(autostartBackground); setSettingsError("Не удалось изменить фоновый запуск."); }
                   }}
                 />
               </div>
@@ -348,6 +390,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <span className="text-xs">Метод</span>
               <Select
+                disabled={savingSetting}
                 value={autoAcceptMethod}
                 onValueChange={(v) => {
                   if (v) {
@@ -356,7 +399,7 @@ export default function SettingsPage() {
                   }
                 }}
               >
-                <SelectTrigger className="w-[200px]">
+                <SelectTrigger aria-label="Метод автопринятия" className="w-[200px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -367,9 +410,9 @@ export default function SettingsPage() {
               </Select>
             </div>
             <div className="mt-2 space-y-1 text-xs leading-normal text-muted-foreground">
-              <p><strong>WebSocket:</strong> получает сигнал от клиента сразу после нахождения игры — основной способ для обычного использования.</p>
-              <p><strong>Polling:</strong> регулярно спрашивает клиент, найдена ли игра — резервный способ при сбоях WebSocket.</p>
-              <p><strong>UIA:</strong> нажимает доступную кнопку «Принять» в открытом окне League средствами Windows — используйте, если приём через API не подходит.</p>
+              {autoAcceptMethod === "WebSocket" && (<p><strong>WebSocket:</strong> получает сигнал от клиента сразу после нахождения игры — основной способ для обычного использования.</p>)}
+              {autoAcceptMethod === "Polling" && (<p><strong>Polling:</strong> регулярно спрашивает клиент, найдена ли игра — резервный способ при сбоях WebSocket.</p>)}
+              {autoAcceptMethod === "UIA" && (<p><strong>UIA:</strong> нажимает доступную кнопку «Принять» в открытом окне League средствами Windows — используйте, если приём через API не подходит.</p>)}
 
             </div>
           </CardContent>
@@ -409,11 +452,23 @@ export default function SettingsPage() {
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                    <label className="mr-3 flex items-center gap-2 text-xs text-muted-foreground">
+                      Автосинхронизация
+                      <Switch
+                        aria-label="Автосинхронизация GoodLuck"
+                        disabled={savingSetting}
+                        checked={glAutoSync}
+                        onCheckedChange={(v) => {
+                          setGlAutoSync(v);
+                          save("GoodLuckAutoSync", v);
+                        }}
+                      />
+                    </label>
                     <WithTooltip label="Обновить профиль (ник, аватар) и синхронизировать Riot-аккаунты с GoodLuck">
                       <Button
                         variant="outline"
                         size="icon"
-                        className="h-9 w-9"
+                        className="h-7 w-7"
                         onClick={handleGlProfileAndAccountsSync}
                         disabled={glSyncing}
                         aria-label="Синхронизация с GoodLuck"
@@ -425,7 +480,7 @@ export default function SettingsPage() {
                       <Button
                         variant="outline"
                         size="icon"
-                        className="h-9 w-9"
+                        className="h-7 w-7"
                         onClick={handleGlLogout}
                         disabled={glSyncing}
                         aria-label="Выйти из GoodLuck"
@@ -453,18 +508,6 @@ export default function SettingsPage() {
                     ))}
                   </div>
                 )}
-
-                {/* Auto-sync toggle */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs">Авто-синхронизация</span>
-                  <Switch
-                    checked={glAutoSync}
-                    onCheckedChange={(v) => {
-                      setGlAutoSync(v);
-                      save("GoodLuckAutoSync", v);
-                    }}
-                  />
-                </div>
 
                 {/* Sync status */}
                 {glSyncStatus && (
@@ -674,6 +717,8 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <span className="text-xs">Автоматические обновления</span>
               <Switch
+                aria-label="Автообновление"
+                disabled={savingSetting}
                 checked={autoUpdate}
                 onCheckedChange={(v) => {
                   setAutoUpdate(v);

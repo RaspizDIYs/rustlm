@@ -115,6 +115,7 @@ export function Sidebar() {
 
   // Listen for deep link auth events
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
@@ -158,9 +159,10 @@ export function Sidebar() {
           void refreshNeedsTotp();
         });
         unlisten = () => { u1(); u2(); u3(); u4(); u5(); u6(); };
+        if (disposed) unlisten();
       } catch { }
     })();
-    return () => unlisten?.();
+    return () => { disposed = true; unlisten?.(); };
   }, [refreshGlUser, refreshSyncStatus, refreshNeedsTotp]);
 
   const handleGlLogin = async () => {

@@ -118,6 +118,7 @@ export function AutoAcceptSwitch({ className }: { className?: string }) {
     <div className={cn("flex items-center gap-2", className)}>
       <span className="text-sm text-muted-foreground">Автопринятие</span>
       <Switch
+        aria-label="Автопринятие"
         checked={enabled}
         disabled={!ready || pending}
         onCheckedChange={(v) => void setAutoAccept(v)}

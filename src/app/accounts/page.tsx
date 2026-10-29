@@ -1,4 +1,6 @@
 "use client";
+import { RankBadge } from "@/components/rank-badge";
+import { HighlightText } from "@/components/highlight-text";
 import { LmFriends } from "@/components/lm-friends";
 
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -145,8 +147,12 @@ export default function AccountsPage() {
   const [friendNotice, setFriendNotice] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const accountsRequest = useRef(0);
+  const connectivityPending = useRef(false);
+  const sharedPending = useRef(false);
 
   const fetchSharedAccounts = useCallback(async (showSpinner = false) => {
+    if (sharedPending.current) return;
+    sharedPending.current = true;
     if (showSpinner) setSharedLoading(true);
     try {
       const { goodluckGetSharedAccounts } = await import("@/lib/tauri");
@@ -159,6 +165,7 @@ export default function AccountsPage() {
     } catch {
       // GoodLuck is optional; local accounts remain available offline.
     } finally {
+      sharedPending.current = false;
       if (showSpinner) setSharedLoading(false);
     }
   }, []);
@@ -193,13 +200,15 @@ export default function AccountsPage() {
   }, [fetchAccounts]);
 
   const pollConnectivity = useCallback(async () => {
+    if (connectivityPending.current) return;
+    connectivityPending.current = true;
     try {
       const { probeConnectivity } = await import("@/lib/tauri");
       const status = await probeConnectivity();
-      setConnectivity(status);
+      setConnectivity((old) => JSON.stringify(old) === JSON.stringify(status) ? old : status);
     } catch {
       // Not in Tauri
-    }
+    } finally { connectivityPending.current = false; }
   }, []);
 
   const toggleAccountMatches = useCallback(
@@ -244,9 +253,12 @@ export default function AccountsPage() {
     import("@/lib/tauri").then(({ loadSetting }) => {
       loadSetting("HideLogins", false).then((v) => setHideLogins(v as boolean)).catch(() => { });
     });
-    pollRef.current = setInterval(pollConnectivity, 5000);
-    const sharedPoll = setInterval(() => void fetchSharedAccounts(), 30000);
+    pollRef.current = setInterval(() => { if (!document.hidden) void pollConnectivity(); }, 5000);
+    const sharedPoll = setInterval(() => { if (!document.hidden) void fetchSharedAccounts(); }, 30000);
 
+    let disposed = false;
+    const onVisible = () => { if (!document.hidden) { void pollConnectivity(); void fetchSharedAccounts(); } };
+    document.addEventListener("visibilitychange", onVisible);
     let unlistenProgress: (() => void) | undefined;
     let unlistenGlAuth: (() => void) | undefined;
     let unlistenCloud: (() => void) | undefined;
@@ -286,6 +298,7 @@ export default function AccountsPage() {
         },
       );
       unlistenShared = await listen("shared-accounts-changed", () => void fetchSharedAccounts());
+      if (disposed) { unlistenProgress?.(); unlistenGlAuth?.(); unlistenCloud?.(); unlistenShared?.(); }
     })();
 
     const onAccountsReload = () => {
@@ -294,6 +307,8 @@ export default function AccountsPage() {
     window.addEventListener("rustlm-accounts-reload", onAccountsReload);
 
     return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisible);
       if (pollRef.current) clearInterval(pollRef.current);
       clearInterval(sharedPoll);
       unlistenProgress?.();
@@ -734,7 +749,7 @@ export default function AccountsPage() {
         {!friendsTab && (
           <>
             <div className="accounts-header-imports">
-              <Button variant="outline" size="sm" onClick={openGlImportDialog}>
+              <Button className="accounts-import-button" variant="outline" size="sm" onClick={openGlImportDialog}>
                 <Cloud data-icon="inline-start" />
                 GoodLuck
               </Button>
@@ -742,6 +757,7 @@ export default function AccountsPage() {
                 <Button
                   variant="outline"
                   size="sm"
+                  className="accounts-import-button"
                   disabled={lcuProfileRefreshing}
                   onClick={async () => {
                     setLcuProfileRefreshing(true);
@@ -943,10 +959,10 @@ export default function AccountsPage() {
                           rows.push(
                             <TableRow
                               key={account.Username}
-                              className={isNotActivated ? "opacity-70" : ""}
+                              className={`${isNotActivated ? "opacity-70" : ""} ${expandedAccount === account.Username ? "border-b-0! hover:bg-transparent" : ""}`}
                             >
                               <TableCell className="truncate text-xs text-muted-foreground">
-                                {account.Note || "—"}
+                                <HighlightText text={account.Note || "—"} query={query} />
                               </TableCell>
                               <TableCell>
                                 <div className="flex items-center gap-2">
@@ -978,28 +994,21 @@ export default function AccountsPage() {
                                   )}
                                   <div className="min-w-0">
                                     <div className="truncate text-xs font-medium">
-                                      {account.RiotId ||
-                                        account.SummonerName ||
-                                        "—"}
+                                      <HighlightText text={account.RiotId || account.SummonerName || "—"} query={query} />
                                     </div>
                                     {account.RankDisplay && (
-                                      <Badge
-                                        variant="secondary"
-                                        className="text-[10px]"
-                                      >
-                                        {account.RankDisplay}
-                                      </Badge>
+                                      <RankBadge display={account.RankDisplay} />
                                     )}
                                   </div>
                                 </div>
                               </TableCell>
                               <TableCell className="text-muted-foreground text-sm">
-                                {account.Server || "—"}
+                                <HighlightText text={account.Server || "—"} query={query} />
                               </TableCell>
                               <TableCell className="break-all text-xs text-muted-foreground">
                                 <div className="flex flex-wrap items-center gap-1">
                                   <span>
-                                    {hideLogins ? "••••••••" : displayUsername}
+                                    <HighlightText text={hideLogins ? "••••••••" : displayUsername} query={hideLogins ? "" : query} />
                                   </span>
                                   {isNotActivated && (
                                     <Badge
@@ -1139,10 +1148,10 @@ export default function AccountsPage() {
 
                           if (expandedAccount === account.Username) {
                             rows.push(
-                              <TableRow key={`matches-${account.Username}`}>
+                              <TableRow key={`matches-${account.Username}`} className="hover:bg-transparent">
                                 <TableCell
                                   colSpan={5}
-                                  className="accounts-matches-cell bg-muted/20 p-2"
+                                  className="accounts-matches-cell p-2 pt-0"
                                 >
                                   <div className="mb-1 flex items-center justify-between">
                                     <span className="text-[11px] font-medium">

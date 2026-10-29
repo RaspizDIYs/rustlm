@@ -26,7 +26,7 @@ interface RunePageEditorProps {
   onOpenChange: (open: boolean) => void;
   runePaths: RunePathModel[];
   editPage?: RunePage | null;
-  onSave: (page: RunePage) => void;
+  onSave: (page: RunePage) => void | Promise<void>;
 }
 
 export function RunePageEditor({
@@ -117,9 +117,14 @@ export function RunePageEditor({
     }
   };
 
-  const handleSave = () => {
-    if (!name.trim()) return;
-    onSave({
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const handleSave = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+    await onSave({
       Name: name.trim(),
       PrimaryPathId: primaryPathId,
       SecondaryPathId: secondaryPathId,
@@ -135,6 +140,9 @@ export function RunePageEditor({
       StatMod3Id: statMods[2],
     });
     onOpenChange(false);
+    } catch {
+      setSaveError("Не удалось сохранить руны. Повторите попытку.");
+    } finally { setSaving(false); }
   };
 
   const runeIcon = (rune: RuneModel, selected: boolean, onClick: () => void, size = "w-8 h-8") => (
@@ -143,8 +151,11 @@ export function RunePageEditor({
         render={
           <button
             type="button"
+            disabled={saving}
+            data-selected={selected}
+            aria-pressed={selected}
             onClick={onClick}
-            className={`rounded-full border-2 transition-colors ${
+            className={`lm-image-choice rounded-full border-2 transition-colors ${
               selected ? "border-primary" : "border-transparent opacity-60 hover:opacity-100"
             }`}
           >
@@ -166,8 +177,11 @@ export function RunePageEditor({
         render={
           <button
             type="button"
+            disabled={saving}
+            data-selected={selected}
+            aria-pressed={selected}
             onClick={onClick}
-            className={`rounded-full border-2 p-0.5 transition-all ${
+            className={`lm-image-choice rounded-full border-2 p-0.5 transition-all ${
               selected ? "border-primary" : "border-transparent opacity-50 hover:opacity-80"
             }`}
           >
@@ -180,8 +194,8 @@ export function RunePageEditor({
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl select-none">
+    <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{editPage ? "Редактировать страницу рун" : "Новая страница рун"}</DialogTitle>
         </DialogHeader>
@@ -254,7 +268,8 @@ export function RunePageEditor({
           <>
             <Input
               className="select-text"
-              placeholder="Название страницы"
+              disabled={saving}
+                  placeholder="Название страницы"
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
@@ -363,12 +378,15 @@ export function RunePageEditor({
                                     render={
                                       <button
                                         type="button"
+                                        disabled={saving}
+                                        aria-pressed={statMods[rowIdx] === mod.id}
+                                        data-selected={statMods[rowIdx] === mod.id}
                                         onClick={() => {
                                           const next = [...statMods];
                                           next[rowIdx] = mod.id;
                                           setStatMods(next);
                                         }}
-                                        className={`rounded-full border-2 transition-all ${
+                                        className={`lm-image-choice rounded-full border-2 transition-all ${
                                           statMods[rowIdx] === mod.id
                                             ? "border-primary"
                                             : "border-transparent opacity-50 hover:opacity-80"
@@ -419,10 +437,11 @@ export function RunePageEditor({
               </div>
             </ScrollArea>
 
+            {saveError && <p role="alert" className="text-xs text-destructive">{saveError}</p>}
             <DialogFooter>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
-              <Button onClick={handleSave} disabled={!name.trim() || !primaryPathId}>
-                Сохранить
+              <Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Отмена</Button>
+              <Button onClick={handleSave} disabled={saving || !name.trim() || !primaryPathId}>
+                {saving ? "Сохраняем…" : "Сохранить"}
               </Button>
             </DialogFooter>
           </>

@@ -87,6 +87,10 @@ export async function shouldStartMinimized(): Promise<boolean> {
 }
 
 // Logs
+export async function getLogChunk(offset: number, generation: number): Promise<{lines: string[]; offset: number; generation: number; reset: boolean}> {
+  return invoke("get_log_chunk", {offset, generation});
+}
+
 export async function getLogLines(): Promise<string[]> {
   return invoke<string[]>("get_log_lines");
 }
@@ -293,6 +297,7 @@ export async function deleteRunePage(pageName: string): Promise<void> {
 
 // Auto-Accept / Automation
 export interface AutomationProfile {
+  PickCount?: number | null;
   Picks: string[];
   PickIds?: number[];
   Ban: string;

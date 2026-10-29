@@ -135,6 +135,7 @@ impl Default for AutomationSettings {
 #[serde(rename_all = "PascalCase", default)]
 pub struct AutomationProfile {
     pub picks: Vec<String>,
+    pub pick_count: Option<usize>,
     pub pick_ids: Vec<i32>,
     pub ban: String,
     pub ban_id: Option<i32>,
@@ -169,8 +170,8 @@ impl AutomationSettings {
             result.spell1_id = profile.spell1_id;
             result.spell2_id = profile.spell2_id;
             result.selected_rune_page_name = profile.rune_page.clone();
-            result.auto_pick_enabled = profile.auto_pick;
-            result.auto_ban_enabled = profile.auto_ban;
+            result.auto_pick_enabled = if mode == "classic" { self.auto_pick_enabled } else { profile.auto_pick };
+            result.auto_ban_enabled = if mode == "classic" { self.auto_ban_enabled } else { profile.auto_ban };
             result.auto_spells_enabled = profile.auto_spells;
             result.auto_runes_enabled = profile.auto_runes;
         } else {
@@ -178,6 +179,13 @@ impl AutomationSettings {
             result.auto_ban_enabled = false;
             result.auto_spells_enabled = false;
             result.auto_runes_enabled = false;
+        }
+        if mode == "classic" && role == "jungle" {
+            if result.spell2_id != Some(11) || result.spell1_id == Some(11) {
+                let other = result.spell2_id.filter(|id| *id != 11).or(result.spell1_id.filter(|id| *id != 11));
+                result.spell1_id = Some(11);
+                result.spell2_id = other;
+            }
         }
         if mode == "aram" || mode == "mayhem" {
             result.auto_ban_enabled = false;
@@ -189,5 +197,45 @@ impl AutomationSettings {
             result.auto_spells_enabled = false;
         }
         result
+    }
+}
+
+impl AutomationProfile {
+    pub fn active_pick_ids(&self) -> &[i32] {
+        &self.pick_ids[..self.pick_count.unwrap_or(self.pick_ids.len()).min(self.pick_ids.len())]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn classic_switches_apply_to_every_configured_role() {
+        let mut settings = AutomationSettings::default();
+        for role in ["top", "jungle", "middle", "bottom", "utility"] {
+            settings.profiles.insert(format!("classic:{role}"), AutomationProfile {auto_pick:true, auto_ban:true, ..Default::default()});
+        }
+        settings.auto_pick_enabled = false; settings.auto_ban_enabled = false;
+        for role in ["top", "jungle", "middle", "bottom", "utility"] {
+            let profile = settings.for_queue("classic", role);
+            assert!(!profile.auto_pick_enabled); assert!(!profile.auto_ban_enabled);
+        }
+        settings.auto_pick_enabled = true;
+        assert!(settings.for_queue("classic", "top").auto_pick_enabled);
+    }
+    #[test]
+    fn jungle_has_exactly_one_smite_and_keeps_the_other_spell() {
+        for (first, second, expected) in [(Some(4), Some(11), (Some(4),Some(11))), (Some(4),Some(14),(Some(11),Some(14))), (Some(11),Some(11),(Some(11),None))] {
+            let mut settings=AutomationSettings::default();
+            settings.profiles.insert("classic:jungle".into(), AutomationProfile {spell1_id:first, spell2_id:second, ..Default::default()});
+            let result=settings.for_queue("classic","jungle");
+            assert_eq!((result.spell1_id,result.spell2_id),expected);
+        }
+    }
+    #[test]
+    fn random_priorities_include_thirtieth_pick_and_respect_visible_count() {
+        let mut profile=AutomationProfile {pick_ids:(1..=30).collect(),pick_count:Some(30),..Default::default()};
+        assert_eq!(profile.active_pick_ids().last(),Some(&30));
+        profile.pick_count=Some(3); assert_eq!(profile.active_pick_ids(), &[1,2,3]); assert_eq!(profile.pick_ids.len(),30);
     }
 }

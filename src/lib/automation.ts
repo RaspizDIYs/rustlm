@@ -57,3 +57,26 @@ export function allowedSpells(mode: AutomationMode): number[] {
         ? [1, 3, 4, 6, 7, 13, 14, 21, 32]
         : [1, 4, 6, 7, 13, 14, 21, 32];
 }
+
+export function pickCount(
+  profile: AutomationProfile,
+  mode: AutomationMode,
+): number {
+  return Math.max(
+    1,
+    Math.min(
+      mode === "aram" || mode === "mayhem" ? 30 : 3,
+      profile.PickCount ?? Math.max(3, profile.Picks.length),
+    ),
+  );
+}
+export function jungleSpells(profile: AutomationProfile): AutomationProfile {
+  if (profile.Spell2Id === 11 && profile.Spell1Id !== 11) return profile;
+  const other =
+    profile.Spell2Id != null && profile.Spell2Id !== 11
+      ? profile.Spell2Id
+      : profile.Spell1Id != null && profile.Spell1Id !== 11
+        ? profile.Spell1Id
+        : null;
+  return { ...profile, Spell1Id: 11, Spell2Id: other };
+}

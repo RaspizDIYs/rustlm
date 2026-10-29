@@ -806,7 +806,7 @@ export default function RepairToolsPage() {
             <span className="font-semibold text-muted-foreground">
               {index + 1}
             </span>
-            <span className="truncate" title={label}>{label}</span>
+            <span className="truncate" title={label}>{["Стратегия", "Копия", "Проверка", "Откат", "Запуск", "Итог"][index]}</span>
           </li>
         ))}
       </ol>

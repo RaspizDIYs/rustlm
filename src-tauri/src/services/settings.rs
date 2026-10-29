@@ -25,14 +25,7 @@ impl SettingsService {
         let settings_path = base_dir.join("settings.json");
         let update_settings_path = base_dir.join("update-settings.json");
 
-        let cache = if settings_path.exists() {
-            match fs::read_to_string(&settings_path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                Err(_) => HashMap::new(),
-            }
-        } else {
-            HashMap::new()
-        };
+        let cache = read_settings(&settings_path).unwrap_or_default();
 
         Self {
             settings_path,
@@ -53,37 +46,21 @@ impl SettingsService {
         let json_value =
             serde_json::to_value(value).map_err(|e| AppError::Custom(e.to_string()))?;
 
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.insert(key.to_string(), json_value);
-        }
-
-        self.flush()?;
+        let mut cache = self.cache.lock().unwrap();
+        let mut next = cache.clone();
+        next.insert(key.to_string(), json_value);
+        write_settings(&self.settings_path, &next)?;
+        *cache = next;
         Ok(())
     }
 
     pub fn load_update_settings(&self) -> UpdateSettings {
-        if self.update_settings_path.exists() {
-            match fs::read_to_string(&self.update_settings_path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                Err(_) => UpdateSettings::default(),
-            }
-        } else {
-            UpdateSettings::default()
-        }
+        read_settings(&self.update_settings_path).unwrap_or_default()
     }
 
     pub fn save_update_settings(&self, settings: &UpdateSettings) -> Result<(), AppError> {
-        let content = serde_json::to_string_pretty(settings)?;
-        fs::write(&self.update_settings_path, content)?;
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), AppError> {
-        let cache = self.cache.lock().unwrap();
-        let content = serde_json::to_string_pretty(&*cache)?;
-        fs::write(&self.settings_path, content)?;
-        Ok(())
+        let _guard = self.cache.lock().unwrap();
+        write_settings(&self.update_settings_path, settings)
     }
 
     pub fn export_settings_json_map(&self) -> serde_json::Map<String, Value> {
@@ -99,10 +76,50 @@ impl SettingsService {
         for (k, v) in map {
             new_cache.insert(k, v);
         }
-        {
-            let mut cache = self.cache.lock().unwrap();
-            *cache = new_cache;
+        let mut cache = self.cache.lock().unwrap();
+        write_settings(&self.settings_path, &new_cache)?;
+        *cache = new_cache;
+        Ok(())
+    }
+}
+
+fn read_settings<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    [path.to_path_buf(), path.with_extension("json.bak")].into_iter()
+        .find_map(|file| fs::read(file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()))
+}
+
+fn write_settings<T: serde::Serialize>(path: &std::path::Path, value: &T) -> Result<(), AppError> {
+    let bytes = serde_json::to_vec_pretty(value)?;
+    if let Ok(previous) = fs::read(path) {
+        if serde_json::from_slice::<Value>(&previous).is_ok() {
+            super::network::atomic_write(&path.with_extension("json.bak"), &previous).map_err(AppError::Custom)?;
         }
-        self.flush()
+    }
+    super::network::atomic_write(path, &bytes).map_err(AppError::Custom)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn folder() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("rustlm-settings-test-{}", rand::random::<u64>()));
+        fs::create_dir_all(&path).unwrap(); path
+    }
+    #[test]
+    fn damaged_primary_recovers_the_last_valid_backup() {
+        let dir = folder(); let path = dir.join("settings.json");
+        write_settings(&path, &serde_json::json!({"HideLogins":true})).unwrap();
+        write_settings(&path, &serde_json::json!({"HideLogins":false})).unwrap();
+        fs::write(&path, b"{broken").unwrap();
+        assert_eq!(read_settings::<Value>(&path).unwrap()["HideLogins"], true);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn failed_write_leaves_the_in_memory_settings_unchanged() {
+        let dir = folder();
+        let service = SettingsService {settings_path:dir.join("missing/settings.json"), update_settings_path:dir.join("update.json"), cache:Mutex::new(HashMap::from([("value".into(), Value::from(1))]))};
+        assert!(service.save_setting("value", &2).is_err());
+        assert_eq!(service.load_setting("value", 0), 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

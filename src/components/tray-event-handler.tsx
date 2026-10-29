@@ -8,6 +8,7 @@ import { useEffect } from "react";
  */
 export function TrayEventHandler() {
   useEffect(() => {
+    let disposed = false;
     let unlisten1: (() => void) | undefined;
     let unlisten2: (() => void) | undefined;
 
@@ -48,9 +49,11 @@ export function TrayEventHandler() {
           new CustomEvent("autoAcceptSync", { detail: event.payload })
         );
       });
+      if (disposed) { unlisten1?.(); unlisten2?.(); }
     })();
 
     return () => {
+      disposed = true;
       unlisten1?.();
       unlisten2?.();
     };

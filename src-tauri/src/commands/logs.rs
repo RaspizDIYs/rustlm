@@ -14,5 +14,11 @@ pub fn get_log_path(state: State<AppState>) -> String {
 
 #[tauri::command]
 pub fn clear_logs(state: State<AppState>) -> Result<(), String> {
-    std::fs::write(state.logger.log_path(), "").map_err(|e| e.to_string())
+    state.logger.clear().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_log_chunk(state: State<'_, AppState>, offset: u64, generation: u64) -> Result<crate::services::file_logger::LogChunk, String> {
+    let logger = state.logger.clone();
+    tokio::task::spawn_blocking(move || logger.chunk(offset, generation)).await.map_err(|e| e.to_string())?
 }

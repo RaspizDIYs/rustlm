@@ -1,15 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { X, Search } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { X, Search, ArrowLeftRight, LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -31,9 +25,13 @@ import {
   ROLES,
   editorProfile,
   allowedSpells,
+  pickCount,
+  jungleSpells,
   type AutomationMode,
 } from "@/lib/automation";
 import { cn } from "@/lib/utils";
+import { ChampionGrid } from "@/components/champion-grid";
+import { HighlightText } from "@/components/highlight-text";
 import { LolRoleIcon } from "@/components/lol-role-icon";
 import type {
   RunePage,
@@ -55,15 +53,6 @@ const SPELL_IMAGE_MAP: Record<string, string> = {
   "21": "SummonerBarrier",
   "32": "SummonerSnowball",
   "13": "SummonerMana",
-};
-
-const MODE_HELP = {
-  classic:
-    "Профиль выбирается по назначенной роли; незаполненная роль остаётся под вашим управлением.",
-  aram: "Приоритеты применяются к доступным чемпионам; скамейка — после открытия общего выбора.",
-  mayhem: "Выбор как в ARAM; руны и изнурение отключены правилами режима.",
-  arena:
-    "Пик и бан отдельно; руны и заклинания задаёт игра, Bravery выбирается вручную.",
 };
 
 export default function AutomationPage() {
@@ -103,7 +92,15 @@ export default function AutomationPage() {
         mode: AutomationMode;
         role: string;
         roles: boolean;
-      }>("automation-context", ({ payload }) => setLive(payload));
+      }>("automation-context", ({ payload }) =>
+        setLive((previous) =>
+          previous?.mode === payload?.mode &&
+          previous?.role === payload?.role &&
+          previous?.roles === payload?.roles
+            ? previous
+            : payload,
+        ),
+      );
       if (disposed) stop();
       else unlisten = stop;
       const stopSync = await listen("cloud-sync-complete", async () => {
@@ -174,6 +171,8 @@ export default function AutomationPage() {
             ...current,
             Profiles: next.Profiles,
             UseRoleProfiles: true,
+            AutoPickEnabled: next.AutoPickEnabled,
+            AutoBanEnabled: next.AutoBanEnabled,
           });
           if (revision.current === currentRevision) {
             dirty.current = false;
@@ -189,7 +188,11 @@ export default function AutomationPage() {
   }, []);
   // Keep pending changes when leaving the page; the queued snapshot still reaches Tauri.
   const key = mode === "classic" ? `classic:${role}` : mode;
-  const profile = settings ? editorProfile(settings, key) : null;
+  const baseProfile = settings ? editorProfile(settings, key) : null;
+  const isJungle = mode === "classic" && role === "jungle";
+  const profile =
+    baseProfile && isJungle ? jungleSpells(baseProfile) : baseProfile;
+  const activePickCount = profile ? pickCount(profile, mode) : 3;
   const update = (patch: Partial<AutomationProfile>) => {
     const current = latest.current;
     if (!current) return;
@@ -197,7 +200,9 @@ export default function AutomationPage() {
       ...current,
       Profiles: {
         ...current.Profiles,
-        [key]: { ...editorProfile(current, key), ...patch },
+        [key]: isJungle
+          ? jungleSpells({ ...editorProfile(current, key), ...patch })
+          : { ...editorProfile(current, key), ...patch },
       },
     });
   };
@@ -218,12 +223,48 @@ export default function AutomationPage() {
   const spellChoices = Object.entries(spells).filter(([, id]) =>
     allowedSpells(mode).includes(Number(id)),
   );
-  const filtered = Object.entries(champions)
-    .filter(([name]) =>
-      name.toLocaleLowerCase("ru").includes(search.toLocaleLowerCase("ru")),
-    )
-    .sort(([a], [b]) => a.localeCompare(b, "ru"));
+  const filtered = useMemo(
+    () =>
+      Object.entries(champions)
+        .filter(([name]) =>
+          name.toLocaleLowerCase("ru").includes(search.toLocaleLowerCase("ru")),
+        )
+        .sort(([a], [b]) => a.localeCompare(b, "ru")),
+    [champions, search],
+  );
 
+  const selectChampion = useCallback(
+    (name: string) => {
+      const current = latest.current;
+      if (!current) return;
+      const selectedProfile = editorProfile(current, key);
+      const next = { ...selectedProfile };
+      if (slot === "ban") next.Ban = name;
+      else {
+        const picks = [...selectedProfile.Picks];
+        const index = Number(slot);
+        const duplicate = picks.indexOf(name);
+        if (duplicate >= 0 && duplicate !== index)
+          picks[duplicate] = picks[index] || "";
+        picks[index] = name;
+        next.Picks = picks;
+        if (mode === "aram" || mode === "mayhem") {
+          const count = pickCount(next, mode);
+          const empty = Array.from({ length: count }, (_, i) => i).find(
+            (i) => !picks[i],
+          );
+          if (empty != null) setSlot(String(empty));
+        }
+      }
+      persist({ ...current, Profiles: { ...current.Profiles, [key]: next } });
+    },
+    [key, slot, mode, persist],
+  );
+  const saveRunePage = useCallback(async (page: RunePage) => {
+    const api = await import("@/lib/tauri");
+    await api.saveRunePage(page);
+    setRunePages(await api.loadRunePages());
+  }, []);
   if (!settings || !profile)
     return (
       <div className="flex flex-col gap-3">
@@ -251,9 +292,27 @@ export default function AutomationPage() {
       <Switch
         size="sm"
         aria-label={label}
-        checked={!disabled && profile[field]}
+        checked={
+          !disabled &&
+          (mode === "classic" && field === "AutoPick"
+            ? (settings.AutoPickEnabled ?? true)
+            : mode === "classic" && field === "AutoBan"
+              ? (settings.AutoBanEnabled ?? true)
+              : profile[field])
+        }
         disabled={disabled}
-        onCheckedChange={(value) => update({ [field]: value })}
+        onCheckedChange={(value) => {
+          if (
+            mode === "classic" &&
+            (field === "AutoPick" || field === "AutoBan")
+          )
+            persist({
+              ...latest.current!,
+              [field === "AutoPick" ? "AutoPickEnabled" : "AutoBanEnabled"]:
+                value,
+            });
+          else update({ [field]: value });
+        }}
       />
       {label}
     </label>
@@ -313,7 +372,6 @@ export default function AutomationPage() {
           </Button>
         </div>
       )}
-      <p className="text-xs text-muted-foreground">{MODE_HELP[mode]}</p>
       {mode === "classic" && (
         <div className="flex flex-wrap gap-2" role="group" aria-label="Роль">
           {Object.entries(ROLES).map(([value, label]) => (
@@ -371,17 +429,57 @@ export default function AutomationPage() {
               </SelectContent>
             </Select>
           )}
+          {randomMode && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Пиков</span>
+              <Select
+                value={String(activePickCount)}
+                onValueChange={(value) => {
+                  if (value) {
+                    const count = Number(value);
+                    update({ PickCount: count });
+                    if (slot !== "ban" && Number(slot) >= count) setSlot("0");
+                  }
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  aria-label="Количество приоритетов ARAM"
+                >
+                  <SelectValue>{activePickCount}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {Array.from({ length: 30 }, (_, i) => (
+                      <SelectItem key={i + 1} value={String(i + 1)}>
+                        {i + 1}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <Tabs
             value={slot}
             onValueChange={(value) => value && setSlot(String(value))}
           >
-            <TabsList className="flex h-auto flex-wrap justify-start">
-              {[0, 1, 2].map((index) => (
-                <TabsTrigger key={index} value={String(index)}>
-                  {profile.Picks[index] ||
-                    ["Пик", "Запасной пик", "Резервный пик"][index]}
-                </TabsTrigger>
-              ))}
+            <TabsList className="flex h-auto max-h-24 flex-wrap justify-start overflow-y-auto">
+              {Array.from(
+                { length: randomMode ? activePickCount : 3 },
+                (_, index) => (
+                  <TabsTrigger
+                    key={index}
+                    value={String(index)}
+                    aria-label={`Приоритет пика ${index + 1}`}
+                  >
+                    {profile.Picks[index] ||
+                      (randomMode
+                        ? "+"
+                        : ["Пик", "Запасной пик", "Резервный пик"][index])}
+                  </TabsTrigger>
+                ),
+              )}
               {canBan && (
                 <TabsTrigger value="ban">Бан: {profile.Ban || "—"}</TabsTrigger>
               )}
@@ -416,49 +514,15 @@ export default function AutomationPage() {
               </Button>
             </WithTooltip>
           </div>
-          <div className="grid max-h-48 grid-cols-[repeat(auto-fill,2.5rem)] justify-start gap-1.5 overflow-y-auto rounded-md border p-2">
-            {filtered.map(([name, english]) => (
-              <WithTooltip key={english} label={name}>
-                <button
-                  type="button"
-                  aria-label={name}
-                  aria-pressed={
-                    slot === "ban"
-                      ? profile.Ban === name
-                      : profile.Picks[Number(slot)] === name
-                  }
-                  className={cn(
-                    "size-10 overflow-hidden rounded-md border-2 border-transparent",
-                    (slot === "ban"
-                      ? profile.Ban === name
-                      : profile.Picks[Number(slot)] === name) &&
-                      "border-primary",
-                  )}
-                  onClick={() => {
-                    if (slot === "ban") update({ Ban: name });
-                    else {
-                      const picks = [...profile.Picks];
-                      picks[Number(slot)] = name;
-                      update({ Picks: picks });
-                    }
-                  }}
-                >
-                  <img
-                    src={`${DDRAGON}/cdn/${version}/img/champion/${english}.png`}
-                    alt=""
-                    loading="lazy"
-                    className="size-full"
-                  />
-                </button>
-              </WithTooltip>
-            ))}
-          </div>
+          <ChampionGrid
+            entries={filtered}
+            version={version}
+            selected={
+              slot === "ban" ? profile.Ban : profile.Picks[Number(slot)] || ""
+            }
+            onSelect={selectChampion}
+          />
           {randomMode && toggle("Брать со скамейки", "Bench")}
-          <CardDescription className="text-xs">
-            {randomMode
-              ? "Нет нужного чемпиона — LM оставит текущего; баны не выполняются."
-              : "Пики слева направо; недоступные чемпионы пропускаются."}
-          </CardDescription>
         </CardContent>
       </Card>
       {canSpells && (
@@ -469,6 +533,7 @@ export default function AutomationPage() {
               <CardTitle className="text-base flex items-center justify-between">
                 <span>Заклинания призывателя</span>
                 <Switch
+                  aria-label="Автовыбор заклинаний"
                   checked={profile.AutoSpells}
                   onCheckedChange={(v) => update({ AutoSpells: v })}
                 />
@@ -486,14 +551,22 @@ export default function AutomationPage() {
                         type="button"
                         aria-label={`Заклинание: ${name}`}
                         aria-pressed={isSpell1 || isSpell2}
+                        data-selected={isSpell1 || isSpell2 || undefined}
+                        disabled={isJungle && Number(key) === 11}
                         onClick={() => {
                           const id = Number(key);
-                          if (!profile.Spell1Id || profile.Spell2Id)
+                          if (isJungle)
+                            update(
+                              profile.Spell1Id === 11
+                                ? { Spell2Id: id }
+                                : { Spell1Id: id },
+                            );
+                          else if (!profile.Spell1Id || profile.Spell2Id)
                             update({ Spell1Id: id, Spell2Id: null });
                           else if (id !== profile.Spell1Id)
                             update({ Spell2Id: id });
                         }}
-                        className={`rounded-md overflow-hidden border-2 transition-colors w-10 h-10 ${
+                        className={`lm-image-choice rounded-md overflow-hidden border-2 transition-colors w-10 h-10 ${
                           isSpell1
                             ? "border-primary"
                             : isSpell2
@@ -513,6 +586,23 @@ export default function AutomationPage() {
                 })}
               </div>
               <div className="flex flex-wrap items-center gap-2 text-sm">
+                {isJungle && (
+                  <WithTooltip label="Поменять D и F">
+                    <Button
+                      size="icon-sm"
+                      variant="outline"
+                      aria-label="Поменять заклинания D и F"
+                      onClick={() =>
+                        update({
+                          Spell1Id: profile.Spell2Id,
+                          Spell2Id: profile.Spell1Id,
+                        })
+                      }
+                    >
+                      <ArrowLeftRight />
+                    </Button>
+                  </WithTooltip>
+                )}
                 <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
                   <span className="flex items-center px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-muted-foreground">
                     D
@@ -535,6 +625,7 @@ export default function AutomationPage() {
                           size="icon"
                           className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
                           aria-label="Сбросить заклинание D"
+                          disabled={isJungle && profile.Spell1Id === 11}
                           onClick={() => update({ Spell1Id: null })}
                         >
                           <X className="h-2.5 w-2.5" strokeWidth={2.5} />
@@ -565,6 +656,7 @@ export default function AutomationPage() {
                           size="icon"
                           className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
                           aria-label="Сбросить заклинание F"
+                          disabled={isJungle && profile.Spell2Id === 11}
                           onClick={() => update({ Spell2Id: null })}
                         >
                           <X className="h-2.5 w-2.5" strokeWidth={2.5} />
@@ -586,6 +678,7 @@ export default function AutomationPage() {
               <div className="flex items-center gap-3">
                 <CardTitle className="text-base">Страницы рун</CardTitle>
                 <Switch
+                  aria-label="Автовыбор рун"
                   checked={profile.AutoRunes}
                   onCheckedChange={(v) => update({ AutoRunes: v })}
                 />
@@ -623,17 +716,25 @@ export default function AutomationPage() {
                     return (
                       <div
                         key={page.Name}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Выбрать руны: ${page.Name}`}
+                        aria-pressed={isSelected}
+                        onKeyDown={(event) => {
+                          if (
+                            event.target === event.currentTarget &&
+                            (event.key === "Enter" || event.key === " ")
+                          ) {
+                            event.preventDefault();
+                            update({ RunePage: page.Name });
+                          }
+                        }}
                         className={`flex items-center justify-between rounded-lg border p-3 cursor-pointer transition-colors ${
                           isSelected
                             ? "border-primary bg-primary/5"
                             : "border-border hover:border-muted-foreground/30"
                         }`}
-                        onClick={() =>
-                          update({
-                            RunePage:
-                              profile.RunePage === page.Name ? "" : page.Name,
-                          })
-                        }
+                        onClick={() => update({ RunePage: page.Name })}
                       >
                         <div className="flex items-center gap-3">
                           <div className="flex gap-1">
@@ -693,21 +794,15 @@ export default function AutomationPage() {
           </Card>
         </>
       )}
-      <RunePageEditor
-        open={runeEditorOpen}
-        onOpenChange={setRuneEditorOpen}
-        runePaths={runePaths}
-        editPage={editingRunePage}
-        onSave={async (page) => {
-          try {
-            const api = await import("@/lib/tauri");
-            await api.saveRunePage(page);
-            setRunePages(await api.loadRunePages());
-          } catch {
-            setError("Не удалось сохранить страницу рун.");
-          }
-        }}
-      />
+      {runeEditorOpen && (
+        <RunePageEditor
+          open={runeEditorOpen}
+          onOpenChange={setRuneEditorOpen}
+          runePaths={runePaths}
+          editPage={editingRunePage}
+          onSave={saveRunePage}
+        />
+      )}
     </div>
   );
 }

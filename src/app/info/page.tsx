@@ -3,7 +3,9 @@
 import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Bug, Github, MessageCircle, Copy, Check } from "lucide-react";
+import { ArrowLeft, Bug, Copy, Check } from "lucide-react";
+import { toast } from "sonner";
+import { DiscordIcon, GitHubIcon } from "@/components/brand-icons";
 import { ChangelogView } from "@/components/changelog-view";
 
 const DEVELOPERS = [
@@ -25,10 +27,12 @@ export default function InfoPage() {
     })();
   }, []);
 
-  const copyDiscord = useCallback((discord: string, index: number) => {
-    navigator.clipboard.writeText(discord);
+  const copyDiscord = useCallback(async (discord: string, index: number) => {
+    try {
+    await navigator.clipboard.writeText(discord);
     setCopiedIndex(index);
     setTimeout(() => setCopiedIndex(null), 2000);
+    } catch { toast.error("Не удалось скопировать. Повторите попытку."); }
   }, []);
 
   const openUrl = useCallback(async (url: string) => {
@@ -73,7 +77,7 @@ export default function InfoPage() {
           {DEVELOPERS.map((dev, i) => (
             <div key={i} className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <MessageCircle className="h-4 w-4 text-muted-foreground" />
+                <DiscordIcon className="h-4 w-4 text-muted-foreground" />
                 <span className="text-xs font-medium">{dev.name}</span>
               </div>
               <Button
@@ -105,14 +109,14 @@ export default function InfoPage() {
           size="sm"
           onClick={() => openUrl("https://github.com/RaspizDIYs/rustlm")}
         >
-          <Github className="h-4 w-4 mr-1" /> GitHub
+          <GitHubIcon className="h-4 w-4 mr-1" /> GitHub
         </Button>
         <Button
           variant="outline"
           size="sm"
           onClick={() => openUrl("https://discord.gg/9wS4DBMDNB")}
         >
-          <MessageCircle className="h-4 w-4 mr-1" /> Discord
+          <DiscordIcon className="h-4 w-4 mr-1" /> Discord
         </Button>
       </div>
     </div>

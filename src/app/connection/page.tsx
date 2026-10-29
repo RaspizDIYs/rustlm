@@ -1,4 +1,5 @@
 "use client";
+import { HighlightText } from "@/components/highlight-text";
 import Link from "next/link";
 import {networkSummary,noIpv6Route,infrastructureDomain} from "@/lib/network-summary";
 import { RepairError } from "@/components/repair-error";
@@ -591,12 +592,12 @@ export default function ConnectionPage() {
                     {probes.map((p) => (
                       <TableRow key={`${p.domain}|${p.ip}|${p.port}`}>
                         <TableCell className="whitespace-normal">
-                          <div>{p.domain}</div>
+                          <div><HighlightText text={p.domain} query={filter}/></div>
                           <div className="break-all text-xs text-muted-foreground">
                             {p.request_path}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            {p.ip} : {p.port}
+                            <HighlightText text={p.ip} query={filter}/> : {p.port}
                           </div>
                         </TableCell>
                         <TableCell>

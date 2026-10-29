@@ -70,7 +70,8 @@ pub async fn set_automation_settings(
                     | "aram"
                     | "mayhem"
                     | "arena"
-            ) || profile.picks.len() > 3
+            ) || profile.picks.len() > (if matches!(key.as_str(), "aram" | "mayhem") {30} else {3})
+                || profile.pick_count.is_some_and(|count| count == 0 || count > (if matches!(key.as_str(), "aram" | "mayhem") {30} else {3}))
                 || !matches!(
                     profile.arena_pick.as_str(),
                     "" | "preferred" | "crowd" | "manual"
@@ -191,8 +192,7 @@ async fn resolve_champion_id_with_dd(
 ) {
     if let Some(name) = name {
         if !name.is_empty() {
-            // Ensure champions are loaded
-            let _ = data_dragon.get_champions().await;
+
             if let Some(info) = data_dragon.get_champion_info(name).await {
                 *id_out = info.id.parse::<i32>().ok();
                 return;
@@ -206,6 +206,7 @@ async fn resolve_profiles(
     data_dragon: &crate::services::data_dragon::DataDragonService,
     settings: &mut AutomationSettings,
 ) {
+    let _ = data_dragon.get_champions().await;
     for profile in settings.profiles.values_mut() {
         profile.pick_ids.clear();
         for name in &profile.picks {

@@ -565,7 +565,7 @@ impl AutoAcceptService {
                         };
                         if let Some(id) = policy::bench_pick(
                             session,
-                            &profile.unwrap().pick_ids,
+                            profile.unwrap().active_pick_ids(),
                             &ids,
                             &subset,
                             profile.unwrap().bench,
@@ -832,12 +832,17 @@ impl AutoAcceptService {
                                     settings.pick_champion2 = None;
                                     settings.pick_champion3 = None;
                                 }
-                                let picks = [
-                                    (&settings.pick_champion1, settings.pick_champion1_id),
-                                    (&settings.pick_champion2, settings.pick_champion2_id),
-                                    (&settings.pick_champion3, settings.pick_champion3_id),
+                                let mut picks = vec![
+                                    (settings.pick_champion1.clone(), settings.pick_champion1_id),
+                                    (settings.pick_champion2.clone(), settings.pick_champion2_id),
+                                    (settings.pick_champion3.clone(), settings.pick_champion3_id),
                                 ];
 
+                                if matches!(mode, "aram" | "mayhem") {
+                                    if let Some(profile) = profile {
+                                        picks = profile.picks.iter().zip(profile.active_pick_ids()).map(|(name,id)| (Some(name.clone()),Some(*id))).collect();
+                                    }
+                                }
                                 let mut picked = false;
                                 for (name, id_opt) in &picks {
                                     if let Some(name) = name {

@@ -1,4 +1,5 @@
 "use client";
+import { HighlightText } from "@/components/highlight-text";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -101,7 +102,7 @@ export function LmFriends({
       }
     };
     void refresh();
-    const timer = setInterval(() => void refresh(), 60000);
+    const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 60000);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -266,7 +267,7 @@ export function LmFriends({
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="truncate font-medium">
-                              {friend.display_name}
+                              <HighlightText text={friend.display_name} query={query} />
                             </span>
                             {friend.sources.includes("riot") && (
                               <WithTooltip label="Друг из League">
@@ -296,7 +297,7 @@ export function LmFriends({
                               className="truncate text-xs text-muted-foreground"
                               key={a.puuid}
                             >
-                              {a.riot_id}
+                              <HighlightText text={a.riot_id} query={query} />
                             </p>
                           ))}
                         </div>

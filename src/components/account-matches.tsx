@@ -16,7 +16,8 @@ export function AccountMatches({ matches }: { matches: MatchSummary[] }) {
         Math.abs(event.deltaX) > Math.abs(event.deltaY)
           ? event.deltaX
           : event.deltaY;
-      if (!delta) return;
+      if (!delta || (delta < 0 && element.scrollLeft <= 0) ||
+          (delta > 0 && element.scrollLeft >= element.scrollWidth - element.clientWidth - 1)) return;
       event.preventDefault();
       event.stopPropagation();
       element.scrollLeft +=
