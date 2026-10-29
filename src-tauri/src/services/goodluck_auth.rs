@@ -972,7 +972,15 @@ impl GoodLuckAuthService {
         self.api_request(reqwest::Method::DELETE,"/auth/rustlm/lm-presence",None,None).await?; Ok(())
     }
     pub async fn lm_friends(&self) -> Result<serde_json::Value, AppError> {
-        self.api_json(reqwest::Method::GET,"/auth/rustlm/lm-friends",None,None).await
+        let mut friends: serde_json::Value = self.api_json(reqwest::Method::GET,"/auth/rustlm/lm-friends",None,None).await?;
+        if let Some(list) = friends.as_array_mut() {
+            for friend in list {
+                if let Some(url) = friend.get("avatar_url").and_then(|value| value.as_str()).map(absolutize_goodluck_media_url) {
+                    friend["avatar_url"] = serde_json::Value::String(url);
+                }
+            }
+        }
+        Ok(friends)
     }
     pub async fn lm_presence(&self, body: serde_json::Value) -> Result<serde_json::Value, AppError> {
         self.api_json(reqwest::Method::PUT,"/auth/rustlm/lm-presence",Some(body),None).await
@@ -980,8 +988,13 @@ impl GoodLuckAuthService {
     pub async fn get_friends(
         &self,
     ) -> Result<Vec<crate::models::goodluck::GoodLuckFriend>, AppError> {
-        self.api_json(reqwest::Method::GET, "/friends", None, None)
-            .await
+        let mut friends: Vec<crate::models::goodluck::GoodLuckFriend> = self.api_json(reqwest::Method::GET, "/friends", None, None).await?;
+        for friend in &mut friends {
+            if let Some(url) = friend.avatar_url.as_mut() {
+                *url = absolutize_goodluck_media_url(url);
+            }
+        }
+        Ok(friends)
     }
 
     pub async fn search_users(
@@ -1160,4 +1173,22 @@ impl GoodLuckAuthService {
 
 fn urlencode(s: &str) -> String {
     urlencoding::encode(s).into_owned()
+}
+
+#[cfg(test)]
+mod avatar_url_tests {
+    use super::{absolutize_goodluck_media_url, GOODLUCK_WEB_BASE};
+
+    #[test]
+    fn relative_friend_avatar_paths_resolve_against_the_selected_goodluck_environment() {
+        assert_eq!(absolutize_goodluck_media_url("/uploads/avatar.png"), format!("{GOODLUCK_WEB_BASE}/uploads/avatar.png"));
+        assert_eq!(absolutize_goodluck_media_url("uploads/avatar.png"), format!("{GOODLUCK_WEB_BASE}/uploads/avatar.png"));
+    }
+
+    #[test]
+    fn absolute_and_empty_friend_avatars_preserve_their_meaning() {
+        assert_eq!(absolutize_goodluck_media_url("https://cdn.example.test/avatar.png"), "https://cdn.example.test/avatar.png");
+        assert_eq!(absolutize_goodluck_media_url("//cdn.example.test/avatar.png"), "https://cdn.example.test/avatar.png");
+        assert_eq!(absolutize_goodluck_media_url("  "), "");
+    }
 }

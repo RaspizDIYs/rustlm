@@ -13,6 +13,6 @@ export function mergeFriends(
 ) {
  const merged=new Map<string,(typeof riot)[number]&{sources:("riot"|"goodluck")[]}>();
  for(const friend of goodluck)merged.set(friend.id,{...friend,sources:["goodluck"]});
- for(const friend of riot)merged.set(friend.id,{...merged.get(friend.id),...friend,sources:merged.has(friend.id)?["goodluck","riot"]:["riot"]});
+ for(const friend of riot)merged.set(friend.id,{...merged.get(friend.id),...friend,avatar_url:friend.avatar_url?.trim()||merged.get(friend.id)?.avatar_url,sources:merged.has(friend.id)?["goodluck","riot"]:["riot"]});
  return [...merged.values()].sort((a,b)=>a.display_name.localeCompare(b.display_name,"ru"));
 }

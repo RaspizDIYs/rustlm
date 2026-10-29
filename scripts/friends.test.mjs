@@ -21,3 +21,12 @@ test('the same person appears once with both sources and their matched Riot iden
  assert.equal(mergeFriends([],[]).length,0);
 });
 
+test('matching a Riot roster cannot erase an existing GoodLuck avatar',()=>{
+ const gl={id:'one',username:'one',display_name:'One',avatar_url:'https://example.test/avatar.png'};
+ for(const missing of [null,'',undefined,'  ']){
+  const result=mergeFriends([gl],[{...gl,avatar_url:missing}]);
+  assert.equal(result[0].avatar_url,gl.avatar_url);
+  assert.deepEqual(result[0].sources,['goodluck','riot']);
+ }
+});
+

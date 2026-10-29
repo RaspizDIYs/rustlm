@@ -20,6 +20,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Table, TableBody, TableRow, TableCell } from "@/components/ui/table";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { friendsError, mergeFriends } from "@/lib/friends";
@@ -237,41 +239,57 @@ export function LmFriends({
                 {visible.map((friend) => (
                   <TableRow key={friend.id}>
                     <TableCell>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">
-                          {friend.display_name}
-                        </span>
-                        {friend.sources.includes("riot") && (
-                          <WithTooltip label="Друг из League">
-                            <span
-                              tabIndex={0}
-                              aria-label="League"
-                              className="text-muted-foreground"
-                            >
-                              <Swords className="size-3.5" />
+                      <div className="flex items-center gap-2.5">
+                        <Avatar className="size-8">
+                          <AvatarImage
+                            src={friend.avatar_url || undefined}
+                            alt={friend.display_name}
+                          />
+                          <AvatarFallback>
+                            {Array.from(friend.display_name.trim())
+                              .slice(0, 2)
+                              .join("")
+                              .toUpperCase() || "?"}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate font-medium">
+                              {friend.display_name}
                             </span>
-                          </WithTooltip>
-                        )}
-                        {friend.sources.includes("goodluck") && (
-                          <WithTooltip label="Друг из GoodLuck">
-                            <span
-                              tabIndex={0}
-                              aria-label="GoodLuck"
-                              className="text-muted-foreground"
+                            {friend.sources.includes("riot") && (
+                              <WithTooltip label="Друг из League">
+                                <Badge
+                                  variant="outline"
+                                  className="gap-1 px-1.5 text-[10px]"
+                                >
+                                  <Swords />
+                                  League
+                                </Badge>
+                              </WithTooltip>
+                            )}
+                            {friend.sources.includes("goodluck") && (
+                              <WithTooltip label="Друг из GoodLuck">
+                                <Badge
+                                  variant="outline"
+                                  className="gap-1 px-1.5 text-[10px]"
+                                >
+                                  <Cloud />
+                                  GoodLuck
+                                </Badge>
+                              </WithTooltip>
+                            )}
+                          </div>
+                          {friend.riot_accounts?.map((a) => (
+                            <p
+                              className="truncate text-xs text-muted-foreground"
+                              key={a.puuid}
                             >
-                              <Cloud className="size-3.5" />
-                            </span>
-                          </WithTooltip>
-                        )}
+                              {a.riot_id}
+                            </p>
+                          ))}
+                        </div>
                       </div>
-                      {friend.riot_accounts?.map((a) => (
-                        <p
-                          className="text-xs text-muted-foreground"
-                          key={a.puuid}
-                        >
-                          {a.riot_id}
-                        </p>
-                      ))}
                     </TableCell>
                     <TableCell className="w-10">
                       <WithTooltip

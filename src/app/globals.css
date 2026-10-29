@@ -7,6 +7,7 @@
   --primary-foreground: oklch(0.985 0 0);
   --ring: oklch(0.546 0.245 262.881);
 }
+.lm-sidebar { --primary: oklch(0.546 0.245 262.881); --primary-foreground: oklch(0.985 0 0); }
 .accounts-header { display: grid; grid-template-columns: minmax(0,1fr) 240px; gap: 8px 24px; align-items: center; flex-shrink: 0; }
 .accounts-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .accounts-header-imports { display: flex; align-items: center; gap: 6px; min-width: 0; }

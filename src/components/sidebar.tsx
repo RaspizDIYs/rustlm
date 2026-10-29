@@ -38,6 +38,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TotpVerifyDialog } from "@/components/totp-verify-dialog";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { WithTooltip } from "@/components/ui/with-tooltip";
 import { FriendInbox } from "@/components/friend-inbox";
 import { needsCloudTotpVerification } from "@/lib/cloud-totp";
 
@@ -178,44 +180,49 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex h-full shrink-0 flex-col bg-sidebar border-r border-border transition-all duration-300",
-        collapsed ? "w-[60px] min-w-[60px] max-w-[60px]" : "w-[220px] min-w-[220px] max-w-[220px]"
+        "lm-sidebar flex h-full shrink-0 flex-col border-r border-border bg-card transition-[width] duration-200",
+        collapsed ? "w-[60px] min-w-[60px] max-w-[60px]" : "w-[176px] min-w-[176px] max-w-[176px]"
       )}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-border p-3">
+      <div className="flex h-14 shrink-0 items-center justify-between gap-2 px-3">
         {!collapsed && (
-          <span className="text-sm font-bold text-foreground tracking-wide">
-            RustLM
+          <span className="text-base font-semibold tracking-tight text-foreground">
+            Rust<span className="text-primary">LM</span>
           </span>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
+          aria-label={collapsed?"Развернуть боковое меню":"Свернуть боковое меню"}
+          aria-expanded={!collapsed}
           className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
         >
           {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
         </button>
       </div>
 
-      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
+      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-1">
         {navItems.map((item) => {
           const isActive =
             pathname === item.href || pathname.startsWith(item.href + "/");
           const Icon = item.icon;
-          return (
+          const link = (
             <Link
               key={item.href}
               href={item.href}
+              aria-label={item.label}
+              aria-current={isActive?"page":undefined}
               className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
+                "flex h-[34px] items-center gap-2.5 rounded-lg px-2.5 text-xs transition-colors",
                 isActive
-                  ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                  : "text-sidebar-foreground hover:bg-accent hover:text-foreground"
+                  ? "bg-primary/10 text-primary font-medium"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
               )}
             >
               <Icon className="h-4 w-4 shrink-0" />
               {!collapsed && <span>{item.label}</span>}
             </Link>
           );
+          return collapsed?<WithTooltip key={item.href} label={item.label} side="right">{link}</WithTooltip>:link;
         })}
       </nav>
 
@@ -238,18 +245,7 @@ export function Sidebar() {
         {glUser ? (
           <div className={cn("flex items-center gap-2", collapsed && "justify-center")}>
             <div className="relative shrink-0">
-              {goodluckAvatarSrc(glUser) ? (
-                <img
-                  src={goodluckAvatarSrc(glUser)}
-                  alt=""
-                  className="h-7 w-7 rounded-full"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                />
-              ) : (
-                <div className="h-7 w-7 rounded-full bg-primary/20 flex items-center justify-center">
-                  <Cloud className="h-3.5 w-3.5 text-primary" />
-                </div>
-              )}
+              <Avatar className="size-7"><AvatarImage src={goodluckAvatarSrc(glUser)||undefined} alt={glUser.display_name}/><AvatarFallback className="text-xs">{Array.from(glUser.display_name.trim()).slice(0,2).join('').toUpperCase()||'?'}</AvatarFallback></Avatar>
               <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-green-500 border-2 border-sidebar" />
             </div>
             {!collapsed && (
@@ -267,6 +263,7 @@ export function Sidebar() {
                     render={
                       <button
                         type="button"
+                        aria-label="Синхронизировать аккаунты"
                         onClick={async () => {
                           if (syncStatus.type === "Error" && syncStatus.message === "totp_required") {
                             setTotpDialogOpen(true);
@@ -315,6 +312,7 @@ export function Sidebar() {
                     render={
                       <button
                         type="button"
+                        aria-label="Выйти из GoodLuck"
                         onClick={handleGlLogout}
                         className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
                       >
@@ -338,7 +336,7 @@ export function Sidebar() {
                   disabled={glLoading}
                   className={cn(
                     "flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm transition-colors",
-                    "text-sidebar-foreground hover:bg-accent hover:text-foreground",
+                    "text-muted-foreground hover:bg-accent hover:text-foreground",
                     "disabled:opacity-50 disabled:cursor-not-allowed",
                     collapsed && "justify-center px-0"
                   )}
