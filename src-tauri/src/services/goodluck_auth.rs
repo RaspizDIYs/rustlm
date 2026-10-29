@@ -153,7 +153,7 @@ impl GoodLuckAuthService {
 
             if flow.state != state {
                 return Err(AppError::Custom(
-                    "State mismatch — possible CSRF attack".to_string(),
+                    "Сессия входа устарела: state не совпал. Начните вход заново.".to_string(),
                 ));
             }
             flow.code_verifier
@@ -173,14 +173,21 @@ impl GoodLuckAuthService {
             .form(&form)
             .send()
             .await
-            .map_err(|e| AppError::Custom(format!("Identity token exchange failed: {}", e)))?;
+            .map_err(map_identity_network_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            // 400 invalid_grant — обычная ситуация: ссылка устарела/использована.
+            if status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid_grant") {
+                return Err(AppError::Custom(
+                    "Ссылка входа устарела или уже использована. Начните вход заново.".to_string(),
+                ));
+            }
             return Err(AppError::Custom(format!(
-                "Identity token exchange returned {}: {}",
-                status, body
+                "Identity отклонил обмен кода (HTTP {}): {}",
+                status,
+                truncate_body(&body)
             )));
         }
         let identity_token: serde_json::Value = resp
@@ -199,14 +206,20 @@ impl GoodLuckAuthService {
             .json(&serde_json::json!({ "accessToken": access_token }))
             .send()
             .await
-            .map_err(|e| AppError::Custom(format!("GoodLuck token exchange failed: {}", e)))?;
+            .map_err(map_identity_network_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(AppError::Custom(
+                    "GoodLuck не принял вход: identity-токен недействителен. Войдите заново.".to_string(),
+                ));
+            }
             return Err(AppError::Custom(format!(
-                "GoodLuck token exchange returned {}: {}",
-                status, body
+                "GoodLuck отклонил обмен токена (HTTP {}): {}",
+                status,
+                truncate_body(&body)
             )));
         }
 
@@ -243,6 +256,11 @@ impl GoodLuckAuthService {
             &user,
             expires_at,
         )?;
+
+        log::info!(
+            "[auth] OIDC login via identity succeeded for user {}",
+            user.display_name
+        );
 
         Ok(user)
     }
@@ -1210,6 +1228,27 @@ fn urlencode(s: &str) -> String {
     urlencoding::encode(s).into_owned()
 }
 
+/// Сетевые ошибки identity — в понятный текст. Токены в сообщения не попадают.
+fn map_identity_network_error(error: reqwest::Error) -> AppError {
+    if error.is_timeout() {
+        AppError::Custom("Identity не ответил вовремя. Проверьте сеть и начните вход заново.".to_string())
+    } else if error.is_connect() {
+        AppError::Custom("Не удалось подключиться к identity. Проверьте интернет.".to_string())
+    } else {
+        AppError::Custom(format!("Ошибка запроса к identity: {}", error))
+    }
+}
+
+/// Тело ответа в ошибке обрезаем: в лог/интерфейс не должны уезжать длинные
+/// простыни (и точно не токены — их в тексте ошибок быть не должно).
+fn truncate_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.chars().count() <= 200 {
+        return trimmed.to_string();
+    }
+    format!("{}…", trimmed.chars().take(200).collect::<String>())
+}
+
 #[cfg(test)]
 mod avatar_url_tests {
     use super::{absolutize_goodluck_media_url, GOODLUCK_WEB_BASE};
@@ -1218,6 +1257,14 @@ mod avatar_url_tests {
     fn relative_friend_avatar_paths_resolve_against_the_selected_goodluck_environment() {
         assert_eq!(absolutize_goodluck_media_url("/uploads/avatar.png"), format!("{GOODLUCK_WEB_BASE}/uploads/avatar.png"));
         assert_eq!(absolutize_goodluck_media_url("uploads/avatar.png"), format!("{GOODLUCK_WEB_BASE}/uploads/avatar.png"));
+    }
+
+    #[test]
+    fn network_errors_are_human_readable_and_short() {
+        let long = "x".repeat(500);
+        let short = super::truncate_body(&long);
+        assert!(short.chars().count() <= 201, "body must be truncated");
+        assert!(super::truncate_body(" invalid_grant ").contains("invalid_grant"));
     }
 
     #[test]
