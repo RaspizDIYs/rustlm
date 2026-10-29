@@ -38,6 +38,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TotpVerifyDialog } from "@/components/totp-verify-dialog";
+import { FriendInbox } from "@/components/friend-inbox";
 import { needsCloudTotpVerification } from "@/lib/cloud-totp";
 
 const navItems = [
@@ -233,6 +234,7 @@ export function Sidebar() {
             </TooltipContent>
           </Tooltip>
         )}
+        {glUser && <FriendInbox collapsed={collapsed} />}
         {glUser ? (
           <div className={cn("flex items-center gap-2", collapsed && "justify-center")}>
             <div className="relative shrink-0">

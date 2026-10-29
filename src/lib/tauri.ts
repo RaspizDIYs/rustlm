@@ -597,6 +597,15 @@ export interface GoodLuckFriend {
   avatar_url?: string | null;
 }
 
+export interface GoodLuckFriendRequest {
+  id: string;
+  requester_id: string;
+  requester_username: string;
+  requester_display_name: string;
+  requester_avatar_url?: string | null;
+  created_at: string;
+}
+
 export interface SharedAccount {
   id: string;
   owner_user_id: string;
@@ -640,6 +649,22 @@ export async function goodluckSearchUsers(query: string): Promise<GoodLuckFriend
 
 export async function goodluckSendFriendRequest(addresseeUserId: string): Promise<void> {
   return invoke("goodluck_send_friend_request", { addresseeUserId });
+}
+
+export async function goodluckGetFriendRequests(): Promise<GoodLuckFriendRequest[]> {
+  return invoke("goodluck_get_friend_requests");
+}
+
+export async function goodluckAcceptFriendRequest(requestId: string): Promise<void> {
+  return invoke("goodluck_accept_friend_request", { requestId });
+}
+
+export async function goodluckDeclineFriendRequest(requestId: string): Promise<void> {
+  return invoke("goodluck_decline_friend_request", { requestId });
+}
+
+export async function goodluckRemoveFriend(friendId: string): Promise<void> {
+  return invoke("goodluck_remove_friend", { friendId });
 }
 
 export async function goodluckGetSharedAccounts(): Promise<SharedAccountsResponse> {

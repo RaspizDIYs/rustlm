@@ -79,10 +79,12 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+
 import { LOL_SERVERS_FOR_SELECT as SERVERS } from "@/lib/lol-servers";
 import { toast } from "sonner";
 
 const hasValidPuuid = (value: string) => /^[A-Za-z0-9_-]{78}$/.test(value);
+
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
@@ -1246,6 +1248,7 @@ export default function AccountsPage() {
                   )}
                 </div>
               </div>
+
             )}
           </div>
         </>
