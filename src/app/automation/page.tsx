@@ -1,633 +1,623 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { X, Plus, Pencil, Trash2, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { RunePageEditor } from "@/components/rune-page-editor";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { X } from "lucide-react";
+import { RunePageEditor } from "@/components/rune-page-editor";
 import { AutoAcceptSwitch } from "@/components/auto-accept-provider";
 import { WithTooltip } from "@/components/ui/with-tooltip";
-import type { RunePage, RunePathModel, AutomationSettings } from "@/lib/tauri";
+import {
+  MODES,
+  ROLES,
+  editorProfile,
+  allowedSpells,
+  type AutomationMode,
+} from "@/lib/automation";
+import { cn } from "@/lib/utils";
+import type {
+  RunePage,
+  RunePathModel,
+  AutomationSettings,
+  AutomationProfile,
+} from "@/lib/tauri";
 
 const DDRAGON = "https://ddragon.leagueoflegends.com";
-
-const SPELL_IMAGE_MAP: Record<string, string> = {
-  "4": "SummonerFlash",
-  "14": "SummonerDot",
-  "12": "SummonerTeleport",
-  "11": "SummonerSmite",
-  "3": "SummonerExhaust",
-  "7": "SummonerHeal",
-  "6": "SummonerHaste",
-  "1": "SummonerBoost",
-  "21": "SummonerBarrier",
-  "32": "SummonerSnowball",
-  "13": "SummonerMana",
+const MODE_HELP = {
+  classic:
+    "Профиль выбирается по назначенной роли; незаполненная роль остаётся под вашим управлением.",
+  aram: "Приоритеты применяются к доступным чемпионам; скамейка — после открытия общего выбора.",
+  mayhem: "Выбор как в ARAM; руны и изнурение отключены правилами режима.",
+  arena:
+    "Пик и бан отдельно; руны и заклинания задаёт игра, Bravery выбирается вручную.",
 };
 
 export default function AutomationPage() {
+  const [settings, setSettings] = useState<AutomationSettings | null>(null);
+  const latest = useRef<AutomationSettings | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queue = useRef(Promise.resolve());
+  const revision = useRef(0);
+  const dirty = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const [champions, setChampions] = useState<Record<string, string>>({});
   const [spells, setSpells] = useState<Record<string, string>>({});
+  const [version, setVersion] = useState("");
   const [runePages, setRunePages] = useState<RunePage[]>([]);
   const [runePaths, setRunePaths] = useState<RunePathModel[]>([]);
-  const [version, setVersion] = useState("");
-  const [champSearch, setChampSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-
-  // Automation settings
-  const [autoPickEnabled, setAutoPickEnabled] = useState(true);
-  const [autoBanEnabled, setAutoBanEnabled] = useState(true);
-  const [autoSpellsEnabled, setAutoSpellsEnabled] = useState(true);
-  const [autoRunesEnabled, setAutoRunesEnabled] = useState(true);
-  const [selectedPick, setSelectedPick] = useState("");
-  const [selectedBan, setSelectedBan] = useState("");
-  const [selectedSpell1, setSelectedSpell1] = useState("");
-  const [selectedSpell2, setSelectedSpell2] = useState("");
-  const [selectedRunePage, setSelectedRunePage] = useState("");
   const [runeEditorOpen, setRuneEditorOpen] = useState(false);
   const [editingRunePage, setEditingRunePage] = useState<RunePage | null>(null);
-
-  const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const loadData = useCallback(async () => {
-    try {
-      const tauri = await import("@/lib/tauri");
-      const [ver, champs, sp, pages, paths, settings] = await Promise.all([
-        tauri.getDdragonVersion(),
-        tauri.getChampions(),
-        tauri.getSummonerSpells(),
-        tauri.loadRunePages(),
-        tauri.getRunePaths(),
-        tauri.getAutomationSettings(),
-      ]);
-      setVersion(ver);
-      setChampions(champs);
-      setSpells(sp);
-      setRunePages(pages);
-      setRunePaths(paths);
-      setSelectedPick(settings.PickChampion1 ?? "");
-      setSelectedBan(settings.BanChampion ?? "");
-      setSelectedSpell1(
-        settings.Spell1Id != null ? String(settings.Spell1Id) : ""
-      );
-      setSelectedSpell2(
-        settings.Spell2Id != null ? String(settings.Spell2Id) : ""
-      );
-      if (settings.SelectedRunePageName) setSelectedRunePage(settings.SelectedRunePageName);
-      if (settings.AutoPickEnabled !== undefined) setAutoPickEnabled(settings.AutoPickEnabled);
-      if (settings.AutoBanEnabled !== undefined) setAutoBanEnabled(settings.AutoBanEnabled);
-      if (settings.AutoSpellsEnabled !== undefined) setAutoSpellsEnabled(settings.AutoSpellsEnabled);
-      if (settings.AutoRunesEnabled !== undefined) setAutoRunesEnabled(settings.AutoRunesEnabled);
-    } catch {
-      // Not in Tauri
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  const [mode, setMode] = useState<AutomationMode>("classic");
+  const [role, setRole] = useState("top");
+  const [slot, setSlot] = useState("0");
+  const [search, setSearch] = useState("");
+  const [live, setLive] = useState<{
+    mode: AutomationMode;
+    role: string;
+    roles: boolean;
+  } | null>(null);
   useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  useEffect(() => {
-    let un: (() => void) | undefined;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let unlistenSync: (() => void) | undefined;
     void (async () => {
       const { isTauri } = await import("@tauri-apps/api/core");
       if (!isTauri()) return;
       const { listen } = await import("@tauri-apps/api/event");
-      un = await listen("cloud-sync-complete", () => {
-        void loadData();
+      const stop = await listen<{
+        mode: AutomationMode;
+        role: string;
+        roles: boolean;
+      }>("automation-context", ({ payload }) => setLive(payload));
+      if (disposed) stop();
+      else unlisten = stop;
+      const stopSync = await listen("cloud-sync-complete", async () => {
+        if (dirty.current || disposed) return;
+        const startedAt = revision.current;
+        try {
+          const api = await import("@/lib/tauri");
+          const next = await api.getAutomationSettings();
+          if (!disposed && !dirty.current && startedAt === revision.current) {
+            latest.current = next;
+            setSettings(next);
+          }
+        } catch {
+          /* Keep the current editor if the client is temporarily unavailable. */
+        }
       });
+      if (disposed) stopSync();
+      else unlistenSync = stopSync;
     })();
     return () => {
-      un?.();
+      disposed = true;
+      unlisten?.();
+      unlistenSync?.();
     };
-  }, [loadData]);
-
-  const saveSettings = useCallback(async (overrides: Partial<AutomationSettings>) => {
-    if (saveTimeout.current) clearTimeout(saveTimeout.current);
-    saveTimeout.current = setTimeout(async () => {
-      try {
-        const tauri = await import("@/lib/tauri");
-        const current = await tauri.getAutomationSettings();
-        await tauri.setAutomationSettings({ ...current, ...overrides });
-      } catch (e) {
-        console.error("Save settings failed:", e);
-      }
-    }, 300);
   }, []);
 
-  const handleSelectChampion = (displayName: string) => {
-    if (!autoPickEnabled && !autoBanEnabled) return;
+  const load = useCallback(async () => {
+    try {
+      const api = await import("@/lib/tauri");
+      const data = await api.getAutomationSettings();
+      latest.current = data;
+      setSettings(data);
+      const [ver, champs, summoners, pages, paths] = await Promise.all([
+        api.getDdragonVersion(),
+        api.getChampions(),
+        api.getSummonerSpells(),
+        api.loadRunePages(),
+        api.getRunePaths(),
+      ]);
+      setVersion(ver);
+      setChampions(champs);
+      setSpells(summoners);
+      setRunePages(pages);
+      setRunePaths(paths);
+      setError("");
+    } catch {
+      setError("Не удалось загрузить настройки. Повторите попытку.");
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-    if (autoPickEnabled && !autoBanEnabled) {
-      setSelectedPick(displayName);
-      setSelectedBan("");
-      saveSettings({
-        PickChampion1: displayName,
-        BanChampion: null,
-        BanChampionId: null,
+  const persist = useCallback((next: AutomationSettings) => {
+    const currentRevision = ++revision.current;
+    dirty.current = true;
+    latest.current = next;
+    setSettings(next);
+    setSaving(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      queue.current = queue.current.then(async () => {
+        try {
+          const api = await import("@/lib/tauri");
+          const current = await api.getAutomationSettings();
+          await api.setAutomationSettings({
+            ...current,
+            Profiles: next.Profiles,
+            UseRoleProfiles: next.UseRoleProfiles,
+          });
+          if (revision.current === currentRevision) {
+            dirty.current = false;
+            setError("");
+          }
+        } catch {
+          setError("Настройки не сохранены. Нажмите «Повторить».");
+        } finally {
+          if (revision.current === currentRevision) setSaving(false);
+        }
       });
-      return;
-    }
-
-    if (!autoPickEnabled && autoBanEnabled) {
-      setSelectedBan(displayName);
-      saveSettings({ BanChampion: displayName });
-      return;
-    }
-
-    if (!selectedPick || (selectedPick && selectedBan)) {
-      setSelectedPick(displayName);
-      setSelectedBan("");
-      saveSettings({
-        PickChampion1: displayName,
-        BanChampion: null,
-        BanChampionId: null,
-      });
-    } else {
-      if (displayName === selectedPick) return;
-      setSelectedBan(displayName);
-      saveSettings({ BanChampion: displayName });
-    }
-  };
-
-  const clearPick = () => {
-    setSelectedPick("");
-    saveSettings({
-      PickChampion1: null,
-      PickChampion1Id: null,
+    }, 250);
+  }, []);
+  // Keep pending changes when leaving the page; the queued snapshot still reaches Tauri.
+  const key =
+    mode === "classic" && settings?.UseRoleProfiles ? `classic:${role}` : mode;
+  const profile = settings ? editorProfile(settings, key) : null;
+  const update = (patch: Partial<AutomationProfile>) => {
+    const current = latest.current;
+    if (!current) return;
+    persist({
+      ...current,
+      Profiles: {
+        ...current.Profiles,
+        [key]: { ...editorProfile(current, key), ...patch },
+      },
     });
   };
+  const canBan = mode === "classic" || mode === "arena";
+  const canRunes = mode === "classic" || mode === "aram";
+  const canSpells = mode !== "arena";
+  const randomMode = mode === "aram" || mode === "mayhem";
+  const spellChoices = Object.entries(spells).filter(([, id]) =>
+    allowedSpells(mode).includes(Number(id)),
+  );
+  const filtered = Object.entries(champions)
+    .filter(([name]) =>
+      name.toLocaleLowerCase("ru").includes(search.toLocaleLowerCase("ru")),
+    )
+    .sort(([a], [b]) => a.localeCompare(b, "ru"));
 
-  const clearBan = () => {
-    setSelectedBan("");
-    saveSettings({
-      BanChampion: null,
-      BanChampionId: null,
-    });
-  };
-
-  const clearSpell1 = () => {
-    setSelectedSpell1("");
-    saveSettings({ Spell1Id: null });
-  };
-
-  const clearSpell2 = () => {
-    setSelectedSpell2("");
-    saveSettings({ Spell2Id: null });
-  };
-
-  const handleSelectSpell = (spellKey: string) => {
-    const keyNum = Number(spellKey);
-    if (!selectedSpell1 || (selectedSpell1 && selectedSpell2)) {
-      setSelectedSpell1(spellKey);
-      setSelectedSpell2("");
-      saveSettings({ Spell1Id: keyNum, Spell2Id: null });
-    } else {
-      if (spellKey === selectedSpell1) return;
-      setSelectedSpell2(spellKey);
-      saveSettings({ Spell2Id: keyNum });
-    }
-  };
-
-  const handleDeleteRunePage = async (pageName: string) => {
-    try {
-      const { deleteRunePage } = await import("@/lib/tauri");
-      await deleteRunePage(pageName);
-      setRunePages((prev) => prev.filter((p) => p.Name !== pageName));
-    } catch (e) {
-      console.error("Delete rune page failed:", e);
-    }
-  };
-
-  const handleSaveRunePage = async (page: RunePage) => {
-    try {
-      const { saveRunePage } = await import("@/lib/tauri");
-      await saveRunePage(page);
-      const { loadRunePages } = await import("@/lib/tauri");
-      setRunePages(await loadRunePages());
-    } catch (e) {
-      console.error("Save rune page failed:", e);
-    }
-  };
-
-  const handleSelectRunePage = (pageName: string) => {
-    setSelectedRunePage(pageName);
-    saveSettings({ SelectedRunePageName: pageName });
-  };
-
-  const filteredChampions = Object.entries(champions)
-    .filter(([name]) => name.toLowerCase().includes(champSearch.toLowerCase()))
-    .sort(([a], [b]) => a.localeCompare(b));
-
-  if (loading) {
+  if (!settings || !profile)
     return (
-      <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-8 w-48" />
-          <AutoAcceptSwitch />
-        </div>
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-1">
-          {/* Champion pick/ban skeleton */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Skeleton className="h-5 w-32" />
-                  <Skeleton className="h-5 w-9 rounded-full" />
-                  <Skeleton className="h-5 w-9 rounded-full" />
-                </div>
-                <div className="w-8" />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <Skeleton className="h-9 w-full rounded-md" />
-              <div className="h-52 md:h-56 lg:h-60 xl:h-64 min-h-52 overflow-hidden">
-                <div className="grid justify-start gap-2 grid-cols-[repeat(auto-fill,3.5rem)]">
-                  {Array.from({ length: 18 }).map((_, i) => (
-                    <Skeleton key={i} className="h-14 w-14 shrink-0 rounded-md" />
-                  ))}
-                </div>
-              </div>
-              <div className="flex gap-4">
-                <Skeleton className="h-5 w-20" />
-                <Skeleton className="h-5 w-20" />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Summoner spells skeleton */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <Skeleton className="h-5 w-44" />
-                <Skeleton className="h-5 w-9 rounded-full" />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex flex-wrap gap-1.5">
-                {Array.from({ length: 11 }).map((_, i) => (
-                  <Skeleton key={i} className="w-10 h-10 rounded-md" />
-                ))}
-              </div>
-              <div className="flex gap-4">
-                <Skeleton className="h-5 w-16" />
-                <Skeleton className="h-5 w-16" />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Rune pages skeleton */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Skeleton className="h-5 w-28" />
-              <Skeleton className="h-5 w-9 rounded-full" />
-            </div>
-            <div className="flex items-center gap-2">
-              <Skeleton className="h-4 w-20" />
-              <Skeleton className="h-8 w-16 rounded-md" />
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 w-full rounded-lg" />
-            ))}
-          </CardContent>
-        </Card>
+      <div className="flex flex-col gap-3">
+        <h1 className="text-lg font-semibold">Автоматизация</h1>
+        {error ? (
+          <>
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+            <Button size="sm" variant="outline" onClick={() => void load()}>
+              Повторить
+            </Button>
+          </>
+        ) : (
+          <Skeleton className="h-60 w-full" />
+        )}
       </div>
     );
-  }
+  const toggle = (
+    label: string,
+    field: "AutoPick" | "AutoBan" | "AutoSpells" | "AutoRunes" | "Bench",
+    disabled = false,
+  ) => (
+    <label className="flex items-center gap-2 text-xs">
+      <Switch
+        size="sm"
+        aria-label={label}
+        checked={!disabled && profile[field]}
+        disabled={disabled}
+        onCheckedChange={(value) => update({ [field]: value })}
+      />
+      {label}
+    </label>
+  );
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Автоматизация</h1>
+    <div className="accounts-page flex flex-col gap-3">
+      {live && (
+        <Badge variant="outline" className="w-fit">
+          Клиент: {MODES[live.mode]}
+          {live.mode === "classic" && live.roles
+            ? ` · ${ROLES[live.role as keyof typeof ROLES] || "Роль не определена"}`
+            : ""}
+        </Badge>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-lg font-semibold">Автоматизация</h1>
         <AutoAcceptSwitch />
       </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-1">
-        {/* Champion pick/ban */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-3">
-                <span>Выбор чемпиона</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-muted-foreground font-normal">Пик</span>
-                  <Switch
-                    checked={autoPickEnabled}
-                    onCheckedChange={(v) => { setAutoPickEnabled(v); saveSettings({ AutoPickEnabled: v }); }}
-                    className="scale-75"
-                  />
-                  <span className="text-xs text-muted-foreground font-normal">Бан</span>
-                  <Switch
-                    checked={autoBanEnabled}
-                    onCheckedChange={(v) => { setAutoBanEnabled(v); saveSettings({ AutoBanEnabled: v }); }}
-                    className="scale-75"
-                  />
-                </div>
-              </div>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Input
-              placeholder="Поиск чемпиона..."
-              value={champSearch}
-              onChange={(e) => setChampSearch(e.target.value)}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Tabs
+          value={mode}
+          onValueChange={(value) => {
+            if (value && value in MODES) {
+              setMode(value as AutomationMode);
+              setSlot("0");
+            }
+          }}
+        >
+          <TabsList>
+            {Object.entries(MODES).map(([value, label]) => (
+              <TabsTrigger value={value} key={value}>
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <span role="status" className="text-xs text-muted-foreground">
+          {saving ? "Сохраняем…" : error ? "Не сохранено" : "Сохранено"}
+        </span>
+      </div>
+      {error && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 text-xs text-destructive"
+        >
+          {error}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => latest.current && persist(latest.current)}
+          >
+            Повторить
+          </Button>
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">{MODE_HELP[mode]}</p>
+      {mode === "classic" && (
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-xs">
+            <Switch
+              size="sm"
+              checked={Boolean(settings.UseRoleProfiles)}
+              onCheckedChange={(value) =>
+                persist({ ...latest.current!, UseRoleProfiles: value })
+              }
             />
-            <ScrollArea className="h-52 md:h-56 lg:h-60 xl:h-64 min-h-52">
-              <div className="grid justify-start gap-2 grid-cols-[repeat(auto-fill,3.5rem)] auto-rows-[3.5rem]">
-                {filteredChampions.map(([displayName, englishName]) => {
-                  const isPick = autoPickEnabled && selectedPick === displayName;
-                  const isBan = autoBanEnabled && selectedBan === displayName;
-                  return (
-                    <WithTooltip key={englishName} label={displayName}>
-                      <button
-                        type="button"
-                        onClick={() => handleSelectChampion(displayName)}
-                        className={`relative h-14 w-14 shrink-0 overflow-hidden rounded-md border-2 p-0 transition-colors ${
-                          isPick
-                            ? "border-primary"
-                            : isBan
-                              ? "border-destructive"
-                              : "border-transparent hover:border-muted-foreground/30"
-                        }`}
+            По ролям
+          </label>
+          {settings.UseRoleProfiles && (
+            <Tabs
+              value={role}
+              onValueChange={(value) => value && setRole(String(value))}
+            >
+              <TabsList>
+                {Object.entries(ROLES).map(([value, label]) => (
+                  <TabsTrigger value={value} key={value}>
+                    {label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          )}
+          {!settings.UseRoleProfiles && (
+            <Badge variant="outline">Общий профиль</Badge>
+          )}
+        </div>
+      )}
+      <Card className="gap-3 py-3">
+        <CardHeader className="px-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-sm">Чемпионы</CardTitle>
+            <div className="flex gap-3">
+              {toggle(
+                "Автопик",
+                "AutoPick",
+                mode === "arena" && profile.ArenaPick === "manual",
+              )}
+              {canBan && toggle("Автобан", "AutoBan")}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 px-3">
+          {mode === "arena" && (
+            <Select
+              value={profile.ArenaPick}
+              onValueChange={(value) =>
+                value &&
+                update({ ArenaPick: value as AutomationProfile["ArenaPick"] })
+              }
+            >
+              <SelectTrigger size="sm" aria-label="Выбор на Арене">
+                <SelectValue>
+                  {profile.ArenaPick === "crowd"
+                    ? "За наковальню"
+                    : profile.ArenaPick === "manual"
+                      ? "Вручную / Bravery"
+                      : "По приоритету"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="preferred">По приоритету</SelectItem>
+                  <SelectItem value="crowd">За наковальню</SelectItem>
+                  <SelectItem value="manual">Вручную / Bravery</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          )}
+          <Tabs
+            value={slot}
+            onValueChange={(value) => value && setSlot(String(value))}
+          >
+            <TabsList className="flex h-auto flex-wrap justify-start">
+              {[0, 1, 2].map((index) => (
+                <TabsTrigger key={index} value={String(index)}>
+                  {index + 1}. {profile.Picks[index] || "Пик"}
+                </TabsTrigger>
+              ))}
+              {canBan && (
+                <TabsTrigger value="ban">Бан: {profile.Ban || "—"}</TabsTrigger>
+              )}
+            </TabsList>
+          </Tabs>
+          <div className="flex items-center gap-2">
+            <div className="relative w-48">
+              <Search className="absolute left-2 top-2 size-3.5 text-muted-foreground" />
+              <Input
+                className="h-7 pl-7"
+                placeholder="Поиск чемпиона"
+                aria-label="Поиск чемпиона"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+            <WithTooltip label="Сбросить выбранный слот">
+              <Button
+                size="icon-sm"
+                variant="outline"
+                aria-label="Сбросить выбранный слот"
+                onClick={() => {
+                  if (slot === "ban") update({ Ban: "" });
+                  else {
+                    const picks = [...profile.Picks];
+                    picks[Number(slot)] = "";
+                    update({ Picks: picks });
+                  }
+                }}
+              >
+                <X />
+              </Button>
+            </WithTooltip>
+          </div>
+          <div className="grid max-h-48 grid-cols-[repeat(auto-fill,2.5rem)] justify-start gap-1.5 overflow-y-auto rounded-md border p-2">
+            {filtered.map(([name, english]) => (
+              <WithTooltip key={english} label={name}>
+                <button
+                  type="button"
+                  aria-label={name}
+                  aria-pressed={
+                    slot === "ban"
+                      ? profile.Ban === name
+                      : profile.Picks[Number(slot)] === name
+                  }
+                  className={cn(
+                    "size-10 overflow-hidden rounded-md border-2 border-transparent",
+                    (slot === "ban"
+                      ? profile.Ban === name
+                      : profile.Picks[Number(slot)] === name) &&
+                      "border-primary",
+                  )}
+                  onClick={() => {
+                    if (slot === "ban") update({ Ban: name });
+                    else {
+                      const picks = [...profile.Picks];
+                      picks[Number(slot)] = name;
+                      update({ Picks: picks });
+                    }
+                  }}
+                >
+                  <img
+                    src={`${DDRAGON}/cdn/${version}/img/champion/${english}.png`}
+                    alt=""
+                    loading="lazy"
+                    className="size-full"
+                  />
+                </button>
+              </WithTooltip>
+            ))}
+          </div>
+          {randomMode && toggle("Брать со скамейки", "Bench")}
+          <CardDescription className="text-xs">
+            {randomMode
+              ? "Нет нужного чемпиона — LM оставит текущего; баны не выполняются."
+              : "Пики слева направо; недоступные чемпионы пропускаются."}
+          </CardDescription>
+        </CardContent>
+      </Card>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <Card className="gap-3 py-3">
+          <CardHeader className="px-3">
+            <CardTitle className="text-sm">Заклинания</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 px-3">
+            {canSpells ? (
+              <>
+                {toggle("Автозаклинания", "AutoSpells")}
+                <div className="flex flex-wrap gap-2">
+                  {(["Spell1Id", "Spell2Id"] as const).map((field, index) => (
+                    <Select
+                      key={field}
+                      value={profile[field] ? String(profile[field]) : "none"}
+                      onValueChange={(value) => {
+                        if (value)
+                          update({
+                            [field]: value === "none" ? null : Number(value),
+                          });
+                      }}
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        aria-label={`Заклинание ${index ? "F" : "D"}`}
                       >
-                        <img
-                          src={`${DDRAGON}/cdn/${version}/img/champion/${englishName}.png`}
-                          alt={displayName}
-                          className="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      </button>
-                    </WithTooltip>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-
-            {(autoPickEnabled || autoBanEnabled) ? (
-              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
-                {autoPickEnabled ? (
-                  <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
-                    <span className="flex items-center px-2.5 py-1 text-xs font-bold text-muted-foreground">
-                      Пик
-                    </span>
-                    {selectedPick ? (
-                      <>
-                        <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
-                        <div className="flex items-center gap-1.5 px-2.5 py-1">
-                          <span className="text-foreground">{selectedPick}</span>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-                            aria-label="Сбросить пик"
-                            onClick={clearPick}
-                          >
-                            <X className="h-2.5 w-2.5" strokeWidth={2.5} />
-                          </Button>
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                ) : null}
-                {autoBanEnabled ? (
-                  <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
-                    <span className="flex items-center px-2.5 py-1 text-xs font-bold text-muted-foreground">
-                      Бан
-                    </span>
-                    {selectedBan ? (
-                      <>
-                        <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
-                        <div className="flex items-center gap-1.5 px-2.5 py-1">
-                          <span className="text-foreground">{selectedBan}</span>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-                            aria-label="Сбросить бан"
-                            onClick={clearBan}
-                          >
-                            <X className="h-2.5 w-2.5" strokeWidth={2.5} />
-                          </Button>
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+                        <SelectValue>
+                          {index ? "F" : "D"}:{" "}
+                          {spellChoices.find(
+                            ([, id]) => Number(id) === profile[field],
+                          )?.[0] || "Не менять"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="none">Не менять</SelectItem>
+                          {spellChoices.map(([name, id]) => (
+                            <SelectItem
+                              key={id}
+                              value={id}
+                              disabled={
+                                Number(id) ===
+                                profile[index ? "Spell1Id" : "Spell2Id"]
+                              }
+                            >
+                              {name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Требования роли и ограничения клиента имеют приоритет.
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Фиксированы игрой: Скачок и Побег.
+              </p>
+            )}
           </CardContent>
         </Card>
-
-        {/* Summoner spells */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center justify-between">
-              <span>Заклинания призывателя</span>
-              <Switch
-                checked={autoSpellsEnabled}
-                onCheckedChange={(v) => { setAutoSpellsEnabled(v); saveSettings({ AutoSpellsEnabled: v }); }}
-              />
-            </CardTitle>
+        <Card className="gap-3 py-3">
+          <CardHeader className="px-3">
+            <CardTitle className="text-sm">Руны</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap gap-1.5">
-              {Object.entries(spells).map(([name, key]) => {
-                const imgName = SPELL_IMAGE_MAP[key] || "SummonerFlash";
-                const isSpell1 = selectedSpell1 === key;
-                const isSpell2 = selectedSpell2 === key;
-                return (
-                  <WithTooltip key={key} label={name}>
-                    <button
-                      type="button"
-                      onClick={() => handleSelectSpell(key)}
-                      className={`rounded-md overflow-hidden border-2 transition-colors w-10 h-10 ${
-                        isSpell1
-                          ? "border-primary"
-                          : isSpell2
-                            ? "border-blue-400"
-                            : "border-transparent hover:border-muted-foreground/30"
-                      }`}
+          <CardContent className="flex flex-col gap-3 px-3">
+            {canRunes ? (
+              <>
+                {toggle("Авторуны", "AutoRunes")}
+                <Select
+                  value={profile.RunePage || "none"}
+                  onValueChange={(value) =>
+                    value && update({ RunePage: value === "none" ? "" : value })
+                  }
+                >
+                  <SelectTrigger size="sm" aria-label="Страница рун">
+                    <SelectValue>{profile.RunePage || "Не менять"}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="none">Не менять</SelectItem>
+                      {runePages.map((page) => (
+                        <SelectItem key={page.Name} value={page.Name}>
+                          {page.Name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <div className="flex flex-wrap gap-1">
+                  <WithTooltip label="Создать страницу">
+                    <Button
+                      size="icon-sm"
+                      variant="outline"
+                      aria-label="Создать страницу рун"
+                      onClick={() => {
+                        setEditingRunePage(null);
+                        setRuneEditorOpen(true);
+                      }}
                     >
-                      <img
-                        src={`${DDRAGON}/cdn/${version}/img/spell/${imgName}.png`}
-                        alt={name}
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                      />
-                    </button>
+                      <Plus />
+                    </Button>
                   </WithTooltip>
-                );
-              })}
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
-                <span className="flex items-center px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-muted-foreground">
-                  D
-                </span>
-                {selectedSpell1 ? (
-                  <>
-                    <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
-                    <div className="flex items-center gap-1.5 px-2.5 py-1">
-                      <span className="text-foreground">
-                        {Object.entries(spells).find(([, k]) => k === selectedSpell1)?.[0] || "—"}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-                        aria-label="Сбросить заклинание D"
-                        onClick={clearSpell1}
-                      >
-                        <X className="h-2.5 w-2.5" strokeWidth={2.5} />
-                      </Button>
-                    </div>
-                  </>
-                ) : null}
-              </div>
-              <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
-                <span className="flex items-center px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-muted-foreground">
-                  F
-                </span>
-                {selectedSpell2 ? (
-                  <>
-                    <div className="w-px shrink-0 self-stretch bg-border" aria-hidden />
-                    <div className="flex items-center gap-1.5 px-2.5 py-1">
-                      <span className="text-foreground">
-                        {Object.entries(spells).find(([, k]) => k === selectedSpell2)?.[0] || "—"}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-                        aria-label="Сбросить заклинание F"
-                        onClick={clearSpell2}
-                      >
-                        <X className="h-2.5 w-2.5" strokeWidth={2.5} />
-                      </Button>
-                    </div>
-                  </>
-                ) : null}
-              </div>
-            </div>
+                  <WithTooltip label="Изменить страницу">
+                    <Button
+                      size="icon-sm"
+                      variant="outline"
+                      aria-label="Изменить страницу рун"
+                      disabled={
+                        !runePages.some((p) => p.Name === profile.RunePage)
+                      }
+                      onClick={() => {
+                        setEditingRunePage(
+                          runePages.find((p) => p.Name === profile.RunePage) ||
+                            null,
+                        );
+                        setRuneEditorOpen(true);
+                      }}
+                    >
+                      <Pencil />
+                    </Button>
+                  </WithTooltip>
+                  <WithTooltip label="Удалить страницу">
+                    <Button
+                      size="icon-sm"
+                      variant="outline"
+                      aria-label="Удалить страницу рун"
+                      disabled={
+                        !runePages.some((p) => p.Name === profile.RunePage)
+                      }
+                      onClick={async () => {
+                        try {
+                          const api = await import("@/lib/tauri");
+                          await api.deleteRunePage(profile.RunePage);
+                          setRunePages(await api.loadRunePages());
+                          update({ RunePage: "" });
+                        } catch {
+                          setError("Не удалось удалить страницу рун.");
+                        }
+                      }}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </WithTooltip>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Отключены правилами режима.
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
-
-      {/* Rune pages */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div className="flex items-center gap-3">
-            <CardTitle className="text-base">Страницы рун</CardTitle>
-            <Switch
-              checked={autoRunesEnabled}
-              onCheckedChange={(v) => { setAutoRunesEnabled(v); saveSettings({ AutoRunesEnabled: v }); }}
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">
-              {runePages.length} сохранено
-            </span>
-            <Button
-              size="sm"
-              onClick={() => { setEditingRunePage(null); setRuneEditorOpen(true); }}
-            >
-              Создать
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {runePages.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              Нет сохранённых страниц рун
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {runePages.map((page) => {
-                const primaryPath = runePaths.find((p) => p.id === page.PrimaryPathId);
-                const secondaryPath = runePaths.find((p) => p.id === page.SecondaryPathId);
-                const isSelected = selectedRunePage === page.Name;
-                return (
-                  <div
-                    key={page.Name}
-                    className={`flex items-center justify-between rounded-lg border p-3 cursor-pointer transition-colors ${
-                      isSelected ? "border-primary bg-primary/5" : "border-border hover:border-muted-foreground/30"
-                    }`}
-                    onClick={() => handleSelectRunePage(page.Name)}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="flex gap-1">
-                        {primaryPath && (
-                          <img
-                            src={`${DDRAGON}/cdn/img/${primaryPath.icon}`}
-                            alt={primaryPath.name}
-                            className="w-6 h-6"
-                          />
-                        )}
-                        {secondaryPath && (
-                          <img
-                            src={`${DDRAGON}/cdn/img/${secondaryPath.icon}`}
-                            alt={secondaryPath.name}
-                            className="w-6 h-6 opacity-70"
-                          />
-                        )}
-                      </div>
-                      <span className="text-sm font-medium">{page.Name}</span>
-                      {isSelected && <Badge variant="secondary" className="text-xs">Выбрано</Badge>}
-                    </div>
-                    <div className="flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditingRunePage(page);
-                          setRuneEditorOpen(true);
-                        }}
-                      >
-                        Изменить
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteRunePage(page.Name);
-                        }}
-                      >
-                        Удалить
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
       <RunePageEditor
         open={runeEditorOpen}
         onOpenChange={setRuneEditorOpen}
         runePaths={runePaths}
         editPage={editingRunePage}
-        onSave={handleSaveRunePage}
+        onSave={async (page) => {
+          try {
+            const api = await import("@/lib/tauri");
+            await api.saveRunePage(page);
+            setRunePages(await api.loadRunePages());
+          } catch {
+            setError("Не удалось сохранить страницу рун.");
+          }
+        }}
       />
     </div>
   );

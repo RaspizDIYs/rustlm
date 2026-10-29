@@ -20,3 +20,5 @@ pub mod repair_paths;
 pub mod uia_login;
 
 pub mod vault;
+
+pub mod champ_select_policy;

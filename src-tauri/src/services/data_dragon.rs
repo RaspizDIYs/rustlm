@@ -282,14 +282,15 @@ impl DataDragonService {
         let mut result = HashMap::new();
         if let Some(data) = resp.get("data").and_then(|d| d.as_object()) {
             for (_key, info) in data {
-                // Only include spells available in Classic (Summoner's Rift) mode
-                let is_classic = info
-                    .get("modes")
-                    .and_then(|m| m.as_array())
-                    .map_or(false, |arr| {
-                        arr.iter().any(|v| v.as_str() == Some("CLASSIC"))
-                    });
-                if !is_classic {
+                let id = info
+                    .get("key")
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| id.parse::<i32>().ok())
+                    .unwrap_or(0);
+                if !["classic", "aram", "mayhem"]
+                    .iter()
+                    .any(|mode| crate::services::champ_select_policy::spell_allowed(mode, id))
+                {
                     continue;
                 }
 

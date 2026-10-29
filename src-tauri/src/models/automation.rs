@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use super::rune::RunePage;
 
@@ -58,6 +59,11 @@ pub struct AutomationSettings {
     #[serde(default = "default_true")]
     pub auto_runes_enabled: bool,
 
+    #[serde(default)]
+    pub use_role_profiles: bool,
+    #[serde(default)]
+    pub profiles: BTreeMap<String, AutomationProfile>,
+
     // Runtime IDs resolved from champion/spell names
     #[serde(default)]
     pub pick_champion1: Option<String>,
@@ -109,6 +115,8 @@ impl Default for AutomationSettings {
             auto_ban_enabled: true,
             auto_spells_enabled: true,
             auto_runes_enabled: true,
+            use_role_profiles: false,
+            profiles: BTreeMap::new(),
             pick_champion1: None,
             pick_champion2: None,
             pick_champion3: None,
@@ -120,5 +128,66 @@ impl Default for AutomationSettings {
             spell1_id: None,
             spell2_id: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct AutomationProfile {
+    pub picks: Vec<String>,
+    pub pick_ids: Vec<i32>,
+    pub ban: String,
+    pub ban_id: Option<i32>,
+    pub spell1_id: Option<i32>,
+    pub spell2_id: Option<i32>,
+    pub rune_page: String,
+    pub auto_pick: bool,
+    pub auto_ban: bool,
+    pub auto_spells: bool,
+    pub auto_runes: bool,
+    pub bench: bool,
+    pub arena_pick: String,
+}
+
+impl AutomationSettings {
+    pub fn for_queue(&self, mode: &str, role: &str) -> Self {
+        let mut result = self.clone();
+        let key = if mode == "classic" && self.use_role_profiles {
+            format!("classic:{}", role)
+        } else {
+            mode.to_owned()
+        };
+        if let Some(profile) = self.profiles.get(&key) {
+            result.pick_champion1 = profile.picks.get(0).cloned();
+            result.pick_champion2 = profile.picks.get(1).cloned();
+            result.pick_champion3 = profile.picks.get(2).cloned();
+            result.pick_champion1_id = profile.pick_ids.get(0).copied().filter(|id| *id > 0);
+            result.pick_champion2_id = profile.pick_ids.get(1).copied().filter(|id| *id > 0);
+            result.pick_champion3_id = profile.pick_ids.get(2).copied().filter(|id| *id > 0);
+            result.ban_champion = Some(profile.ban.clone());
+            result.ban_champion_id = profile.ban_id;
+            result.spell1_id = profile.spell1_id;
+            result.spell2_id = profile.spell2_id;
+            result.selected_rune_page_name = profile.rune_page.clone();
+            result.auto_pick_enabled = profile.auto_pick;
+            result.auto_ban_enabled = profile.auto_ban;
+            result.auto_spells_enabled = profile.auto_spells;
+            result.auto_runes_enabled = profile.auto_runes;
+        } else if mode != "classic" || self.use_role_profiles {
+            result.auto_pick_enabled = false;
+            result.auto_ban_enabled = false;
+            result.auto_spells_enabled = false;
+            result.auto_runes_enabled = false;
+        }
+        if mode == "aram" || mode == "mayhem" {
+            result.auto_ban_enabled = false;
+        }
+        if mode == "mayhem" || mode == "arena" {
+            result.auto_runes_enabled = false;
+        }
+        if mode == "arena" {
+            result.auto_spells_enabled = false;
+        }
+        result
     }
 }

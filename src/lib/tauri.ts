@@ -292,7 +292,24 @@ export async function deleteRunePage(pageName: string): Promise<void> {
 }
 
 // Auto-Accept / Automation
+export interface AutomationProfile {
+  Picks: string[];
+  PickIds?: number[];
+  Ban: string;
+  BanId?: number | null;
+  Spell1Id?: number | null;
+  Spell2Id?: number | null;
+  RunePage: string;
+  AutoPick: boolean;
+  AutoBan: boolean;
+  AutoSpells: boolean;
+  AutoRunes: boolean;
+  Bench: boolean;
+  ArenaPick: "preferred" | "crowd" | "manual";
+}
 export interface AutomationSettings {
+  UseRoleProfiles?: boolean;
+  Profiles?: Record<string, AutomationProfile>;
   ChampionToPick1: string;
   ChampionToPick2: string;
   ChampionToPick3: string;
