@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X, Plus, Pencil, Trash2, Search } from "lucide-react";
+import { X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -34,6 +34,7 @@ import {
   type AutomationMode,
 } from "@/lib/automation";
 import { cn } from "@/lib/utils";
+import { LolRoleIcon } from "@/components/lol-role-icon";
 import type {
   RunePage,
   RunePathModel,
@@ -42,6 +43,20 @@ import type {
 } from "@/lib/tauri";
 
 const DDRAGON = "https://ddragon.leagueoflegends.com";
+const SPELL_IMAGE_MAP: Record<string, string> = {
+  "4": "SummonerFlash",
+  "14": "SummonerDot",
+  "12": "SummonerTeleport",
+  "11": "SummonerSmite",
+  "3": "SummonerExhaust",
+  "7": "SummonerHeal",
+  "6": "SummonerHaste",
+  "1": "SummonerBoost",
+  "21": "SummonerBarrier",
+  "32": "SummonerSnowball",
+  "13": "SummonerMana",
+};
+
 const MODE_HELP = {
   classic:
     "Профиль выбирается по назначенной роли; незаполненная роль остаётся под вашим управлением.",
@@ -158,7 +173,7 @@ export default function AutomationPage() {
           await api.setAutomationSettings({
             ...current,
             Profiles: next.Profiles,
-            UseRoleProfiles: next.UseRoleProfiles,
+            UseRoleProfiles: true,
           });
           if (revision.current === currentRevision) {
             dirty.current = false;
@@ -173,8 +188,7 @@ export default function AutomationPage() {
     }, 250);
   }, []);
   // Keep pending changes when leaving the page; the queued snapshot still reaches Tauri.
-  const key =
-    mode === "classic" && settings?.UseRoleProfiles ? `classic:${role}` : mode;
+  const key = mode === "classic" ? `classic:${role}` : mode;
   const profile = settings ? editorProfile(settings, key) : null;
   const update = (patch: Partial<AutomationProfile>) => {
     const current = latest.current;
@@ -186,6 +200,16 @@ export default function AutomationPage() {
         [key]: { ...editorProfile(current, key), ...patch },
       },
     });
+  };
+  const deleteRunePage = async (name: string) => {
+    try {
+      const api = await import("@/lib/tauri");
+      await api.deleteRunePage(name);
+      setRunePages(await api.loadRunePages());
+      if (profile?.RunePage === name) update({ RunePage: "" });
+    } catch {
+      setError("Не удалось удалить страницу рун.");
+    }
   };
   const canBan = mode === "classic" || mode === "arena";
   const canRunes = mode === "classic" || mode === "aram";
@@ -250,23 +274,26 @@ export default function AutomationPage() {
         <AutoAcceptSwitch />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Tabs
-          value={mode}
-          onValueChange={(value) => {
-            if (value && value in MODES) {
-              setMode(value as AutomationMode);
-              setSlot("0");
-            }
-          }}
+        <div
+          className="flex flex-wrap gap-2"
+          role="group"
+          aria-label="Режим игры"
         >
-          <TabsList>
-            {Object.entries(MODES).map(([value, label]) => (
-              <TabsTrigger value={value} key={value}>
-                {label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+          {Object.entries(MODES).map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={mode === value ? "default" : "outline"}
+              aria-pressed={mode === value}
+              onClick={() => {
+                setMode(value as AutomationMode);
+                setSlot("0");
+              }}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
         <span role="status" className="text-xs text-muted-foreground">
           {saving ? "Сохраняем…" : error ? "Не сохранено" : "Сохранено"}
         </span>
@@ -288,34 +315,19 @@ export default function AutomationPage() {
       )}
       <p className="text-xs text-muted-foreground">{MODE_HELP[mode]}</p>
       {mode === "classic" && (
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2 text-xs">
-            <Switch
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Роль">
+          {Object.entries(ROLES).map(([value, label]) => (
+            <Button
+              key={value}
               size="sm"
-              checked={Boolean(settings.UseRoleProfiles)}
-              onCheckedChange={(value) =>
-                persist({ ...latest.current!, UseRoleProfiles: value })
-              }
-            />
-            По ролям
-          </label>
-          {settings.UseRoleProfiles && (
-            <Tabs
-              value={role}
-              onValueChange={(value) => value && setRole(String(value))}
+              variant={role === value ? "default" : "outline"}
+              aria-pressed={role === value}
+              onClick={() => setRole(value)}
             >
-              <TabsList>
-                {Object.entries(ROLES).map(([value, label]) => (
-                  <TabsTrigger value={value} key={value}>
-                    {label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-          )}
-          {!settings.UseRoleProfiles && (
-            <Badge variant="outline">Общий профиль</Badge>
-          )}
+              <LolRoleIcon role={value as keyof typeof ROLES} />
+              {label}
+            </Button>
+          ))}
         </div>
       )}
       <Card className="gap-3 py-3">
@@ -366,7 +378,8 @@ export default function AutomationPage() {
             <TabsList className="flex h-auto flex-wrap justify-start">
               {[0, 1, 2].map((index) => (
                 <TabsTrigger key={index} value={String(index)}>
-                  {index + 1}. {profile.Picks[index] || "Пик"}
+                  {profile.Picks[index] ||
+                    ["Пик", "Запасной пик", "Резервный пик"][index]}
                 </TabsTrigger>
               ))}
               {canBan && (
@@ -448,162 +461,238 @@ export default function AutomationPage() {
           </CardDescription>
         </CardContent>
       </Card>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <Card className="gap-3 py-3">
-          <CardHeader className="px-3">
-            <CardTitle className="text-sm">Заклинания</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3 px-3">
-            {canSpells ? (
-              <>
-                {toggle("Автозаклинания", "AutoSpells")}
-                <div className="flex flex-wrap gap-2">
-                  {(["Spell1Id", "Spell2Id"] as const).map((field, index) => (
-                    <Select
-                      key={field}
-                      value={profile[field] ? String(profile[field]) : "none"}
-                      onValueChange={(value) => {
-                        if (value)
-                          update({
-                            [field]: value === "none" ? null : Number(value),
-                          });
-                      }}
-                    >
-                      <SelectTrigger
-                        size="sm"
-                        aria-label={`Заклинание ${index ? "F" : "D"}`}
+      {canSpells && (
+        <>
+          {/* Summoner spells */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center justify-between">
+                <span>Заклинания призывателя</span>
+                <Switch
+                  checked={profile.AutoSpells}
+                  onCheckedChange={(v) => update({ AutoSpells: v })}
+                />
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-1.5">
+                {spellChoices.map(([name, key]) => {
+                  const imgName = SPELL_IMAGE_MAP[key] || "SummonerFlash";
+                  const isSpell1 = profile.Spell1Id === Number(key);
+                  const isSpell2 = profile.Spell2Id === Number(key);
+                  return (
+                    <WithTooltip key={key} label={name}>
+                      <button
+                        type="button"
+                        aria-label={`Заклинание: ${name}`}
+                        aria-pressed={isSpell1 || isSpell2}
+                        onClick={() => {
+                          const id = Number(key);
+                          if (!profile.Spell1Id || profile.Spell2Id)
+                            update({ Spell1Id: id, Spell2Id: null });
+                          else if (id !== profile.Spell1Id)
+                            update({ Spell2Id: id });
+                        }}
+                        className={`rounded-md overflow-hidden border-2 transition-colors w-10 h-10 ${
+                          isSpell1
+                            ? "border-primary"
+                            : isSpell2
+                              ? "border-blue-400"
+                              : "border-transparent hover:border-muted-foreground/30"
+                        }`}
                       >
-                        <SelectValue>
-                          {index ? "F" : "D"}:{" "}
-                          {spellChoices.find(
-                            ([, id]) => Number(id) === profile[field],
-                          )?.[0] || "Не менять"}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="none">Не менять</SelectItem>
-                          {spellChoices.map(([name, id]) => (
-                            <SelectItem
-                              key={id}
-                              value={id}
-                              disabled={
-                                Number(id) ===
-                                profile[index ? "Spell1Id" : "Spell2Id"]
-                              }
-                            >
-                              {name}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  ))}
+                        <img
+                          src={`${DDRAGON}/cdn/${version}/img/spell/${imgName}.png`}
+                          alt={name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      </button>
+                    </WithTooltip>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+                  <span className="flex items-center px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-muted-foreground">
+                    D
+                  </span>
+                  {profile.Spell1Id ? (
+                    <>
+                      <div
+                        className="w-px shrink-0 self-stretch bg-border"
+                        aria-hidden
+                      />
+                      <div className="flex items-center gap-1.5 px-2.5 py-1">
+                        <span className="text-foreground">
+                          {Object.entries(spells).find(
+                            ([, k]) => Number(k) === profile.Spell1Id,
+                          )?.[0] || "—"}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                          aria-label="Сбросить заклинание D"
+                          onClick={() => update({ Spell1Id: null })}
+                        >
+                          <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                        </Button>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Требования роли и ограничения клиента имеют приоритет.
-                </p>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                Фиксированы игрой: Скачок и Побег.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-        <Card className="gap-3 py-3">
-          <CardHeader className="px-3">
-            <CardTitle className="text-sm">Руны</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3 px-3">
-            {canRunes ? (
-              <>
-                {toggle("Авторуны", "AutoRunes")}
-                <Select
-                  value={profile.RunePage || "none"}
-                  onValueChange={(value) =>
-                    value && update({ RunePage: value === "none" ? "" : value })
-                  }
+                <div className="inline-flex items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+                  <span className="flex items-center px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-muted-foreground">
+                    F
+                  </span>
+                  {profile.Spell2Id ? (
+                    <>
+                      <div
+                        className="w-px shrink-0 self-stretch bg-border"
+                        aria-hidden
+                      />
+                      <div className="flex items-center gap-1.5 px-2.5 py-1">
+                        <span className="text-foreground">
+                          {Object.entries(spells).find(
+                            ([, k]) => Number(k) === profile.Spell2Id,
+                          )?.[0] || "—"}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-4 w-4 shrink-0 p-0 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                          aria-label="Сбросить заклинание F"
+                          onClick={() => update({ Spell2Id: null })}
+                        >
+                          <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                        </Button>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+      {canRunes && (
+        <>
+          {/* Rune pages */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div className="flex items-center gap-3">
+                <CardTitle className="text-base">Страницы рун</CardTitle>
+                <Switch
+                  checked={profile.AutoRunes}
+                  onCheckedChange={(v) => update({ AutoRunes: v })}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">
+                  {runePages.length} сохранено
+                </span>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setEditingRunePage(null);
+                    setRuneEditorOpen(true);
+                  }}
                 >
-                  <SelectTrigger size="sm" aria-label="Страница рун">
-                    <SelectValue>{profile.RunePage || "Не менять"}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="none">Не менять</SelectItem>
-                      {runePages.map((page) => (
-                        <SelectItem key={page.Name} value={page.Name}>
-                          {page.Name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <div className="flex flex-wrap gap-1">
-                  <WithTooltip label="Создать страницу">
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      aria-label="Создать страницу рун"
-                      onClick={() => {
-                        setEditingRunePage(null);
-                        setRuneEditorOpen(true);
-                      }}
-                    >
-                      <Plus />
-                    </Button>
-                  </WithTooltip>
-                  <WithTooltip label="Изменить страницу">
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      aria-label="Изменить страницу рун"
-                      disabled={
-                        !runePages.some((p) => p.Name === profile.RunePage)
-                      }
-                      onClick={() => {
-                        setEditingRunePage(
-                          runePages.find((p) => p.Name === profile.RunePage) ||
-                            null,
-                        );
-                        setRuneEditorOpen(true);
-                      }}
-                    >
-                      <Pencil />
-                    </Button>
-                  </WithTooltip>
-                  <WithTooltip label="Удалить страницу">
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      aria-label="Удалить страницу рун"
-                      disabled={
-                        !runePages.some((p) => p.Name === profile.RunePage)
-                      }
-                      onClick={async () => {
-                        try {
-                          const api = await import("@/lib/tauri");
-                          await api.deleteRunePage(profile.RunePage);
-                          setRunePages(await api.loadRunePages());
-                          update({ RunePage: "" });
-                        } catch {
-                          setError("Не удалось удалить страницу рун.");
+                  Создать
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {runePages.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  Нет сохранённых страниц рун
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {runePages.map((page) => {
+                    const primaryPath = runePaths.find(
+                      (p) => p.id === page.PrimaryPathId,
+                    );
+                    const secondaryPath = runePaths.find(
+                      (p) => p.id === page.SecondaryPathId,
+                    );
+                    const isSelected = profile.RunePage === page.Name;
+                    return (
+                      <div
+                        key={page.Name}
+                        className={`flex items-center justify-between rounded-lg border p-3 cursor-pointer transition-colors ${
+                          isSelected
+                            ? "border-primary bg-primary/5"
+                            : "border-border hover:border-muted-foreground/30"
+                        }`}
+                        onClick={() =>
+                          update({
+                            RunePage:
+                              profile.RunePage === page.Name ? "" : page.Name,
+                          })
                         }
-                      }}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </WithTooltip>
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="flex gap-1">
+                            {primaryPath && (
+                              <img
+                                src={`${DDRAGON}/cdn/img/${primaryPath.icon}`}
+                                alt={primaryPath.name}
+                                className="w-6 h-6"
+                              />
+                            )}
+                            {secondaryPath && (
+                              <img
+                                src={`${DDRAGON}/cdn/img/${secondaryPath.icon}`}
+                                alt={secondaryPath.name}
+                                className="w-6 h-6 opacity-70"
+                              />
+                            )}
+                          </div>
+                          <span className="text-sm font-medium">
+                            {page.Name}
+                          </span>
+                          {isSelected && (
+                            <Badge variant="secondary" className="text-xs">
+                              Выбрано
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingRunePage(page);
+                              setRuneEditorOpen(true);
+                            }}
+                          >
+                            Изменить
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void deleteRunePage(page.Name);
+                            }}
+                          >
+                            Удалить
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                Отключены правилами режима.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
       <RunePageEditor
         open={runeEditorOpen}
         onOpenChange={setRuneEditorOpen}

@@ -10,32 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Download, Loader2, ChevronDown, ChevronUp } from "lucide-react";
-import { CHANGELOG } from "@/lib/changelog";
-
-function ChangelogView() {
-  return (
-    <div className="max-h-52 overflow-auto text-sm space-y-1 pr-1">
-      {CHANGELOG.split("\n").map((line, i) => {
-        if (line.startsWith("## ")) {
-          return (
-            <h4 key={i} className="text-sm font-semibold mt-3 first:mt-0">
-              {line.replace("## ", "v")}
-            </h4>
-          );
-        }
-        if (line.startsWith("- ")) {
-          return (
-            <div key={i} className="flex gap-2 text-xs text-muted-foreground ml-2">
-              <span className="text-primary shrink-0">•</span>
-              <span>{line.replace("- ", "")}</span>
-            </div>
-          );
-        }
-        return null;
-      })}
-    </div>
-  );
-}
+import { ChangelogView } from "@/components/changelog-view";
 
 export function UpdateCheckDialog() {
   const [open, setOpen] = useState(false);
@@ -88,7 +63,7 @@ export function UpdateCheckDialog() {
           </button>
           {showChangelog && (
             <div className="rounded-md border border-border bg-muted/30 p-3">
-              <ChangelogView />
+              <ChangelogView activeVersion={version} className="max-h-52 overflow-auto pr-1" />
             </div>
           )}
         </div>

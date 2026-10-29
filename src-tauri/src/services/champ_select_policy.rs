@@ -157,11 +157,11 @@ mod tests {
         assert_eq!(mode(&json!({"phase":"InProgress"})), None);
     }
     #[test]
-    fn missing_role_never_inherits_a_support_pick_and_old_settings_still_work() {
+    fn roles_are_always_enforced_even_when_the_old_switch_was_disabled() {
         let mut s = AutomationSettings::default();
         s.pick_champion1_id = Some(12);
-        assert_eq!(s.for_queue("classic", "jungle").pick_champion1_id, Some(12));
-        s.use_role_profiles = true;
+        s.use_role_profiles = false;
+        assert!(!s.for_queue("classic", "jungle").auto_pick_enabled);
         s.profiles.insert(
             "classic:utility".into(),
             AutomationProfile {

@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Bug, Github, MessageCircle, Copy, Check } from "lucide-react";
-import { CHANGELOG } from "@/lib/changelog";
+import { ChangelogView } from "@/components/changelog-view";
 
 const DEVELOPERS = [
   { name: "@mejaikin", discord: "mejaikin" },
@@ -50,21 +50,8 @@ export default function InfoPage() {
           <h1 className="text-2xl font-bold">История изменений</h1>
         </div>
         <Card>
-          <CardContent className="pt-6 prose prose-invert prose-sm max-w-none">
-            {CHANGELOG.split("\n").map((line, i) => {
-              if (line.startsWith("## ")) {
-                return <h3 key={i} className="text-lg font-semibold mt-4 first:mt-0">{line.replace("## ", "")}</h3>;
-              }
-              if (line.startsWith("- ")) {
-                return (
-                  <div key={i} className="flex gap-2 text-sm text-muted-foreground ml-2">
-                    <span className="text-primary">•</span>
-                    <span>{line.replace("- ", "")}</span>
-                  </div>
-                );
-              }
-              return null;
-            })}
+          <CardContent className="pt-6">
+            <ChangelogView activeVersion={appVersion} />
           </CardContent>
         </Card>
       </div>
@@ -78,7 +65,7 @@ export default function InfoPage() {
           RustLM
         </h1>
         <p className="text-muted-foreground">League of Legends Account Manager</p>
-        <p className="text-sm font-medium text-primary">Версия {appVersion}</p>
+        <Button variant="link" size="sm" onClick={() => setShowChangelog(true)}>Версия {appVersion}</Button>
         <Button variant="link" size="sm" onClick={() => setShowChangelog(true)}>
           Показать историю изменений
         </Button>

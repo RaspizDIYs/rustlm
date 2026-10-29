@@ -527,7 +527,7 @@ impl AutoAcceptService {
         if let Some(app) = self.app_handle.lock().await.as_ref() {
             let _ = app.emit(
                 "automation-context",
-                serde_json::json!({"mode":mode,"role":role,"roles":settings_all.use_role_profiles}),
+                serde_json::json!({"mode":mode,"role":role,"roles":true}),
             );
         }
         // Bound retries when the client rejects a restricted loadout.

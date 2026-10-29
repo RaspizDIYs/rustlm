@@ -133,8 +133,8 @@ export function LmFriends({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex min-h-0 flex-1 flex-col gap-3">
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="friends-toolbar shrink-0">
+          <div className="friends-toolbar-filters">
             <Select
               value={scope}
               onValueChange={(value) => value && setScope(value)}
@@ -182,7 +182,7 @@ export function LmFriends({
               </SelectContent>
             </Select>
           </div>{" "}
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <div className="friends-toolbar-controls">
             <WithTooltip label="Разрешить Riot-друзьям находить вас в LM">
               <Switch
                 size="sm"
@@ -203,6 +203,7 @@ export function LmFriends({
                 }}
               />
             </WithTooltip>
+            <div className="flex items-center gap-2">
             <WithTooltip label="Прочитать друзей из открытого клиента League">
               <Button
                 aria-label="Обновить друзей League"
@@ -232,6 +233,7 @@ export function LmFriends({
                 <ListRestart />
               </Button>
             </WithTooltip>
+            </div>
           </div>
         </div>
         {errors.map((error, i) => (

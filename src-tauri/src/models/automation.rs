@@ -152,7 +152,7 @@ pub struct AutomationProfile {
 impl AutomationSettings {
     pub fn for_queue(&self, mode: &str, role: &str) -> Self {
         let mut result = self.clone();
-        let key = if mode == "classic" && self.use_role_profiles {
+        let key = if mode == "classic" {
             format!("classic:{}", role)
         } else {
             mode.to_owned()
@@ -173,7 +173,7 @@ impl AutomationSettings {
             result.auto_ban_enabled = profile.auto_ban;
             result.auto_spells_enabled = profile.auto_spells;
             result.auto_runes_enabled = profile.auto_runes;
-        } else if mode != "classic" || self.use_role_profiles {
+        } else {
             result.auto_pick_enabled = false;
             result.auto_ban_enabled = false;
             result.auto_spells_enabled = false;

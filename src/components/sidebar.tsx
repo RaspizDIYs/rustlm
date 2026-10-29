@@ -40,6 +40,8 @@ import {
 import { TotpVerifyDialog } from "@/components/totp-verify-dialog";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { WithTooltip } from "@/components/ui/with-tooltip";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ChangelogView } from "@/components/changelog-view";
 import { FriendInbox } from "@/components/friend-inbox";
 import { needsCloudTotpVerification } from "@/lib/cloud-totp";
 
@@ -56,6 +58,7 @@ const navItems = [
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [glUser, setGlUser] = useState<GoodLuckUser | null>(null);
   const [glLoading, setGlLoading] = useState(false);
@@ -226,7 +229,8 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="shrink-0 space-y-1 border-t border-border p-2">
+      {glUser && <div className="shrink-0 border-y border-border p-2"><FriendInbox collapsed={collapsed} /></div>}
+      <div className={cn("shrink-0 space-y-1 p-2", !glUser && "border-t border-border")}>
         {glAuthError && !collapsed && (
           <Tooltip>
             <TooltipTrigger
@@ -241,7 +245,6 @@ export function Sidebar() {
             </TooltipContent>
           </Tooltip>
         )}
-        {glUser && <FriendInbox collapsed={collapsed} />}
         {glUser ? (
           <div className={cn("flex items-center gap-2", collapsed && "justify-center")}>
             <div className="relative shrink-0">
@@ -357,20 +360,29 @@ export function Sidebar() {
             render={
               <button
                 type="button"
+                onClick={() => setVersionHistoryOpen(true)}
+                aria-label={`История изменений версии ${appVersion}`}
                 className={cn(
                   "text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded",
                   collapsed
-                    ? "max-w-full cursor-default truncate text-center text-[10px] leading-none"
-                    : "cursor-default text-xs"
+                    ? "max-w-full cursor-pointer truncate text-center text-[10px] leading-none"
+                    : "cursor-pointer text-xs"
                 )}
               >
                 v{appVersion}
               </button>
             }
           />
-          <TooltipContent side="right">Версия {appVersion}</TooltipContent>
+          <TooltipContent side="right">История изменений · {appVersion}</TooltipContent>
         </Tooltip>
       </div>
+
+      <Dialog open={versionHistoryOpen} onOpenChange={setVersionHistoryOpen}>
+        <DialogContent className="accounts-dialog sm:max-w-xl">
+          <DialogHeader><DialogTitle>История изменений</DialogTitle></DialogHeader>
+          <ChangelogView activeVersion={appVersion} className="max-h-[65vh] overflow-y-auto pr-2" />
+        </DialogContent>
+      </Dialog>
 
       <TotpVerifyDialog
         open={totpDialogOpen}

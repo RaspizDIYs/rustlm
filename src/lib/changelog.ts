@@ -1,4 +1,11 @@
-export const CHANGELOG = `## 0.5.4
+export const CHANGELOG = `## 0.5.5
+- Автоматизация всегда по ролям, с иконками GoodLuck; режимы выбираются отдельными кнопками
+- Возвращены иконки заклинаний и список страниц рун; недоступные блоки скрываются
+- Убрана нумерация пиков; сохранены приоритеты и ограничения режимов
+- Заявки отделены от профиля; фильтры и кнопки друзей выровнены с шапкой
+- По нажатию на версию открывается журнал с мягкой подсветкой её изменений
+
+## 0.5.4
 - Автоматизация: отдельные профили обычных игр, ARAM, Хаоса и Арены
 - Пики и баны по пяти назначенным ролям; три приоритета чемпиона
 - ARAM: выбор из своих карточек и доступной общей скамейки
@@ -172,3 +179,16 @@ export const CHANGELOG = `## 0.5.4
 - Spy-режим через Riot API
 - Совместимость с данными WPF-версии
 `;
+
+export function changelogSections(text: string = CHANGELOG): {version: string; items: string[]}[] {
+  const sections: {version: string; items: string[]}[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const heading = /^##\s+v?(\S+)\s*$/.exec(line);
+    if (heading) { sections.push({version: heading[1], items: []}); continue; }
+    const section = sections.at(-1);
+    if (!section) continue;
+    if (line.startsWith("- ")) section.items.push(line.slice(2).trim());
+    else if (line.trim() && section.items.length) section.items[section.items.length - 1] += " " + line.trim();
+  }
+  return sections;
+}
