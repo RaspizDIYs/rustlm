@@ -60,6 +60,8 @@ fn handle_deep_link_url(handle: &tauri::AppHandle, url_str: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Профиль WebView2 чинится только до создания вебвью — см. webview_repair.
+    let repaired_webview = services::webview_repair::apply_pending_repair();
     let app_state = AppState::new();
 
     tauri::Builder::default()
@@ -226,9 +228,10 @@ pub fn run() {
             commands::lol_config::lol_cfg_delete_preset,
             commands::lol_config::lol_cfg_export_preset,
             commands::lol_config::lol_cfg_import_preset,
+            commands::webview::repair_webview_cache,
             commands::refresh_tray,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
@@ -241,6 +244,15 @@ pub fn run() {
                     ))
                     .build(),
             )?;
+
+            if repaired_webview {
+                log::warn!("[webview] EBWebView сброшен по заявке на починку окна");
+            }
+            if let Some(version) = services::webview_repair::webview2_version() {
+                log::info!("[webview] WebView2 runtime {}", version);
+            } else {
+                log::warn!("[webview] WebView2 runtime version not detected");
+            }
 
             // Load persisted automation settings and set app handle
             let state = app.state::<AppState>();

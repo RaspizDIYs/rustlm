@@ -521,6 +521,11 @@ export async function uninstallLolManager(): Promise<void> {
 }
 
 // Tray
+/** Сбрасывает кэш WebView2 и перезапускает приложение (лечит «страница не загрузилась»). */
+export async function repairWebviewCache(): Promise<void> {
+  return invoke("repair_webview_cache");
+}
+
 export async function refreshTray(): Promise<void> {
   return invoke("refresh_tray");
 }

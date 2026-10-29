@@ -322,6 +322,30 @@ export default function SettingsPage() {
                 }}
               />
             </div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <span className="text-xs">Починить отображение</span>
+                <p className="text-[10px] leading-tight text-muted-foreground">
+                  Если окно пустое или пишет «This page couldn't load» — сброс кэша WebView2 с перезапуском.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={savingSetting}
+                onClick={async () => {
+                  if (!window.confirm("Приложение перезапустится. Продолжить?")) return;
+                  try {
+                    const { repairWebviewCache } = await import("@/lib/tauri");
+                    await repairWebviewCache();
+                  } catch (e) {
+                    toast.error(String(e));
+                  }
+                }}
+              >
+                Сбросить
+              </Button>
+            </div>
             <div className="flex items-center justify-between">
               <span className="text-xs">Скрывать логины</span>
               <Switch

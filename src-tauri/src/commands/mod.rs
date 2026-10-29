@@ -25,3 +25,4 @@ pub fn refresh_tray(app: tauri::AppHandle) -> Result<(), String> {
 }
 pub mod network;
 pub mod repair;
+pub mod webview;
