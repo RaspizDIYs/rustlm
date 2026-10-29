@@ -8,6 +8,7 @@ import {
   Cloud,
   Swords,
   Users,
+  Trash2,
 } from "lucide-react";
 import {
   Select,
@@ -25,6 +26,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { friendsError, mergeFriends } from "@/lib/friends";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { goodluckRemoveFriend } from "@/lib/tauri";
 import type { AccountRecord, GoodLuckFriend } from "@/lib/tauri";
 export type LmFriend = GoodLuckFriend & {
   accounts: string[];
@@ -48,6 +51,9 @@ export function LmFriends({
     [busy, setBusy] = useState(false),
     [errors, setErrors] = useState<string[]>([]),
     [loaded, setLoaded] = useState(false);
+  const [removing, setRemoving] = useState<GoodLuckFriend | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState("");
   const reload = useCallback(async () => {
     const { goodluckGetFriends, loadSetting } = await import("@/lib/tauri");
     const results = await Promise.allSettled([
@@ -70,6 +76,9 @@ export function LmFriends({
   }, []);
   useEffect(() => {
     void reload();
+    const refresh = () => void reload();
+    window.addEventListener("rustlm-friends-changed", refresh);
+    return () => window.removeEventListener("rustlm-friends-changed", refresh);
   }, [reload]);
   useEffect(() => {
     if (!enabled) return;
@@ -291,7 +300,8 @@ export function LmFriends({
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="w-10">
+                    <TableCell className="w-20">
+                      <div className="flex justify-end gap-1">
                       <WithTooltip
                         label={
                           selected
@@ -309,6 +319,14 @@ export function LmFriends({
                           <Send />
                         </Button>
                       </WithTooltip>
+                      {friend.sources.includes("goodluck") && (
+                        <WithTooltip label="Удалить из друзей GoodLuck">
+                          <Button size="icon-sm" variant="ghost" aria-label={`Удалить друга: ${friend.display_name}`} onClick={() => { setRemoveError(""); setRemoving(friend); }}>
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        </WithTooltip>
+                      )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -325,6 +343,31 @@ export function LmFriends({
           </div>
         )}
       </div>
+      <Dialog open={Boolean(removing)} onOpenChange={(open) => { if (!open && !removeBusy) setRemoving(null); }}>
+        <DialogContent className="accounts-dialog max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Удалить друга?</DialogTitle>
+            <DialogDescription>{removing?.display_name} будет удалён из друзей GoodLuck; дружба в League сохранится.</DialogDescription>
+          </DialogHeader>
+          {removeError && <p role="alert" className="text-xs text-destructive">{removeError}</p>}
+          <DialogFooter>
+            <Button size="sm" variant="outline" disabled={removeBusy} onClick={() => setRemoving(null)}>Отмена</Button>
+            <Button size="sm" variant="destructive" disabled={removeBusy} onClick={async () => {
+              if (!removing || !gl.some((friend) => friend.id === removing.id)) return;
+              setRemoveBusy(true);
+              setRemoveError("");
+              try {
+                await goodluckRemoveFriend(removing.id);
+                setGl((friends) => friends.filter((friend) => friend.id !== removing.id));
+                setRemoving(null);
+                await reload();
+              } catch {
+                setRemoveError("Не удалось удалить друга. Проверьте подключение и повторите попытку.");
+              } finally { setRemoveBusy(false); }
+            }}>{removeBusy ? "Удаляем…" : "Удалить"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Mail, RefreshCw, Trash2, UserPlus } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Mail, RefreshCw, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { WithTooltip } from "@/components/ui/with-tooltip";
 import {
   Dialog,
   DialogContent,
@@ -16,36 +17,18 @@ import {
   goodluckAcceptFriendRequest,
   goodluckDeclineFriendRequest,
   goodluckGetFriendRequests,
-  goodluckGetFriends,
-  goodluckRemoveFriend,
-  goodluckSearchUsers,
-  goodluckSendFriendRequest,
-  type GoodLuckFriend,
   type GoodLuckFriendRequest,
 } from "@/lib/tauri";
 
-/**
- * Конверт в сайдбаре: входящие заявки в друзья GoodLuck и управление друзьями.
- * Заявки принимаются прямо здесь, не уходя на сайт.
- */
 export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
   const [open, setOpen] = useState(false);
   const [requests, setRequests] = useState<GoodLuckFriendRequest[]>([]);
-  const [friends, setFriends] = useState<GoodLuckFriend[]>([]);
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<GoodLuckFriend[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [incoming, list] = await Promise.all([
-        goodluckGetFriendRequests(),
-        goodluckGetFriends(),
-      ]);
-      setRequests(incoming);
-      setFriends(list);
+      setRequests(await goodluckGetFriendRequests());
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -68,29 +51,13 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
     };
   }, [reload]);
 
-  useEffect(() => {
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    const trimmed = query.trim();
-    if (trimmed.length < 2) {
-      setResults([]);
-      return;
-    }
-    searchTimer.current = setTimeout(() => {
-      goodluckSearchUsers(trimmed)
-        .then(setResults)
-        .catch(() => setResults([]));
-    }, 300);
-    return () => {
-      if (searchTimer.current) clearTimeout(searchTimer.current);
-    };
-  }, [query]);
-
   const run = useCallback(
     async (action: () => Promise<unknown>, success: string) => {
       setBusy(true);
       try {
         await action();
         toast.success(success);
+        window.dispatchEvent(new Event("rustlm-friends-changed"));
         await reload();
       } catch (e) {
         toast.error(String(e));
@@ -105,7 +72,7 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
     <>
       <button
         type="button"
-        title="Заявки в друзья и друзья GoodLuck"
+        title="Заявки в друзья"
         onClick={() => {
           setOpen(true);
           void reload();
@@ -116,7 +83,7 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
         )}
       >
         <Mail className="h-4 w-4 shrink-0" />
-        {!collapsed && <span className="flex-1 text-left">Друзья</span>}
+        {!collapsed && <span className="flex-1 text-left">Заявки</span>}
         {requests.length > 0 && (
           <span className="absolute right-1 top-0.5 min-w-4 rounded-full bg-destructive px-1 text-center text-[9px] font-bold leading-4 text-destructive-foreground">
             {requests.length}
@@ -125,15 +92,15 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="accounts-dialog max-w-md gap-3">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+            <DialogTitle className="flex items-center gap-2 text-sm">
               <Mail className="h-4 w-4" />
-              Друзья GoodLuck
+              Заявки в друзья
             </DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="max-h-80 space-y-3 overflow-y-auto">
             {error && <p className="text-xs text-destructive">{error}</p>}
 
             <section className="space-y-2">
@@ -155,12 +122,14 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
                 <p className="text-xs text-muted-foreground">Новых заявок нет.</p>
               ) : (
                 requests.map((request) => (
-                  <div key={request.id} className="flex items-center gap-2">
+                  <div key={request.id} className="flex items-center gap-2 rounded-lg border px-3 py-2">
+                    <Avatar className="size-8"><AvatarImage src={request.requester_avatar_url || undefined} alt="" /><AvatarFallback>{(request.requester_display_name || request.requester_username).slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
                     <span className="min-w-0 flex-1 truncate text-sm">
                       {request.requester_display_name || request.requester_username}
                     </span>
-                    <Button
-                      size="sm"
+                    <WithTooltip label="Принять заявку"><Button
+                      size="icon-sm"
+                      aria-label="Принять заявку"
                       disabled={busy}
                       onClick={() =>
                         void run(
@@ -169,10 +138,11 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
                         )
                       }
                     >
-                      Принять
-                    </Button>
-                    <Button
-                      size="sm"
+                      <Check className="size-4" />
+                    </Button></WithTooltip>
+                    <WithTooltip label="Отклонить заявку"><Button
+                      size="icon-sm"
+                      aria-label="Отклонить заявку"
                       variant="outline"
                       disabled={busy}
                       onClick={() =>
@@ -182,79 +152,13 @@ export function FriendInbox({ collapsed = false }: { collapsed?: boolean }) {
                         )
                       }
                     >
-                      Отклонить
-                    </Button>
+                      <X className="size-4" />
+                    </Button></WithTooltip>
                   </div>
                 ))
               )}
             </section>
 
-            <section className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">Добавить друга</p>
-              <Input
-                placeholder="Имя или ник в GoodLuck (от 2 символов)"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              {results.length > 0 && (
-                <div className="max-h-40 space-y-1 overflow-y-auto">
-                  {results.map((user) => (
-                    <div key={user.id} className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-sm">
-                        {user.display_name || user.username}
-                      </span>
-                      <Button
-                        size="icon-sm"
-                        variant="outline"
-                        aria-label={`Добавить ${user.display_name}`}
-                        disabled={busy}
-                        onClick={() =>
-                          void run(
-                            () => goodluckSendFriendRequest(user.id),
-                            "Заявка отправлена"
-                          )
-                        }
-                      >
-                        <UserPlus className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                Друзья ({friends.length})
-              </p>
-              {friends.length === 0 ? (
-                <p className="text-xs text-muted-foreground">Пока никого нет.</p>
-              ) : (
-                <div className="max-h-48 space-y-1 overflow-y-auto">
-                  {friends.map((friend) => (
-                    <div key={friend.id} className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-sm">
-                        {friend.display_name || friend.username}
-                      </span>
-                      <Button
-                        size="icon-sm"
-                        variant="ghost"
-                        aria-label={`Удалить ${friend.display_name}`}
-                        disabled={busy}
-                        onClick={() =>
-                          void run(
-                            () => goodluckRemoveFriend(friend.id),
-                            "Удалён из друзей"
-                          )
-                        }
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
           </div>
         </DialogContent>
       </Dialog>
