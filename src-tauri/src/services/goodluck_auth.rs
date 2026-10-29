@@ -170,6 +170,7 @@ impl GoodLuckAuthService {
         let resp = self
             .http_client
             .post(&format!("{}/oauth/token", IDENTITY_BASE))
+            .header("X-Client-Version", env!("CARGO_PKG_VERSION"))
             .form(&form)
             .send()
             .await
