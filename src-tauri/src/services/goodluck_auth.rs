@@ -27,6 +27,10 @@ const GOODLUCK_API_BASE: &str = "https://gltournament.ru/api";
 const GOODLUCK_WEB_BASE: &str = "https://test.gltournament.ru";
 #[cfg(not(feature = "goodluck-test"))]
 const GOODLUCK_WEB_BASE: &str = "https://gltournament.ru";
+#[cfg(feature = "goodluck-test")]
+const IDENTITY_BASE: &str = "https://test.gltournament.ru/idp";
+#[cfg(not(feature = "goodluck-test"))]
+const IDENTITY_BASE: &str = "https://gltournament.ru/idp";
 const CLIENT_ID: &str = "rustlm";
 const REDIRECT_URI: &str = "rustlm://auth/callback";
 
@@ -123,12 +127,14 @@ impl GoodLuckAuthService {
             });
         }
 
-        // Build authorization URL
+        // Build OIDC authorization URL identity-сервиса; сам вход (Discord и т.п.)
+        // показывает сайт, затем браузер возвращается по rustlm://auth/callback.
         let url = format!(
-            "{}/auth/rustlm?client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&state={}",
-            GOODLUCK_WEB_BASE,
+            "{}/auth?client_id={}&redirect_uri={}&response_type=code&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+            IDENTITY_BASE,
             CLIENT_ID,
             urlencode(REDIRECT_URI),
+            urlencode("openid profile email offline_access"),
             code_challenge,
             state
         );
@@ -153,24 +159,53 @@ impl GoodLuckAuthService {
             flow.code_verifier
         };
 
-        // Exchange code for tokens
+        // 1) меняем authorization code на identity access token (OIDC, PKCE, form POST)
+        let form = [
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT_URI),
+            ("client_id", CLIENT_ID),
+            ("code_verifier", code_verifier.as_str()),
+        ];
         let resp = self
             .http_client
-            .post(&format!("{}/auth/rustlm/token", GOODLUCK_API_BASE))
-            .json(&serde_json::json!({
-                "code": code,
-                "codeVerifier": code_verifier,
-                "clientId": CLIENT_ID
-            }))
+            .post(&format!("{}/oauth/token", IDENTITY_BASE))
+            .form(&form)
             .send()
             .await
-            .map_err(|e| AppError::Custom(format!("Token exchange failed: {}", e)))?;
+            .map_err(|e| AppError::Custom(format!("Identity token exchange failed: {}", e)))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             return Err(AppError::Custom(format!(
-                "Token exchange returned {}: {}",
+                "Identity token exchange returned {}: {}",
+                status, body
+            )));
+        }
+        let identity_token: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Custom(format!("Failed to parse identity token: {}", e)))?;
+        let access_token = identity_token
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::Custom("Identity response has no access_token".to_string()))?;
+
+        // 2) на время миграции меняем identity-токен на JWT GoodLuck (legacy-формат для RustLM)
+        let resp = self
+            .http_client
+            .post(&format!("{}/auth/oidc/exchange/rustlm", GOODLUCK_API_BASE))
+            .json(&serde_json::json!({ "accessToken": access_token }))
+            .send()
+            .await
+            .map_err(|e| AppError::Custom(format!("GoodLuck token exchange failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Custom(format!(
+                "GoodLuck token exchange returned {}: {}",
                 status, body
             )));
         }
