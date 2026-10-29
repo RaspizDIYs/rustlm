@@ -739,11 +739,11 @@ export default function RepairToolsPage() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 repair-compact">
+    <div className="flex w-full max-w-4xl flex-col gap-2 repair-compact">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex flex-col gap-2">
           <h1 className="flex items-center gap-2 text-lg font-semibold">
-            <Wrench aria-hidden className="size-6 text-primary" />
+            <Wrench aria-hidden className="size-5 text-primary" />
             Repair Tools
           </h1>
           <p className="text-xs text-muted-foreground">

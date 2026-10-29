@@ -42,12 +42,12 @@ export default function InfoPage() {
 
   if (showChangelog) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-3">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={() => setShowChangelog(false)}>
             <ArrowLeft className="h-4 w-4 mr-1" /> Назад
           </Button>
-          <h1 className="text-2xl font-bold">История изменений</h1>
+          <h1 className="text-lg font-semibold">История изменений</h1>
         </div>
         <Card>
           <CardContent className="pt-6">
@@ -59,28 +59,22 @@ export default function InfoPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col items-center justify-center py-8 space-y-3">
-        <h1 className="text-4xl font-bold bg-gradient-to-r from-primary to-purple-500 bg-clip-text text-transparent">
-          RustLM
-        </h1>
-        <p className="text-muted-foreground">League of Legends Account Manager</p>
-        <Button variant="link" size="sm" onClick={() => setShowChangelog(true)}>Версия {appVersion}</Button>
-        <Button variant="link" size="sm" onClick={() => setShowChangelog(true)}>
-          Показать историю изменений
-        </Button>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-col gap-1"><h1 className="text-lg font-semibold">RustLM</h1><p className="text-xs text-muted-foreground">Менеджер аккаунтов League of Legends</p></div>
+        <Button variant="outline" size="sm" onClick={() => setShowChangelog(true)}>Версия {appVersion}</Button>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Контакты разработчиков</CardTitle>
+          <CardTitle className="text-sm">Контакты разработчиков</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           {DEVELOPERS.map((dev, i) => (
             <div key={i} className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <MessageCircle className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">{dev.name}</span>
+                <span className="text-xs font-medium">{dev.name}</span>
               </div>
               <Button
                 variant="ghost"

@@ -1,5 +1,6 @@
 "use client"
 
+import * as React from "react"
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 
 import { cn } from "@/lib/utils"
@@ -17,8 +18,22 @@ function TooltipProvider({
   )
 }
 
-function Tooltip({ ...props }: TooltipPrimitive.Root.Props) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+function Tooltip({ actionsRef, onOpenChange, ...props }: TooltipPrimitive.Root.Props) {
+  const ownActions = React.useRef<TooltipPrimitive.Root.Actions | null>(null)
+  const actions = actionsRef ?? ownActions
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(props.defaultOpen ?? false)
+  const open = props.open ?? uncontrolledOpen
+  React.useEffect(() => {
+    if (!open) return
+    const dismiss = () => actions.current?.close()
+    // Scroll does not bubble; capture also sees nested champion lists and dialogs.
+    document.addEventListener("scroll", dismiss, { capture: true, passive: true })
+    return () => document.removeEventListener("scroll", dismiss, true)
+  }, [open, actions])
+  return <TooltipPrimitive.Root data-slot="tooltip" {...props} actionsRef={actions} onOpenChange={(next, details) => {
+    onOpenChange?.(next, details)
+    if (!details.isCanceled) setUncontrolledOpen(next)
+  }} />
 }
 
 function TooltipTrigger(

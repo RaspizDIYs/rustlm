@@ -79,7 +79,7 @@ export function NetworkHosts({
   };
   return (
     <details>
-      <summary className="cursor-pointer text-sm font-medium">
+      <summary className="cursor-pointer text-xs font-medium">
         Дополнительно: проверенные адреса в hosts
       </summary>
       <div className="mt-3 flex flex-col gap-3">
@@ -91,12 +91,12 @@ export function NetworkHosts({
         </p>
         {error && <RepairError error={error} />}
         {message && (
-          <p role="status" className="text-sm">
+          <p role="status" className="text-xs">
             {message}
           </p>
         )}
         {candidates.size === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Нет подходящих адресов. Выберите завершённый замер без VPN с
             успешными HTTPS-ответами.
           </p>
@@ -119,7 +119,7 @@ export function NetworkHosts({
                 />
                 <label
                   htmlFor={`pin-${domain}`}
-                  className="min-w-0 flex-1 break-all text-sm"
+                  className="min-w-0 flex-1 break-all text-xs"
                 >
                   {domain}
                 </label>

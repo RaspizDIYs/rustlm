@@ -71,7 +71,7 @@ function PlayerRow({
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`truncate text-sm font-medium ${name ? "" : "italic text-muted-foreground"}`}>
+            <span className={`truncate text-xs font-medium ${name ? "" : "italic text-muted-foreground"}`}>
               {name || "Ник скрыт"}
             </span>
             {player.is_self && (
@@ -89,7 +89,7 @@ function PlayerRow({
       </div>
       <div className="shrink-0 text-right">
         <div
-          className={`text-sm font-medium ${
+          className={`text-xs font-medium ${
             TIER_CLASSES[player.tier] || "text-muted-foreground"
           }`}
         >
@@ -194,10 +194,10 @@ export default function SpyPage() {
   const noApiKey = snapshot ? !snapshot.api_configured : false;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">Разведка</h1>
+          <h1 className="text-lg font-semibold">Разведка</h1>
           {snapshot?.queue_name && <Badge variant="secondary">{snapshot.queue_name}</Badge>}
           {inChampSelect && (
             <span className="text-xs text-muted-foreground">обновляется автоматически</span>
@@ -209,19 +209,19 @@ export default function SpyPage() {
       </div>
 
       {!isDesktop && (
-        <div className="rounded-xl border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+        <div className="rounded-xl border border-border bg-muted/30 p-4 text-xs text-muted-foreground">
           Разведка работает только в собранном приложении: нужен запущенный клиент League of Legends.
         </div>
       )}
 
       {error && (
-        <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
+        <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-xs text-destructive">
           {error}
         </div>
       )}
 
       {snapshot?.note && (
-        <div className="rounded-xl border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+        <div className="rounded-xl border border-border bg-muted/30 p-4 text-xs text-muted-foreground">
           {snapshot.note}
         </div>
       )}
@@ -233,19 +233,19 @@ export default function SpyPage() {
       )}
 
       {snapshot?.api_error && (
-        <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-4 text-sm text-amber-600 dark:text-amber-400">
+        <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-4 text-xs text-amber-600 dark:text-amber-400">
           {snapshot.api_error}
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Союзники ({allies.length})</CardTitle>
+            <CardTitle className="text-sm">Союзники ({allies.length})</CardTitle>
           </CardHeader>
           <CardContent>
             {allies.length === 0 ? (
-              <p className="py-4 text-center text-sm text-muted-foreground">
+              <p className="py-4 text-center text-xs text-muted-foreground">
                 {inChampSelect
                   ? "Клиент не отдал состав команды."
                   : "Войди в выбор чемпионов — данные появятся автоматически."}
@@ -266,11 +266,11 @@ export default function SpyPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Противники ({enemies.length})</CardTitle>
+            <CardTitle className="text-sm">Противники ({enemies.length})</CardTitle>
           </CardHeader>
           <CardContent>
             {enemies.length === 0 ? (
-              <p className="py-4 text-center text-sm text-muted-foreground">
+              <p className="py-4 text-center text-xs text-muted-foreground">
                 {inChampSelect
                   ? "Riot не показывает противников в выборе чемпионов — они видны только в кастомных лобби."
                   : "Войди в выбор чемпионов — данные появятся автоматически."}
@@ -292,7 +292,7 @@ export default function SpyPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
+          <CardTitle className="text-sm">
             Riot API {noApiKey ? "— ключ не задан" : ""}
           </CardTitle>
         </CardHeader>

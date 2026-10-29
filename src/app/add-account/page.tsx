@@ -60,16 +60,16 @@ export default function AddAccountPage() {
   };
 
   return (
-    <div className="max-w-md space-y-6">
-      <h1 className="text-2xl font-bold">Добавить аккаунт</h1>
+    <div className="max-w-md space-y-3">
+      <h1 className="text-lg font-semibold">Добавить аккаунт</h1>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Данные аккаунта</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           <div className="space-y-2">
-            <label className="text-sm text-muted-foreground">Логин</label>
+            <label className="text-xs text-muted-foreground">Логин</label>
             <Input
               type="text"
               placeholder="Введите логин"
@@ -78,7 +78,7 @@ export default function AddAccountPage() {
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm text-muted-foreground">Пароль</label>
+            <label className="text-xs text-muted-foreground">Пароль</label>
             <Input
               type="password"
               placeholder="Введите пароль"
@@ -87,7 +87,7 @@ export default function AddAccountPage() {
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm text-muted-foreground">Сервер</label>
+            <label className="text-xs text-muted-foreground">Сервер</label>
             <Select value={server} onValueChange={(v) => v && setServer(v)}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Выберите сервер" />
@@ -102,7 +102,7 @@ export default function AddAccountPage() {
             </Select>
           </div>
           <div className="space-y-2">
-            <label className="text-sm text-muted-foreground">Заметка</label>
+            <label className="text-xs text-muted-foreground">Заметка</label>
             <Input
               placeholder="Необязательная заметка"
               value={note}

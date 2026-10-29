@@ -94,9 +94,9 @@ export default function LogsPage() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Логи</h1>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-lg font-semibold">Логи</h1>
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" size="sm" onClick={() => {void openRepairFolder().catch((e) => setError(String(e)));}}>Открыть папку</Button>
           <Button variant="secondary" size="sm" onClick={() => {void exportRepairReport().catch((e) => setError(String(e)));}}>Отчёт разработчику</Button>

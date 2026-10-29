@@ -279,17 +279,17 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Настройки</h1>
+    <div className="space-y-3">
+      <h1 className="text-lg font-semibold">Настройки</h1>
 
-      <div className="grid gap-4">
+      <div className="grid items-start gap-3 xl:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Интерфейс</CardTitle>
+            <CardTitle className="text-sm">Интерфейс</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm">Скрывать логины</span>
+              <span className="text-xs">Скрывать логины</span>
               <Switch
                 checked={hideLogins}
                 onCheckedChange={(v) => {
@@ -299,7 +299,7 @@ export default function SettingsPage() {
               />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm">Сворачивать в трей</span>
+              <span className="text-xs">Сворачивать в трей</span>
               <Switch
                 checked={minimizeToTray}
                 onCheckedChange={(v) => {
@@ -309,7 +309,7 @@ export default function SettingsPage() {
               />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm">Запускать вместе с Windows</span>
+              <span className="text-xs">Запускать вместе с Windows</span>
               <Switch
                 checked={autostart}
                 onCheckedChange={async (v) => {
@@ -324,7 +324,7 @@ export default function SettingsPage() {
             </div>
             {autostart && (
               <div className="flex items-center justify-between pl-4">
-                <span className="text-sm text-muted-foreground">Запускать в фоне</span>
+                <span className="text-xs text-muted-foreground">Запускать в фоне</span>
                 <Switch
                   checked={autostartBackground}
                   onCheckedChange={async (v) => {
@@ -342,11 +342,11 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Авто-принятие</CardTitle>
+            <CardTitle className="text-sm">Авто-принятие</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center justify-between">
-              <span className="text-sm">Метод</span>
+              <span className="text-xs">Метод</span>
               <Select
                 value={autoAcceptMethod}
                 onValueChange={(v) => {
@@ -377,14 +377,14 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
+            <CardTitle className="text-sm flex items-center gap-2">
               <Cloud className="h-4 w-4" />
               Интеграция GoodLuck
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             {glAuthError && (
-              <p className="text-sm text-destructive whitespace-pre-wrap wrap-break-words">{glAuthError}</p>
+              <p className="text-xs text-destructive whitespace-pre-wrap wrap-break-words">{glAuthError}</p>
             )}
             {glUser ? (
               <>
@@ -404,7 +404,7 @@ export default function SettingsPage() {
                       </div>
                     )}
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{glUser.display_name}</div>
+                      <div className="truncate text-xs font-medium">{glUser.display_name}</div>
                       <div className="text-xs text-muted-foreground">Подключено</div>
                     </div>
                   </div>
@@ -443,7 +443,7 @@ export default function SettingsPage() {
                       Аккаунты в облаке ({glSyncedAccounts.length})
                     </div>
                     {glSyncedAccounts.map((acc, i) => (
-                      <div key={i} className="flex items-center gap-2 text-sm">
+                      <div key={i} className="flex items-center gap-2 text-xs">
                         <Cloud className="h-3 w-3 text-primary/60" />
                         <span className="truncate">{acc.riot_id || acc.summoner_name || "—"}</span>
                         {acc.server && (
@@ -456,7 +456,7 @@ export default function SettingsPage() {
 
                 {/* Auto-sync toggle */}
                 <div className="flex items-center justify-between">
-                  <span className="text-sm">Авто-синхронизация</span>
+                  <span className="text-xs">Авто-синхронизация</span>
                   <Switch
                     checked={glAutoSync}
                     onCheckedChange={(v) => {
@@ -474,7 +474,7 @@ export default function SettingsPage() {
             ) : (
               <div className="flex flex-col items-center gap-3 py-2">
                 <CloudOff className="h-8 w-8 text-muted-foreground/50" />
-                <p className="text-sm text-muted-foreground text-center">
+                <p className="text-xs text-muted-foreground text-center">
                   Подключите аккаунт GoodLuck для синхронизации Riot-аккаунтов в облаке
                 </p>
                 <WithTooltip label={glLoading ? "Открываю браузер…" : "Войти через GoodLuck"}>
@@ -498,12 +498,12 @@ export default function SettingsPage() {
         {glUser && (
         <Card>
             <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
+              <CardTitle className="text-sm flex items-center gap-2">
                 <ShieldCheck className="h-4 w-4" />
                 Двухфакторная аутентификация
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   {totpEnabled ? (
@@ -511,7 +511,7 @@ export default function SettingsPage() {
                   ) : (
                     <ShieldOff className="h-4 w-4 text-muted-foreground" />
                   )}
-                  <span className="text-sm">
+                  <span className="text-xs">
                     {totpEnabled ? "2FA включена" : "2FA отключена"}
                   </span>
                 </div>
@@ -525,7 +525,7 @@ export default function SettingsPage() {
                       placeholder="Код"
                       value={totpDisableCode}
                       onChange={(e) => setTotpDisableCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                      className="w-20 h-8 px-2 text-center text-sm font-mono rounded-md border border-input bg-transparent"
+                      className="w-20 h-8 px-2 text-center text-xs font-mono rounded-md border border-input bg-transparent"
                     />
                     <Button
                       variant="destructive"
@@ -580,7 +580,7 @@ export default function SettingsPage() {
             </DialogHeader>
             {totpEnabled && (
               <div className="space-y-2">
-                <p className="text-sm text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   Введите код из Authenticator для подтверждения.
                 </p>
                 <Input
@@ -668,11 +668,11 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Обновления</CardTitle>
+            <CardTitle className="text-sm">Обновления</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm">Автоматические обновления</span>
+              <span className="text-xs">Автоматические обновления</span>
               <Switch
                 checked={autoUpdate}
                 onCheckedChange={(v) => {
@@ -682,7 +682,7 @@ export default function SettingsPage() {
               />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm">
+              <span className="text-xs">
                 {updateAvailable
                   ? `Доступна версия ${updateAvailable.version}`
                   : updateStatus ?? "Проверить обновления"}

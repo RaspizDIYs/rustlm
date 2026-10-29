@@ -192,7 +192,8 @@ export default function ConfigsPage() {
   const canToggle = (status?.exists ?? false) && !busy;
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-3">
+      <h1 className="text-lg font-semibold">Конфиги</h1>
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -204,7 +205,7 @@ export default function ConfigsPage() {
           {loading ? (
             <div className="text-xs text-muted-foreground">Загрузка…</div>
           ) : installNotFound ? (
-            <p className="text-sm text-amber-500">
+            <p className="text-xs text-amber-500">
               Не удалось найти установку League of Legends. Запустите Riot Client
               хотя бы один раз и нажмите «Обновить».
             </p>
@@ -226,7 +227,7 @@ export default function ConfigsPage() {
 
               <div className="flex items-center justify-between gap-3 pt-1">
                 <div className="flex flex-col">
-                  <span className="text-sm">Защитить от перезаписи (read-only)</span>
+                  <span className="text-xs">Защитить от перезаписи (read-only)</span>
                   <span className="text-[11px] text-muted-foreground">
                     Клиент не сможет переписать файл при выходе из игры.
                   </span>
@@ -293,7 +294,7 @@ export default function ConfigsPage() {
         </CardHeader>
         <CardContent>
           {presets.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Пресетов пока нет. Создайте первый из текущих настроек игры или
               импортируйте `.lolcfg` файл.
             </p>
