@@ -3,6 +3,9 @@ import { useEffect } from "react";
 
 export function WindowInit() {
   useEffect(() => {
+    import("@/lib/tauri").then(({ reportWebviewReady }) => {
+      reportWebviewReady().catch(() => {});
+    }).catch(() => {});
     import("@/lib/tauri").then(({ shouldStartMinimized, loadSetting }) => {
       loadSetting("AnimationsEnabled", true).then((enabled) => {
         document.documentElement.dataset.animations = enabled ? "on" : "off";

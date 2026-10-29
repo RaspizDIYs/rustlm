@@ -229,6 +229,7 @@ pub fn run() {
             commands::lol_config::lol_cfg_export_preset,
             commands::lol_config::lol_cfg_import_preset,
             commands::webview::repair_webview_cache,
+            commands::webview::webview_ready,
             commands::refresh_tray,
         ])
         .setup(move |app| {
@@ -245,8 +246,18 @@ pub fn run() {
                     .build(),
             )?;
 
-            if repaired_webview {
-                log::warn!("[webview] EBWebView сброшен по заявке на починку окна");
+            match repaired_webview {
+                services::webview_repair::PendingRepair::CacheCleared => {
+                    log::warn!("[webview] EBWebView сброшен по заявке на починку окна");
+                }
+                services::webview_repair::PendingRepair::CacheClearedWithoutGpu => {
+                    log::warn!("[webview] EBWebView сброшен, WebView2 запущен без GPU");
+                }
+                services::webview_repair::PendingRepair::None => {}
+            }
+            // В релизе следим, что фронтенд реально поднялся; в dev не мешаем.
+            if !cfg!(debug_assertions) {
+                services::webview_repair::arm_recovery(app.handle().clone());
             }
             if let Some(version) = services::webview_repair::webview2_version() {
                 log::info!("[webview] WebView2 runtime {}", version);

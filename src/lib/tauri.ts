@@ -521,6 +521,11 @@ export async function uninstallLolManager(): Promise<void> {
 }
 
 // Tray
+/** Отмечает, что фронтенд отрисовался (сторож починки окна WebView2). */
+export async function reportWebviewReady(): Promise<void> {
+  return invoke("webview_ready");
+}
+
 /** Сбрасывает кэш WebView2 и перезапускает приложение (лечит «страница не загрузилась»). */
 export async function repairWebviewCache(): Promise<void> {
   return invoke("repair_webview_cache");
