@@ -80,3 +80,11 @@ export function jungleSpells(profile: AutomationProfile): AutomationProfile {
         : null;
   return { ...profile, Spell1Id: 11, Spell2Id: other };
 }
+
+export function removePriority(picks: string[], index: number, count: number): string[] {
+  const active=Array.from({length:count},(_,i)=>picks[i]||"");
+  if(index<0||index>=count)return picks;
+  active.splice(index,1);
+  active.push("");
+  return [...active,...picks.slice(count)];
+}

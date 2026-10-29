@@ -101,9 +101,9 @@ export default function LogsPage() {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-5 gap-y-2">
         <h1 className="text-lg font-semibold">Логи</h1>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">
           <Button variant="secondary" size="sm" onClick={() => {void openRepairFolder().catch((e) => setError(String(e)));}}>Открыть папку</Button>
           <Button variant="secondary" size="sm" onClick={() => {void exportRepairReport().catch((e) => setError(String(e)));}}>Отчёт разработчику</Button>
           <Button variant="secondary" size="sm" onClick={fetchLogs}>
@@ -123,9 +123,7 @@ export default function LogsPage() {
             Открыть файл
           </Button>
         </div>
-      </div>
-      {error && <RepairError error={error} />}
-      <div className="flex gap-3 flex-wrap">
+      <div className="col-start-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-2">
         {LOG_FILTERS.map((filter) => (
           <label
             key={filter}
@@ -142,6 +140,8 @@ export default function LogsPage() {
         ))}
       </div>
 
+      </div>
+      {error && <RepairError error={error} />}
       <p className="text-xs text-muted-foreground">Последние 2000 строк · полный журнал доступен в файле</p>
       <Card>
         <CardContent className="p-0">

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
-import { X, Search, ArrowLeftRight, LockKeyhole } from "lucide-react";
+import { X, Plus, Search, ArrowLeftRight, LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -27,9 +27,11 @@ import {
   allowedSpells,
   pickCount,
   jungleSpells,
+  removePriority,
   type AutomationMode,
 } from "@/lib/automation";
 import { cn } from "@/lib/utils";
+import { HorizontalScroll } from "@/components/horizontal-scroll";
 import { ChampionGrid } from "@/components/champion-grid";
 import { HighlightText } from "@/components/highlight-text";
 import { LolRoleIcon } from "@/components/lol-role-icon";
@@ -460,6 +462,33 @@ export default function AutomationPage() {
               </Select>
             </div>
           )}
+          {randomMode ? (
+            <HorizontalScroll label="Приоритеты чемпионов — горизонтальная прокрутка" activeIndex={Number(slot)}>
+              <div className="flex w-max gap-1.5 py-1 pr-1" role="list">
+                {Array.from({length:activePickCount},(_,index)=>{
+                  const name=profile.Picks[index]||"";
+                  return <div key={index} role="listitem" className="relative shrink-0">
+                    <WithTooltip label={name || "Добавить чемпиона"}>
+                      <button type="button" aria-label={name ? `Выбрать приоритет: ${name}` : `Добавить чемпиона в приоритет ${index+1}`}
+                        data-scroll-index={index}
+                        aria-pressed={slot===String(index)} data-selected={slot===String(index)}
+                        className={cn("lm-image-choice flex size-11 items-center justify-center rounded-md border-2",slot===String(index)?"border-primary":"border-border")}
+                        onClick={()=>setSlot(String(index))}>
+                        {name && champions[name] ? <img src={`${DDRAGON}/cdn/${version}/img/champion/${champions[name]}.png`} alt="" draggable={false} className="size-full object-cover"/> : <Plus className="size-4 text-muted-foreground"/>}
+                      </button>
+                    </WithTooltip>
+                    {name && <button type="button" aria-label={`Удалить из приоритетов: ${name}`}
+                      className="absolute -right-0.5 -top-0.5 z-10 flex size-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground hover:text-destructive focus-visible:outline-2 focus-visible:outline-primary"
+                      onClick={()=>{
+                        const picks=removePriority(profile.Picks,index,activePickCount);
+                        update({Picks:picks});
+                        setSlot(String(picks.slice(0,activePickCount).findIndex(value=>!value)));
+                      }}><X className="size-3"/></button>}
+                  </div>;
+                })}
+              </div>
+            </HorizontalScroll>
+          ) : (
           <Tabs
             value={slot}
             onValueChange={(value) => value && setSlot(String(value))}
@@ -485,6 +514,7 @@ export default function AutomationPage() {
               )}
             </TabsList>
           </Tabs>
+          )}
           <div className="flex items-center gap-2">
             <div className="relative w-48">
               <Search className="absolute left-2 top-2 size-3.5 text-muted-foreground" />
@@ -496,7 +526,7 @@ export default function AutomationPage() {
                 onChange={(event) => setSearch(event.target.value)}
               />
             </div>
-            <WithTooltip label="Сбросить выбранный слот">
+            {!randomMode && <WithTooltip label="Сбросить выбранный слот">
               <Button
                 size="icon-sm"
                 variant="outline"
@@ -512,7 +542,7 @@ export default function AutomationPage() {
               >
                 <X />
               </Button>
-            </WithTooltip>
+            </WithTooltip>}
           </div>
           <ChampionGrid
             entries={filtered}

@@ -1,55 +1,13 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { HorizontalScroll } from "@/components/horizontal-scroll";
 import type { MatchSummary } from "@/lib/tauri";
 import { championIconUrl } from "@/lib/lol-assets";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 
 export function AccountMatches({ matches }: { matches: MatchSummary[] }) {
-  const scroll = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const element = scroll.current;
-    if (!element) return;
-    const wheel = (event: WheelEvent) => {
-      if (event.ctrlKey || element.scrollWidth <= element.clientWidth) return;
-      const delta =
-        Math.abs(event.deltaX) > Math.abs(event.deltaY)
-          ? event.deltaX
-          : event.deltaY;
-      if (!delta || (delta < 0 && element.scrollLeft <= 0) ||
-          (delta > 0 && element.scrollLeft >= element.scrollWidth - element.clientWidth - 1)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      element.scrollLeft +=
-        delta *
-        (event.deltaMode === 1
-          ? 24
-          : event.deltaMode === 2
-            ? element.clientWidth
-            : 1);
-    };
-    element.addEventListener("wheel", wheel, { passive: false });
-    return () => element.removeEventListener("wheel", wheel);
-  }, []);
-
   return (
-    <div
-      ref={scroll}
-      className="accounts-matches-scroll"
-      role="region"
-      aria-label="Последние матчи — горизонтальная прокрутка"
-      tabIndex={0}
-      onKeyDown={(event) => {
-        const element = event.currentTarget;
-        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-          event.preventDefault();
-          element.scrollLeft += event.key === "ArrowRight" ? 73 : -73;
-        } else if (event.key === "Home" || event.key === "End") {
-          event.preventDefault();
-          element.scrollLeft = event.key === "Home" ? 0 : element.scrollWidth;
-        }
-      }}
-    >
+    <HorizontalScroll label="Последние матчи — горизонтальная прокрутка">
       <div className="flex w-max gap-1" role="list">
         {matches.slice(0, 20).map((match) => (
           <WithTooltip
@@ -79,6 +37,6 @@ export function AccountMatches({ matches }: { matches: MatchSummary[] }) {
           </WithTooltip>
         ))}
       </div>
-    </div>
+    </HorizontalScroll>
   );
 }
