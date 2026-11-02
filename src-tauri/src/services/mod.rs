@@ -24,3 +24,5 @@ pub mod vault;
 pub mod webview_repair;
 
 pub mod champ_select_policy;
+
+pub mod unglitch;

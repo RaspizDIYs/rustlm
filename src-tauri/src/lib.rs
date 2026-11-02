@@ -133,6 +133,8 @@ pub fn run() {
             commands::accounts::import_accounts,
             commands::riot_client::is_riot_client_running,
             commands::riot_client::is_league_running,
+            commands::unglitch::unglitch_status,
+            commands::unglitch::unglitch_execute,
             commands::riot_client::kill_league,
             commands::riot_client::start_riot_client,
             commands::riot_client::restart_league,

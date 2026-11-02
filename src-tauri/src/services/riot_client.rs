@@ -323,6 +323,111 @@ impl RiotClientService {
         Self::is_process_running("LeagueClientUx.exe")
     }
 
+    pub fn unglitch_process_state() -> (bool, bool, Vec<u32>) {
+        #[cfg(windows)]
+        return (
+            Self::is_process_running("LeagueClient.exe"),
+            Self::is_league_running(),
+            Self::find_process_pids("LeagueClientUxRender.exe"),
+        );
+        #[cfg(not(windows))]
+        (false, false, vec![])
+    }
+
+    pub fn unglitch_renderer_matches(pid: u32, root: &std::path::Path) -> bool {
+        #[cfg(windows)]
+        return Self::process_path(pid)
+            .is_some_and(|path| crate::models::unglitch::renderer_in_install(&path, root));
+        #[cfg(not(windows))]
+        {
+            let _ = (pid, root);
+            false
+        }
+    }
+
+    pub fn restart_ux_renderers() -> Result<(Vec<u32>, PathBuf), String> {
+        #[cfg(not(windows))]
+        return Err("Принудительный перезапуск доступен только в Windows.".into());
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            use windows::core::PWSTR;
+            use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::System::Threading::{
+                OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            };
+            let session = Self::find_lcu_lockfile().ok_or("Сессия League не найдена.")?;
+            let core = Self::process_path(session.pid)
+                .ok_or("Не удалось определить папку работающего клиента League.")?;
+            if !core.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .eq_ignore_ascii_case("LeagueClient.exe")
+                    || name
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("LeagueClientUx.exe")
+            }) {
+                return Err("Не удалось подтвердить процесс клиента League.".into());
+            }
+            let root = core.parent().ok_or("Папка клиента League не найдена.")?;
+            let ui = Self::find_process_pids("LeagueClientUx.exe")
+                .into_iter()
+                .filter(|pid| {
+                    Self::process_path(*pid).is_some_and(|path| {
+                        path.parent().is_some_and(|parent| {
+                            parent
+                                .to_string_lossy()
+                                .eq_ignore_ascii_case(&root.to_string_lossy())
+                        })
+                    })
+                })
+                .count();
+            if ui != 1 {
+                return Err("Не удалось однозначно определить интерфейс League. Используйте обычную перезагрузку.".into());
+            }
+            let mut stopped = Vec::new();
+            for pid in Self::find_process_pids("LeagueClientUxRender.exe") {
+                if !Self::unglitch_renderer_matches(pid, root) {
+                    continue;
+                }
+                unsafe {
+                    let handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,false,pid)
+                        .map_err(|_|"Windows не разрешила перезапустить рендер. Используйте обычную перезагрузку.")?;
+                    let mut buffer = vec![0u16; 32768];
+                    let mut length = buffer.len() as u32;
+                    let read = QueryFullProcessImageNameW(
+                        handle,
+                        PROCESS_NAME_WIN32,
+                        PWSTR(buffer.as_mut_ptr()),
+                        &mut length,
+                    );
+                    let matches = read.is_ok()
+                        && crate::models::unglitch::renderer_in_install(
+                            &PathBuf::from(std::ffi::OsString::from_wide(
+                                &buffer[..length as usize],
+                            )),
+                            root,
+                        );
+                    // Query and terminate through the same handle to avoid PID-reuse races.
+                    let result = if matches {
+                        TerminateProcess(handle, 0)
+                    } else {
+                        Ok(())
+                    };
+                    let _ = CloseHandle(handle);
+                    result.map_err(|_|"Не удалось завершить один из процессов рендера. Обновите состояние перед повтором.")?;
+                    if matches {
+                        stopped.push(pid);
+                    }
+                }
+            }
+            if stopped.is_empty() {
+                return Err("Процессы рендера выбранного клиента не найдены.".into());
+            }
+            Ok((stopped, root.to_path_buf()))
+        }
+    }
+
     /// Return path to the League of Legends install directory (the folder that
     /// contains `lockfile`, `Config\`, etc.). Reuses the same candidate list as
     /// LCU lockfile detection — first hit wins.

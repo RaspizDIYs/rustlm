@@ -7,3 +7,5 @@ pub mod league_client;
 pub mod player;
 pub mod rune;
 pub mod settings;
+
+pub mod unglitch;
