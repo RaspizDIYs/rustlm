@@ -13,8 +13,17 @@ use tauri::Emitter;
 use crate::error::AppError;
 use crate::models::automation::AutomationSettings;
 use crate::services::champ_select_policy as policy;
+use crate::services::lcu_protocol;
 use crate::services::riot_client::RiotClientService;
 use crate::services::rune_pages_storage::RunePagesStorage;
+
+struct AcceptAttempt<'a>(&'a AtomicBool);
+
+impl Drop for AcceptAttempt<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 pub struct AutoAcceptService {
     riot_client: Arc<RiotClientService>,
@@ -240,19 +249,20 @@ impl AutoAcceptService {
             };
 
             // Build WebSocket URL
-            let ws_url = format!("wss://127.0.0.1:{}/", port);
+            let ws_url = self.riot_client.lcu_websocket_url(port);
             let auth =
                 base64::engine::general_purpose::STANDARD.encode(format!("riot:{}", password));
 
             // Connect
             match self.ws_connect(&ws_url, &auth, &mut cancel).await {
                 Ok(()) => {
-                    self.ws_failures.store(0, Ordering::SeqCst);
-                    self.force_polling.store(false, Ordering::SeqCst);
+                    self.riot_client.invalidate_cache();
+                    self.force_polling.store(true, Ordering::SeqCst);
                 }
                 Err(e) => {
                     log::error!("[WS] WebSocket error: {}", e);
                     self.riot_client.invalidate_cache();
+                    self.force_polling.store(true, Ordering::SeqCst);
                     let failures = self.ws_failures.fetch_add(1, Ordering::SeqCst) + 1;
                     if failures >= 3 {
                         self.force_polling.store(true, Ordering::SeqCst);
@@ -264,8 +274,13 @@ impl AutoAcceptService {
                 }
             }
 
+            if *cancel.borrow() {
+                return;
+            }
+            // Cancel pending delayed actions without reapplying already completed loadouts on a WS-only outage.
+            self.champ_select_version.fetch_add(1, Ordering::SeqCst);
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {},
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {},
                 _ = cancel.changed() => return,
             }
         }
@@ -293,10 +308,14 @@ impl AutoAcceptService {
                 .map_err(|e| AppError::Custom(e.to_string()))?,
         );
 
-        let (ws_stream, _) =
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
-                .await
-                .map_err(|e| AppError::Custom(format!("WS connect failed: {}", e)))?;
+        let (ws_stream, _) = tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(10),
+                tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))) => {
+                result.map_err(|_| AppError::Custom("WS connection timed out".into()))?
+                    .map_err(|_| AppError::Custom("WS connection failed".into()))?
+            },
+            _ = cancel.changed() => return Ok(()),
+        };
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -310,10 +329,22 @@ impl AutoAcceptService {
 
         log::info!("[WS] WebSocket connected to LCU, subscribed to OnJsonApiEvent");
 
+        self.ws_failures.store(0, Ordering::SeqCst);
+        self.force_polling.store(false, Ordering::SeqCst);
+        *self.last_accepted_timer.lock().await = -1.0;
+        // Subscriptions do not replay events missed while disconnected.
+        tokio::select! {
+            _ = self.refresh_lcu_snapshot() => {},
+            _ = cancel.changed() => return Ok(()),
+        }
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
+        heartbeat.tick().await;
+        let mut last_message = std::time::Instant::now();
         // Read loop
         loop {
             tokio::select! {
                 msg = read.next() => {
+                    last_message = std::time::Instant::now();
                     match msg {
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
                             self.handle_ws_message(&text).await;
@@ -329,8 +360,19 @@ impl AutoAcceptService {
                         None => {
                             return Ok(());
                         }
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(data))) => {
+                            write.send(tokio_tungstenite::tungstenite::Message::Pong(data)).await
+                                .map_err(|_| AppError::Custom("WS heartbeat response failed".into()))?;
+                        }
                         _ => {}
                     }
+                }
+                _ = heartbeat.tick() => {
+                    if last_message.elapsed() > Duration::from_secs(30) {
+                        return Err(AppError::Custom("WS heartbeat timed out".into()));
+                    }
+                    write.send(tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into())).await
+                        .map_err(|_| AppError::Custom("WS heartbeat failed".into()))?;
                 }
                 _ = cancel.changed() => {
                     log::info!("[WS] WebSocket cancelled");
@@ -340,55 +382,76 @@ impl AutoAcceptService {
         }
     }
 
-    async fn handle_ws_message(&self, message: &str) {
-        // Filter by URI to avoid false positives from "champ-select" appearing in unrelated events
-        let is_ready_check = message.contains("/lol-matchmaking/v1/ready-check");
-        let is_champ_select = message.contains("/lol-champ-select/v1/session");
-
-        if is_ready_check || is_champ_select {
-            log::info!("[WS] Event: {}...", &message[..message.len().min(300)]);
-        }
-
-        // Auto-accept only when enabled toggle is on
-        if is_ready_check
-            && self.enabled.load(Ordering::SeqCst)
+    async fn refresh_lcu_snapshot(&self) {
+        if self.enabled.load(Ordering::SeqCst)
             && self.settings.read().await.auto_accept_method == "WebSocket"
         {
-            self.handle_ready_check(message).await;
+            if let Ok(body) = self
+                .riot_client
+                .lcu_get("/lol-matchmaking/v1/ready-check")
+                .await
+            {
+                if let Ok(data) = serde_json::from_str(&body) {
+                    self.handle_ready_check(&data).await;
+                }
+            }
         }
-
-        // Champ-select automation always active (uses individual toggles)
-        if is_champ_select {
-            self.handle_champ_select(message).await;
+        if let Ok(body) = self
+            .riot_client
+            .lcu_get("/lol-champ-select/v1/session")
+            .await
+        {
+            if let Ok(session) = serde_json::from_str(&body) {
+                self.handle_champ_select_session(&session).await;
+            }
         }
     }
 
-    async fn handle_ready_check(&self, message: &str) {
-        if !message.contains("\"state\":\"InProgress\"") {
+    async fn handle_ws_message(&self, message: &str) {
+        let Some(event) = lcu_protocol::api_event(message) else {
             return;
+        };
+        match event.uri.as_str() {
+            "/lol-matchmaking/v1/ready-check" => {
+                if event.event_type == "Delete" {
+                    *self.last_accepted_timer.lock().await = -1.0;
+                } else if self.enabled.load(Ordering::SeqCst)
+                    && self.settings.read().await.auto_accept_method == "WebSocket"
+                {
+                    self.handle_ready_check(&event.data).await;
+                }
+            }
+            "/lol-champ-select/v1/session" => {
+                if event.event_type == "Delete" {
+                    self.champ_select_active.store(false, Ordering::SeqCst);
+                    self.reset_champ_select_state();
+                    if let Some(app) = self.app_handle.lock().await.as_ref() {
+                        let _ = app.emit("automation-context", serde_json::Value::Null);
+                    }
+                } else {
+                    self.handle_champ_select_session(&event.data).await;
+                }
+            }
+            _ => {}
         }
-        if !message.contains("\"playerResponse\":\"None\"") {
-            return;
-        }
+    }
 
-        let timer = Self::extract_timer(message);
+    async fn handle_ready_check(&self, data: &serde_json::Value) {
+        let Some(timer) = lcu_protocol::ready_timer(data) else {
+            if matches!(data["state"].as_str(), Some("Invalid" | "Done"))
+                || matches!(data["playerResponse"].as_str(), Some("Accepted" | "Declined")) {
+                *self.last_accepted_timer.lock().await = -1.0;
+            }
+            return;
+        };
         {
             let mut last = self.last_accepted_timer.lock().await;
-            if (*last - timer).abs() < 0.5 && *last > 0.0 {
+            if (*last - timer).abs() < 0.5 && *last >= 0.0 {
                 return;
             }
             *last = timer;
         }
-
         self.accept_match().await;
-    }
-
-    fn extract_timer(message: &str) -> f64 {
-        let re = regex::Regex::new(r#""timer":([\d.]+)"#).unwrap();
-        re.captures(message)
-            .and_then(|caps| caps.get(1))
-            .and_then(|m| m.as_str().parse().ok())
-            .unwrap_or(-1.0)
     }
 
     async fn accept_match(&self) {
@@ -399,8 +462,21 @@ impl AutoAcceptService {
         {
             return;
         }
+        let attempt = AcceptAttempt(&self.accept_in_progress);
 
         let method = self.settings.read().await.auto_accept_method.clone();
+        if method != "UIA" {
+            let ready = self
+                .riot_client
+                .lcu_get("/lol-matchmaking/v1/ready-check")
+                .await
+                .ok()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                .and_then(|data| lcu_protocol::ready_timer(&data));
+            if ready.is_none() || !self.enabled.load(Ordering::SeqCst) {
+                return;
+            }
+        }
         let result = if method == "UIA" {
             #[cfg(windows)]
             {
@@ -420,7 +496,7 @@ impl AutoAcceptService {
                 .map(|_| ())
         };
 
-        self.accept_in_progress.store(false, Ordering::SeqCst);
+        drop(attempt);
 
         match result {
             Ok(_) => {
@@ -434,42 +510,43 @@ impl AutoAcceptService {
         }
     }
 
-    async fn handle_champ_select(&self, message: &str) {
-        // Parse WAMP message: [8, "OnJsonApiEvent", {...}]
-        let parsed: Result<serde_json::Value, _> = serde_json::from_str(message);
-        let data = match parsed {
-            Ok(val) => {
-                if let Some(arr) = val.as_array() {
-                    if arr.len() >= 3 {
-                        arr[2].clone()
-                    } else {
-                        return;
-                    }
-                } else {
-                    return;
-                }
-            }
-            Err(_) => return,
-        };
-
-        let uri = data.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-        if uri != "/lol-champ-select/v1/session" {
-            return;
+    async fn current_bench_session(
+        &self,
+        previous: &serde_json::Value,
+        mode: &str,
+        id: i32,
+    ) -> Option<serde_json::Value> {
+        let started = std::time::Instant::now();
+        let body = self
+            .riot_client
+            .lcu_get("/lol-gameflow/v1/session")
+            .await
+            .ok()?;
+        let flow = serde_json::from_str::<serde_json::Value>(&body).ok()?;
+        if policy::mode(&flow) != Some(mode) {
+            return None;
         }
-
-        let event_type = data.get("eventType").and_then(|e| e.as_str()).unwrap_or("");
-        if event_type == "Delete" {
-            self.champ_select_active.store(false, Ordering::SeqCst);
-            self.reset_champ_select_state();
-            return;
+        let body = self
+            .riot_client
+            .lcu_get("/lol-champ-select/v1/pickable-champion-ids")
+            .await
+            .ok()?;
+        let ids = serde_json::from_str::<Vec<i32>>(&body).ok()?;
+        if !ids.contains(&id) {
+            return None;
         }
-
-        let session = match data.get("data") {
-            Some(d) => d,
-            None => return,
-        };
-
-        self.handle_champ_select_session(session).await;
+        if previous["allowSubsetChampionPicks"].as_bool() == Some(true)
+            && !self.subset_champions().await.contains(&id)
+        {
+            return None;
+        }
+        let body = self
+            .riot_client
+            .lcu_get("/lol-champ-select/v1/session")
+            .await
+            .ok()?;
+        let fresh = serde_json::from_str::<serde_json::Value>(&body).ok()?;
+        policy::bench_session_is_current(previous, &fresh, started.elapsed()).then_some(fresh)
     }
 
     async fn handle_champ_select_session(&self, session: &serde_json::Value) {
@@ -570,7 +647,28 @@ impl AutoAcceptService {
                             &subset,
                             profile.unwrap().bench,
                         ) {
-                            *retry_at = std::time::Instant::now() + Duration::from_secs(3);
+                            *retry_at = std::time::Instant::now() + Duration::from_secs(1);
+                            let Some(fresh) = self.current_bench_session(session, mode, id).await
+                            else {
+                                return;
+                            };
+                            let current_settings = self.settings.read().await;
+                            let enabled = current_settings.for_queue(mode, role).auto_pick_enabled;
+                            let current_profile = current_settings.profiles.get(mode);
+                            let still_preferred = enabled
+                                && current_profile.is_some_and(|p| {
+                                    policy::bench_pick(
+                                        &fresh,
+                                        p.active_pick_ids(),
+                                        &ids,
+                                        &subset,
+                                        p.bench,
+                                    ) == Some(id)
+                                });
+                            drop(current_settings);
+                            if !still_preferred {
+                                return;
+                            }
                             match self
                                 .riot_client
                                 .lcu_post(
@@ -840,7 +938,12 @@ impl AutoAcceptService {
 
                                 if matches!(mode, "aram" | "mayhem") {
                                     if let Some(profile) = profile {
-                                        picks = profile.picks.iter().zip(profile.active_pick_ids()).map(|(name,id)| (Some(name.clone()),Some(*id))).collect();
+                                        picks = profile
+                                            .picks
+                                            .iter()
+                                            .zip(profile.active_pick_ids())
+                                            .map(|(name, id)| (Some(name.clone()), Some(*id)))
+                                            .collect();
                                     }
                                 }
                                 let mut picked = false;
@@ -916,6 +1019,20 @@ impl AutoAcceptService {
     /// Returns true if the action was verified as completed.
     /// On failure, the caller should reset the flag so the next WS event can retry.
     async fn do_champion_action(
+        &self,
+        action_id: i64,
+        champion_id: i32,
+        is_ban: bool,
+        game_id: i64,
+        role: &str,
+    ) -> bool {
+        let started = std::time::Instant::now();
+        let verified = self.do_champion_action_inner(action_id, champion_id, is_ban, game_id, role).await;
+        self.riot_client.diagnostics.champion_result(verified, started.elapsed());
+        verified
+    }
+
+    async fn do_champion_action_inner(
         &self,
         action_id: i64,
         champion_id: i32,
@@ -1390,21 +1507,7 @@ impl AutoAcceptService {
                 {
                     Ok(body) => {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                            let state = json.get("state").and_then(|s| s.as_str()).unwrap_or("");
-                            let response = json
-                                .get("playerResponse")
-                                .and_then(|r| r.as_str())
-                                .unwrap_or("");
-                            if state == "InProgress" && response == "None" {
-                                let timer =
-                                    json.get("timer").and_then(|t| t.as_f64()).unwrap_or(-1.0);
-                                let mut last = self.last_accepted_timer.lock().await;
-                                if (*last - timer).abs() >= 0.5 || *last < 0.0 {
-                                    *last = timer;
-                                    drop(last);
-                                    self.accept_match().await;
-                                }
-                            }
+                            self.handle_ready_check(&json).await;
                         }
                     }
                     Err(_) => {} // Expected when not in queue
@@ -1445,5 +1548,143 @@ impl AutoAcceptService {
                 _ = cancel.changed() => return,
             }
         }
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod simulator_tests {
+    use super::*;
+    use crate::models::automation::AutomationProfile;
+
+    // Run only against scripts/lcu-simulator.mjs, never against a real client.
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_flow_uses_real_http_ws_reconnect_and_bench_guards() {
+        assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
+        let client = Arc::new(RiotClientService::new());
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+            .await
+            .unwrap();
+        let service = Arc::new(AutoAcceptService::new(
+            client.clone(),
+            Arc::new(RunePagesStorage::for_test(
+                std::env::temp_dir().join("rustlm-lcu-unused-runes.json"),
+            )),
+        ));
+        service.enabled.store(true, Ordering::SeqCst);
+        service.settings.write().await.auto_accept_method = "WebSocket".into();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let task = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service.run_websocket_listener(rx).await;
+            })
+        };
+        async fn wait_for(client: &RiotClientService, champion: Option<i64>) {
+            tokio::time::timeout(Duration::from_secs(12), async {
+                loop {
+                    let state: serde_json::Value =
+                        serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap())
+                            .unwrap();
+                    let done = match champion {
+                        Some(id) => {
+                            state["session"]["myTeam"][0]["championId"].as_i64() == Some(id)
+                        }
+                        None => state["ready"]["playerResponse"] == "Accepted",
+                    };
+                    if done {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("automation did not reach expected simulator state");
+        }
+        // No ready-check event was sent after subscribing: initial HTTP snapshot must accept it.
+        wait_for(&client, None).await;
+        // Cancelling an in-flight HTTP attempt must release the acceptance gate.
+        client.lcu_post("/__test/failure", r#"{"route":"/lol-matchmaking/v1/ready-check","status":503,"delayMs":300}"#).await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(30), service.accept_match()).await.is_err());
+        assert!(!service.accept_in_progress.load(Ordering::SeqCst));
+        let mut settings = service.settings.read().await.clone();
+        settings.profiles.insert(
+            "aram".into(),
+            AutomationProfile {
+                auto_pick: true,
+                pick_ids: vec![1, 2, 3],
+                bench: true,
+                ..Default::default()
+            },
+        );
+        service.set_settings(settings).await;
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"aram-locked"}"#)
+            .await
+            .unwrap();
+        // Direct handler proves the locked pool cannot issue a swap.
+        let body = client
+            .lcu_get("/lol-champ-select/v1/session")
+            .await
+            .unwrap();
+        service
+            .handle_champ_select_session(&serde_json::from_str(&body).unwrap())
+            .await;
+        let state: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(state["session"]["myTeam"][0]["championId"], 3);
+        // Reconnect must recover a session change that occurred with no socket subscribed.
+        client.lcu_post("/__test/disconnect", "{}").await.unwrap();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"aram-open"}"#)
+            .await
+            .unwrap();
+        wait_for(&client, Some(1)).await;
+        for status in [401, 403, 404, 429, 500] {
+            client
+                .lcu_post(
+                    "/__test/failure",
+                    &format!(r#"{{"route":"/lol-gameflow/v1/session","status":{status}}}"#),
+                )
+                .await
+                .unwrap();
+            let error = client
+                .lcu_get("/lol-gameflow/v1/session")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&status.to_string()));
+            assert!(!error.contains("synthetic private response"));
+            assert!(client.lcu_get("/lol-gameflow/v1/session").await.is_ok());
+        }
+        for method in [
+            reqwest::Method::POST,
+            reqwest::Method::PUT,
+            reqwest::Method::DELETE,
+            reqwest::Method::PATCH,
+        ] {
+            let result = match method {
+                reqwest::Method::POST => client.lcu_post("/unsupported", "{}").await,
+                reqwest::Method::PUT => client.lcu_put("/unsupported", "{}").await,
+                reqwest::Method::DELETE => client.lcu_delete("/unsupported").await,
+                _ => client.lcu_patch("/unsupported", "{}").await,
+            };
+            assert!(result.unwrap_err().to_string().contains("404"));
+        }
+        // A new client can change both its port and token; never reuse the old connection.
+        let connection = client.lcu_get("/__test/next-connection").await.unwrap();
+        client.lcu_post("/__test/disconnect", "{}").await.unwrap();
+        std::fs::write(std::env::var_os("RUSTLM_TEST_LCU").unwrap(), connection).unwrap();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+            .await
+            .unwrap();
+        wait_for(&client, None).await;
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

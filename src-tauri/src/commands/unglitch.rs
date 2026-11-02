@@ -3,7 +3,6 @@ use crate::{
     state::AppState,
 };
 use tauri::State;
-static ACTION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tauri::command]
 pub async fn unglitch_status(state: State<'_, AppState>) -> Result<UnglitchStatus, String> {
@@ -20,22 +19,12 @@ pub async fn unglitch_execute(
     action: UnglitchAction,
     confirmed: bool,
 ) -> Result<UnglitchResult, String> {
-    let _guard = ACTION
-        .try_lock()
-        .map_err(|_| "Другая операция Unglitch ещё выполняется.")?;
+    state.unglitch.pause_for_manual_action();
     state
         .logger
         .ui_event("Unglitch", &format!("{action:?}"), Some("requested"));
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(25),
-        crate::services::unglitch::execute(state.riot_client.clone(), action, confirmed),
-    )
-    .await
-    .map_err(|_| {
-        "Не удалось подтвердить результат за 25 секунд. Обновите состояние перед повтором."
-            .to_string()
-    })
-    .and_then(|result| result);
+    let result =
+        crate::services::unglitch::execute(state.riot_client.clone(), action, confirmed).await;
     state.logger.ui_event(
         "Unglitch",
         &format!("{action:?}"),
@@ -46,4 +35,41 @@ pub async fn unglitch_execute(
         }),
     );
     result
+}
+
+#[tauri::command]
+pub fn unglitch_watch_status(state: State<'_, AppState>) -> crate::models::unglitch::WatchStatus {
+    state.unglitch.snapshot()
+}
+
+#[tauri::command]
+pub fn unglitch_watch_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<crate::models::unglitch::WatchStatus, String> {
+    state
+        .settings
+        .save_setting("UnglitchAutoRecovery", &enabled)
+        .map_err(|_| "Не удалось сохранить настройку.")?;
+    state.unglitch.set_enabled(enabled);
+    Ok(state.unglitch.snapshot())
+}
+
+#[tauri::command]
+pub async fn unglitch_diagnostics(state: State<'_, AppState>, capture: bool) -> Result<crate::services::client_diagnostics::Report, String> {
+    if capture { state.riot_client.diagnostics.probe().await; }
+    Ok(state.riot_client.diagnostics.snapshot())
+}
+
+#[tauri::command]
+pub async fn unglitch_export_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
+    let report = state.riot_client.diagnostics.snapshot();
+    tokio::task::spawn_blocking(move || {
+        let folder = crate::services::repair_paths::root()?.join("logs");
+        std::fs::create_dir_all(&folder).map_err(|_| "Не удалось открыть папку журналов.")?;
+        let path = folder.join(format!("client-diagnostics-{}.json", chrono::Utc::now().format("%Y%m%dT%H%M%S%3f")));
+        let data = serde_json::to_vec_pretty(&report).map_err(|_| "Не удалось подготовить отчёт.")?;
+        std::fs::write(&path, data).map_err(|_| "Не удалось сохранить отчёт.")?;
+        Ok::<_, String>(path.to_string_lossy().into_owned())
+    }).await.map_err(|_| "Не удалось сохранить отчёт.")?
 }

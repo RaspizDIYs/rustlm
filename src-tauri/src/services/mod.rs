@@ -26,3 +26,5 @@ pub mod webview_repair;
 pub mod champ_select_policy;
 
 pub mod unglitch;
+pub mod lcu_protocol;
+pub mod client_diagnostics;

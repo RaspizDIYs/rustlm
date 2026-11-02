@@ -25,6 +25,7 @@ pub struct AppState {
     pub rune_data: Arc<RuneDataService>,
     pub rune_pages: Arc<RunePagesStorage>,
     pub auto_accept: Arc<AutoAcceptService>,
+    pub unglitch: Arc<crate::services::unglitch::UnglitchMonitor>,
     pub customization: Arc<CustomizationService>,
     pub reveal: Arc<RevealService>,
     pub goodluck: Arc<GoodLuckAuthService>,
@@ -48,6 +49,9 @@ impl AppState {
             Arc::clone(&rune_pages),
         ));
         let customization = Arc::new(CustomizationService::new(Arc::clone(&riot_client)));
+        let unglitch = Arc::new(crate::services::unglitch::UnglitchMonitor::new(
+            settings.load_setting("UnglitchAutoRecovery", true),
+        ));
         let reveal = Arc::new(RevealService::new(
             Arc::clone(&riot_client),
             Arc::clone(&settings),
@@ -77,6 +81,7 @@ impl AppState {
             rune_data,
             rune_pages,
             auto_accept,
+            unglitch,
             customization,
             reveal,
             goodluck,

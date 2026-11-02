@@ -60,16 +60,22 @@ pub fn bench_pick(
     if session["benchEnabled"].as_bool() != Some(true) {
         return None;
     }
+    if session["timer"]["adjustedTimeLeftInPhase"]
+        .as_f64()
+        .is_some_and(|ms| ms <= 0.0)
+    {
+        return None;
+    }
     let own_cards = session["allowSubsetChampionPicks"].as_bool() == Some(true)
         && session["timer"]["phase"].as_str() == Some("BAN_PICK");
     if !own_cards {
         if !shared || session["timer"]["phase"].as_str() != Some("FINALIZATION") {
             return None;
         }
-        let total = session["timer"]["totalTimeInPhase"].as_i64()?;
-        let remaining = session["timer"]["adjustedTimeLeftInPhase"].as_i64()?;
+        let total = session["timer"]["totalTimeInPhase"].as_f64()?;
+        let remaining = session["timer"]["adjustedTimeLeftInPhase"].as_f64()?;
         // The shared pool opens three seconds into finalization; never borrow a teammate's reserved card.
-        if total <= 0 || remaining <= 0 || remaining > total || total - remaining < 3000 {
+        if total <= 0.0 || remaining <= 0.0 || remaining > total || total - remaining < 3000.0 {
             return None;
         }
     }
@@ -91,6 +97,32 @@ pub fn bench_pick(
                     .any(|c| c["championId"].as_i64() == Some(*id as i64))
             })
     })
+}
+
+pub fn bench_session_is_current(
+    previous: &Value,
+    fresh: &Value,
+    elapsed: std::time::Duration,
+) -> bool {
+    let Some(game_id) = previous["gameId"].as_i64().filter(|id| *id > 0) else {
+        return false;
+    };
+    if fresh["gameId"].as_i64() != Some(game_id)
+        || fresh["localPlayerCellId"] != previous["localPlayerCellId"]
+        || fresh["timer"]["phase"] != previous["timer"]["phase"]
+    {
+        return false;
+    }
+    let (Some(before), Some(now)) = (player(previous), player(fresh)) else {
+        return false;
+    };
+    if before["championId"] != now["championId"] {
+        return false;
+    }
+    // Reserve a short round-trip margin; a late response must not trigger an expired swap.
+    fresh["timer"]["adjustedTimeLeftInPhase"]
+        .as_f64()
+        .is_some_and(|ms| ms > elapsed.as_secs_f64() * 1000.0 + 250.0)
 }
 
 pub fn action_is_current(
@@ -141,6 +173,41 @@ mod tests {
     use super::*;
     use crate::models::automation::{AutomationProfile, AutomationSettings};
     use serde_json::json;
+    #[test]
+    fn bench_revalidation_rejects_new_games_changed_champions_and_expired_timers() {
+        let base = json!({"gameId":10,"localPlayerCellId":1,"myTeam":[{"cellId":1,"championId":3}],"timer":{"phase":"FINALIZATION","adjustedTimeLeftInPhase":4000.5}});
+        let delay = std::time::Duration::from_millis(200);
+        assert!(bench_session_is_current(&base, &base, delay));
+        for (pointer, value) in [
+            ("/gameId", json!(11)),
+            ("/localPlayerCellId", json!(2)),
+            ("/myTeam/0/championId", json!(2)),
+            ("/timer/phase", json!("BAN_PICK")),
+            ("/timer/adjustedTimeLeftInPhase", json!(450)),
+            ("/timer/adjustedTimeLeftInPhase", json!(0)),
+            ("/timer/adjustedTimeLeftInPhase", json!(null)),
+        ] {
+            let mut fresh = base.clone();
+            *fresh.pointer_mut(pointer).unwrap() = value;
+            assert!(!bench_session_is_current(&base, &fresh, delay), "{pointer}");
+        }
+        assert!(!bench_session_is_current(
+            &base,
+            &base,
+            std::time::Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn bench_unlock_supports_fractional_milliseconds_and_stops_at_expiry() {
+        let mut session = json!({"localPlayerCellId":1,"myTeam":[{"cellId":1,"championId":3}],"benchEnabled":true,"benchChampions":[{"championId":1}],"timer":{"phase":"FINALIZATION","totalTimeInPhase":45000.5,"adjustedTimeLeftInPhase":42000.6}});
+        assert_eq!(bench_pick(&session, &[1, 3], &[1], &[], true), None);
+        session["timer"]["adjustedTimeLeftInPhase"] = json!(42000.5);
+        assert_eq!(bench_pick(&session, &[1, 3], &[1], &[], true), Some(1));
+        session["timer"]["adjustedTimeLeftInPhase"] = json!(0);
+        assert_eq!(bench_pick(&session, &[1, 3], &[1], &[], true), None);
+    }
+
     #[test]
     fn queue_policy_rejects_unknown_games_and_separates_modes() {
         for (game_mode, id, expected) in [

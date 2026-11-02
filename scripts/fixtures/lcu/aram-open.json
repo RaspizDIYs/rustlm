@@ -1,0 +1,13 @@
+{
+  "metadata": { "source": "synthetic", "region": "TEST", "clientPatch": null },
+  "flow": { "phase": "ChampSelect", "gameData": { "gameId": 100, "queue": { "id": 450, "gameMode": "ARAM", "mapId": 12 } } },
+  "ready": { "state": "Invalid", "playerResponse": "None", "timer": 0 },
+  "session": {
+    "gameId": 100, "localPlayerCellId": 1,
+    "myTeam": [{ "cellId": 1, "championId": 3, "assignedPosition": "" }],
+    "actions": [], "benchEnabled": true,
+    "benchChampions": [{ "championId": 1 }, { "championId": 2 }],
+    "timer": { "phase": "FINALIZATION", "totalTimeInPhase": 45000, "adjustedTimeLeftInPhase": 40000 }
+  },
+  "pickable": [1, 2, 3]
+}

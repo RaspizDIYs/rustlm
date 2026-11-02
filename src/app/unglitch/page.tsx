@@ -20,12 +20,21 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { WithTooltip } from "@/components/ui/with-tooltip";
+import { Switch } from "@/components/ui/switch";
+import { UnglitchDiagnostics } from "@/components/unglitch-diagnostics";
 import {
   UNGLITCH_ACTIONS,
   actionAvailable,
   confirmationRequired,
   getUnglitchStatus,
   executeUnglitch,
+  getUnglitchWatch,
+  setUnglitchWatch,
+  watchLabel,
+  type UnglitchWatch,
+  getClientDiagnostics,
+  exportClientDiagnostics,
+  type ClientDiagnostics,
   type UnglitchAction,
   type UnglitchStatus,
 } from "@/lib/unglitch";
@@ -49,6 +58,12 @@ const phases: Record<string, string> = {
 };
 export default function UnglitchPage() {
   const [status, setStatus] = useState<UnglitchStatus | null>(null);
+  const [watch, setWatch] = useState<UnglitchWatch | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ClientDiagnostics | null>(null);
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const diagnosticPending = useRef(false);
+  const [savingWatch, setSavingWatch] = useState(false);
+  const changingWatch = useRef(false);
   const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState<UnglitchAction | null>(null);
   const [confirm, setConfirm] = useState<UnglitchAction | null>(null);
@@ -65,9 +80,11 @@ export default function UnglitchPage() {
     const started = revision.current;
     if (showSpinner) setChecking(true);
     try {
-      const next = await getUnglitchStatus();
+      const [next, nextWatch, nextDiagnostics] = await Promise.all([getUnglitchStatus(), getUnglitchWatch(), getClientDiagnostics()]);
       if (mounted.current && started === revision.current) {
         setStatus(next);
+        if (!diagnosticPending.current) setDiagnostics(nextDiagnostics);
+        if (!changingWatch.current) setWatch(nextWatch);
         setStatusError("");
       }
     } catch {
@@ -127,6 +144,43 @@ export default function UnglitchPage() {
     }
   };
   const confirmation = UNGLITCH_ACTIONS.find((item) => item.id === confirm);
+  const probeDiagnostics = async (exportReport = false) => {
+    if (diagnosticPending.current) return;
+    diagnosticPending.current = true;
+    setDiagnosticBusy(true);
+    ++revision.current;
+    setError("");
+    try {
+      if (exportReport) {
+        const path = await exportClientDiagnostics();
+        if (mounted.current) setMessage(`Отчёт сохранён: ${path}`);
+      } else {
+        const next = await getClientDiagnostics(true);
+        if (mounted.current) setDiagnostics(next);
+      }
+    } catch {
+      if (mounted.current) setError("Не удалось выполнить диагностику.");
+    } finally {
+      diagnosticPending.current = false;
+      if (mounted.current) setDiagnosticBusy(false);
+    }
+  };
+  const toggleWatch = async (enabled: boolean) => {
+    if (changingWatch.current) return;
+    changingWatch.current = true;
+    setSavingWatch(true);
+    setError("");
+    ++revision.current;
+    try {
+      const next = await setUnglitchWatch(enabled);
+      if (mounted.current) setWatch(next);
+    } catch {
+      if (mounted.current) setError("Не удалось сохранить автовосстановление.");
+    } finally {
+      changingWatch.current = false;
+      if (mounted.current) setSavingWatch(false);
+    }
+  };
   return (
     <div className="flex max-w-4xl flex-col gap-3">
       <header className="flex items-center justify-between gap-3">
@@ -134,6 +188,14 @@ export default function UnglitchPage() {
           <WandSparkles className="size-5 text-primary" />
           <h1 className="text-lg font-semibold">Unglitch</h1>
         </div>
+        <div className="flex items-center gap-3">
+          <WithTooltip label="Работает в фоне; во время поиска и матча интерфейс не перезапускается.">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              Автовосстановление
+              <Switch size="sm" checked={watch?.enabled ?? false} disabled={!watch || savingWatch}
+                aria-label="Автовосстановление Unglitch" onCheckedChange={(enabled) => void toggleWatch(enabled)} />
+            </label>
+          </WithTooltip>
         <WithTooltip label="Обновить состояние">
           <Button
             size="icon-sm"
@@ -148,6 +210,7 @@ export default function UnglitchPage() {
             <RefreshCw className={checking ? "animate-spin" : undefined} />
           </Button>
         </WithTooltip>
+        </div>
       </header>
       <p className="text-xs text-muted-foreground">
         Восстановление интерфейса League без полного перезапуска клиента.
@@ -155,8 +218,11 @@ export default function UnglitchPage() {
       <div
         className="flex flex-wrap items-center gap-2"
         aria-label="Состояние League"
-        aria-live="polite"
       >
+        <Badge variant={watch?.state === "recovering" ? "secondary" : "outline"} aria-live="polite">
+          {watch?.state === "recovering" && <Loader2 className="size-3 animate-spin" />}
+          {watchLabel(watch)}
+        </Badge>
         <Badge variant="outline">
           League:{" "}
           {status
@@ -178,7 +244,10 @@ export default function UnglitchPage() {
             {phases[status.phase] || "Клиент работает"}
           </Badge>
         )}
+        {status?.window_responsive === false && <Badge variant="destructive">Окно не отвечает</Badge>}
+        {status?.response_ms != null && <Badge variant="outline">{status.response_ms} мс</Badge>}
       </div>
+      {watch?.last_result && <p role="status" className="text-xs text-muted-foreground">Авто: {watch.last_result}</p>}
       {(error || statusError) && (
         <p
           role="alert"
@@ -216,6 +285,7 @@ export default function UnglitchPage() {
                   disabled={
                     checking ||
                     busy !== null ||
+                    watch?.state === "recovering" ||
                     !actionAvailable(item.id, status)
                   }
                   onClick={() => void run(item.id)}
@@ -232,6 +302,8 @@ export default function UnglitchPage() {
           );
         })}
       </div>
+      <UnglitchDiagnostics report={diagnostics} busy={diagnosticBusy}
+        onProbe={() => void probeDiagnostics()} onExport={() => void probeDiagnostics(true)} />
       <Dialog
         open={confirm !== null}
         onOpenChange={(open) => {

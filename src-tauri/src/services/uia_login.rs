@@ -10,6 +10,62 @@ use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+/// Read-only, bounded inspection. No focus, clicks, text extraction or UI changes.
+pub fn inspect_client_ui(pid: u32) -> super::client_diagnostics::UiSample {
+    use super::client_diagnostics::{selected_screen, UiSample};
+    fn inspect(pid: u32) -> Result<UiSample> {
+        let hwnd = find_main_window_for_pid(pid).ok_or_else(|| Error::from_win32())?;
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+            struct Com;
+            impl Drop for Com { fn drop(&mut self) { unsafe { CoUninitialize(); } } }
+            let _com = Com;
+            let automation: IUIAutomation2 = CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
+            automation.SetConnectionTimeout(200)?;
+            automation.SetTransactionTimeout(150)?;
+            let root = automation.ElementFromHandle(hwnd)?;
+            if root.CurrentProcessId()? != pid as i32 { return Err(Error::from_win32()); }
+            let mut sample = UiSample::empty("available"); sample.pid = Some(pid);
+            if root.CurrentIsOffscreen()?.as_bool() { sample.state = "hidden"; return Ok(sample); }
+            let walker = automation.ControlViewWalker()?;
+            let deadline = std::time::Instant::now() + Duration::from_millis(750);
+            let mut queue = std::collections::VecDeque::from([(root, 0usize)]);
+            let mut discovered = 1;
+            while let Some((element, depth)) = queue.pop_front() {
+                if sample.elements >= 120 || std::time::Instant::now() >= deadline { sample.partial = true; break; }
+                if element.CurrentProcessId().ok() != Some(pid as i32) { continue; }
+                sample.elements += 1;
+                let visible = element.CurrentIsOffscreen().map(|v| !v.as_bool()).unwrap_or(false);
+                if visible {
+                    if let Ok(control) = element.CurrentControlType() {
+                        if control == UIA_ProgressBarControlTypeId { sample.progress += 1; }
+                        if control == UIA_ButtonControlTypeId && element.CurrentIsEnabled().map(|v| !v.as_bool()).unwrap_or(false) {
+                            sample.disabled_buttons += 1;
+                        }
+                        if control == UIA_TabItemControlTypeId {
+                            if let Ok(selected) = element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId) {
+                                if selected.CurrentIsSelected().map(|v| v.as_bool()).unwrap_or(false) {
+                                    if let Ok(name) = element.CurrentName() { sample.screen = selected_screen(&name.to_string()); }
+                                }
+                            }
+                        }
+                    }
+                }
+                if depth >= 8 { sample.partial = true; continue; }
+                let mut child = walker.GetFirstChildElement(&element).ok();
+                while let Some(element) = child {
+                    if discovered >= 120 || std::time::Instant::now() >= deadline { sample.partial = true; break; }
+                    child = walker.GetNextSiblingElement(&element).ok();
+                    queue.push_back((element, depth + 1)); discovered += 1;
+                }
+            }
+            if sample.elements <= 1 { sample.state = "limited"; }
+            Ok(sample)
+        }
+    }
+    inspect(pid).unwrap_or_else(|_| super::client_diagnostics::UiSample::empty("unavailable"))
+}
+
 /// Attempt to log in to Riot Client by automating the login form via UI Automation.
 /// This must be called from a COM STA thread (use `spawn_blocking`).
 /// Pass `cancel` to allow early abort from the UI.

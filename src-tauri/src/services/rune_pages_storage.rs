@@ -8,6 +8,10 @@ pub struct RunePagesStorage {
 }
 
 impl RunePagesStorage {
+    #[cfg(test)]
+    pub(crate) fn for_test(file_path: PathBuf) -> Self {
+        Self { file_path }
+    }
     pub fn new() -> Self {
         let roaming = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))

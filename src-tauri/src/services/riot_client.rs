@@ -22,6 +22,7 @@ use crate::models::league_client::{ClientConnectivityStatus, LockfileInfo};
 pub struct RiotClientService {
     cached_lcu_auth: Mutex<Option<(u16, String)>>,
     http_client: reqwest::Client,
+    pub diagnostics: std::sync::Arc<super::client_diagnostics::ClientDiagnostics>,
 }
 
 impl RiotClientService {
@@ -29,6 +30,8 @@ impl RiotClientService {
         // Create HTTP client that ignores self-signed certs (LCU uses self-signed)
         let http_client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(10))
             .http1_only()
             .build()
@@ -37,6 +40,7 @@ impl RiotClientService {
         Self {
             cached_lcu_auth: Mutex::new(None),
             http_client,
+            diagnostics: std::sync::Arc::new(super::client_diagnostics::ClientDiagnostics::default()),
         }
     }
 
@@ -334,6 +338,58 @@ impl RiotClientService {
         (false, false, vec![])
     }
 
+    pub fn unglitch_probe() -> crate::models::unglitch::UxProbe {
+        use crate::models::unglitch::UxProbe;
+        #[cfg(not(windows))]
+        return UxProbe::default();
+        #[cfg(windows)]
+        {
+            use windows::core::BOOL;
+            use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId,
+                IsHungAppWindow, IsWindowVisible, SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_ERRORONEXIT, WM_NULL};
+            struct WindowProbe { pid: u32, responsive: Option<bool> }
+            unsafe extern "system" fn inspect(hwnd: HWND, param: LPARAM) -> BOOL {
+                let data = &mut *(param.0 as *mut WindowProbe);
+                let mut pid = 0;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                if pid != data.pid || !IsWindowVisible(hwnd).as_bool() { return BOOL(1); }
+                let result = SendMessageTimeoutW(hwnd, WM_NULL, WPARAM(0), LPARAM(0),
+                    SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT, 500, None);
+                // A denied probe is not evidence of a freeze. Require Windows' hung-window signal too.
+                data.responsive = if result.0 != 0 { Some(true) }
+                    else if IsHungAppWindow(hwnd).as_bool() { Some(false) } else { None };
+                BOOL(0)
+            }
+            let backends = Self::find_process_pids("LeagueClient.exe");
+            let interfaces = Self::find_process_pids("LeagueClientUx.exe");
+            let backend_pid = (backends.len() == 1).then(|| backends[0]);
+            let ui_pid = (interfaces.len() == 1).then(|| interfaces[0]);
+            let root = backend_pid.and_then(Self::process_path)
+                .and_then(|path| path.parent().map(|p| p.to_path_buf()));
+            let same_install = root.as_ref().is_some_and(|root| ui_pid.and_then(Self::process_path)
+                .and_then(|path| path.parent().map(|p| p.to_path_buf()))
+                .is_some_and(|parent| parent.to_string_lossy().eq_ignore_ascii_case(&root.to_string_lossy())));
+            let session_matches = Self::find_lcu_lockfile()
+                .is_some_and(|lock| Some(lock.pid) == backend_pid || Some(lock.pid) == ui_pid);
+            let mut window = WindowProbe { pid: ui_pid.unwrap_or(0), responsive: None };
+            if ui_pid.is_some() && same_install {
+                unsafe { let _ = EnumWindows(Some(inspect), LPARAM(&mut window as *mut WindowProbe as isize)); }
+            }
+            let renderer_pids = Self::find_process_pids("LeagueClientUxRender.exe");
+            let renderer_count = root.as_ref().map(|root| renderer_pids.iter().copied()
+                .filter(|pid| Self::unglitch_renderer_matches(*pid, root)).count()).unwrap_or(0);
+            // An unreadable or differently located renderer is unknown, not proof that it disappeared.
+            let render_scope_known = renderer_pids.is_empty() || renderer_count > 0;
+            UxProbe {
+                backend_running: !backends.is_empty(), ui_running: !interfaces.is_empty(),
+                backend_pid, ui_pid, renderer_count, window_responsive: window.responsive,
+                game_running: Self::is_process_running("League of Legends.exe"),
+                scope_verified: same_install && session_matches && render_scope_known,
+            }
+        }
+    }
+
     pub fn unglitch_renderer_matches(pid: u32, root: &std::path::Path) -> bool {
         #[cfg(windows)]
         return Self::process_path(pid)
@@ -527,6 +583,17 @@ impl RiotClientService {
     // --- LCU HTTP API ---
 
     pub fn get_lcu_auth(&self) -> Option<(u16, String)> {
+        #[cfg(debug_assertions)]
+        if let Some(path) = env::var_os("RUSTLM_TEST_LCU") {
+            // Explicit debug override: a missing/invalid simulator must never fall back to real League.
+            let data = fs::read(path).ok()?;
+            let config: serde_json::Value = serde_json::from_slice(&data).ok()?;
+            let port = u16::try_from(config["port"].as_u64()?)
+                .ok()
+                .filter(|p| *p > 0)?;
+            let password = config["password"].as_str()?.to_owned();
+            return (!password.is_empty()).then_some((port, password));
+        }
         // Check cache first
         {
             let cache = self.cached_lcu_auth.lock().unwrap();
@@ -558,159 +625,91 @@ impl RiotClientService {
         format!("Basic {}", encoded)
     }
 
+    pub fn lcu_websocket_url(&self, port: u16) -> String {
+        #[cfg(debug_assertions)]
+        if env::var_os("RUSTLM_TEST_LCU").is_some() {
+            return format!("ws://127.0.0.1:{}/", port);
+        }
+        format!("wss://127.0.0.1:{}/", port)
+    }
+
+    async fn lcu_request(
+        &self,
+        method: reqwest::Method,
+        endpoint: &str,
+        body: Option<&str>,
+    ) -> Result<String, AppError> {
+        if !endpoint.starts_with('/') || endpoint.starts_with("//") {
+            return Err(AppError::Custom("Invalid LCU endpoint".into()));
+        }
+        let (port, password) = self
+            .get_lcu_auth()
+            .ok_or_else(|| AppError::Custom("LCU not connected".into()))?;
+        let scheme = "https";
+        #[cfg(debug_assertions)]
+        let scheme = if env::var_os("RUSTLM_TEST_LCU").is_some() {
+            "http"
+        } else {
+            scheme
+        };
+        let url = format!("{}://127.0.0.1:{}{}", scheme, port, endpoint);
+        let mut request = self
+            .http_client
+            .request(method.clone(), url)
+            .header(AUTHORIZATION, Self::make_auth_header(&password))
+            .header(CONTENT_TYPE, "application/json");
+        if let Some(body) = body {
+            request = request.body(body.to_owned());
+        }
+        let started = std::time::Instant::now();
+        let response = request.send().await.map_err(|_| {
+            self.diagnostics.request(method.as_str(), endpoint, None, started.elapsed());
+            self.invalidate_cache();
+            AppError::Custom(format!(
+                "LCU {} {}: connection failed or timed out",
+                method, endpoint
+            ))
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            self.diagnostics.request(method.as_str(), endpoint, Some(status.as_u16()), started.elapsed());
+            if matches!(status.as_u16(), 401 | 403) {
+                self.invalidate_cache();
+            }
+            // Server response bodies can contain account data; log only method, route and status.
+            return Err(AppError::Custom(format!(
+                "LCU {} {} returned {}",
+                method, endpoint, status
+            )));
+        }
+        let text = response.text().await.map_err(|_| {
+            self.diagnostics.request(method.as_str(), endpoint, None, started.elapsed());
+            AppError::Custom("LCU response read failed".into())
+        })?;
+        self.diagnostics.request(method.as_str(), endpoint, Some(status.as_u16()), started.elapsed());
+        Ok(text)
+    }
+
     pub async fn lcu_get(&self, endpoint: &str) -> Result<String, AppError> {
-        let (port, password) = self
-            .get_lcu_auth()
-            .ok_or_else(|| AppError::Custom("LCU not connected".to_string()))?;
-
-        let url = format!("https://127.0.0.1:{}{}", port, endpoint);
-        let auth = Self::make_auth_header(&password);
-
-        let response = self
-            .http_client
-            .get(&url)
-            .header(AUTHORIZATION, &auth)
-            .header(CONTENT_TYPE, "application/json")
-            .send()
-            .await
-            .map_err(|e| AppError::Custom(format!("LCU GET failed: {}", e)))?;
-
-        let text = response
-            .text()
-            .await
-            .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
-
-        Ok(text)
+        self.lcu_request(reqwest::Method::GET, endpoint, None).await
     }
-
     pub async fn lcu_post(&self, endpoint: &str, body: &str) -> Result<String, AppError> {
-        let (port, password) = self
-            .get_lcu_auth()
-            .ok_or_else(|| AppError::Custom("LCU not connected".to_string()))?;
-
-        let url = format!("https://127.0.0.1:{}{}", port, endpoint);
-        let auth = Self::make_auth_header(&password);
-
-        let response = self
-            .http_client
-            .post(&url)
-            .header(AUTHORIZATION, &auth)
-            .header(CONTENT_TYPE, "application/json")
-            .body(body.to_string())
-            .send()
+        self.lcu_request(reqwest::Method::POST, endpoint, Some(body))
             .await
-            .map_err(|e| AppError::Custom(format!("LCU POST failed: {}", e)))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
-
-        if !status.is_success() {
-            return Err(AppError::Custom(format!(
-                "LCU POST {} returned {}: {}",
-                endpoint, status, text
-            )));
-        }
-
-        Ok(text)
     }
-
     pub async fn lcu_put(&self, endpoint: &str, body: &str) -> Result<String, AppError> {
-        let (port, password) = self
-            .get_lcu_auth()
-            .ok_or_else(|| AppError::Custom("LCU not connected".to_string()))?;
-
-        let url = format!("https://127.0.0.1:{}{}", port, endpoint);
-        let auth = Self::make_auth_header(&password);
-
-        let response = self
-            .http_client
-            .put(&url)
-            .header(AUTHORIZATION, &auth)
-            .header(CONTENT_TYPE, "application/json")
-            .body(body.to_string())
-            .send()
+        self.lcu_request(reqwest::Method::PUT, endpoint, Some(body))
             .await
-            .map_err(|e| AppError::Custom(format!("LCU PUT failed: {}", e)))?;
-
-        let text = response
-            .text()
-            .await
-            .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
-
-        Ok(text)
     }
-
     pub async fn lcu_delete(&self, endpoint: &str) -> Result<String, AppError> {
-        let (port, password) = self
-            .get_lcu_auth()
-            .ok_or_else(|| AppError::Custom("LCU not connected".to_string()))?;
-
-        let url = format!("https://127.0.0.1:{}{}", port, endpoint);
-        let auth = Self::make_auth_header(&password);
-
-        let response = self
-            .http_client
-            .delete(&url)
-            .header(AUTHORIZATION, &auth)
-            .send()
+        self.lcu_request(reqwest::Method::DELETE, endpoint, None)
             .await
-            .map_err(|e| AppError::Custom(format!("LCU DELETE failed: {}", e)))?;
-
-        let text = response
-            .text()
-            .await
-            .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
-
-        Ok(text)
     }
-
     pub async fn lcu_patch(&self, endpoint: &str, body: &str) -> Result<String, AppError> {
-        let (port, password) = self
-            .get_lcu_auth()
-            .ok_or_else(|| AppError::Custom("LCU not connected".to_string()))?;
-
-        let url = format!("https://127.0.0.1:{}{}", port, endpoint);
-        let auth = Self::make_auth_header(&password);
-
-        // Parse body to JSON value and use .json() for proper serialization
-        let json_body: serde_json::Value = serde_json::from_str(body)
-            .map_err(|e| AppError::Custom(format!("Invalid JSON body: {}", e)))?;
-
-        log::info!("[LCU] PATCH {} sending: {}", endpoint, body);
-
-        let response = self
-            .http_client
-            .patch(&url)
-            .header(AUTHORIZATION, &auth)
-            .json(&json_body)
-            .send()
+        serde_json::from_str::<serde_json::Value>(body)
+            .map_err(|_| AppError::Custom("Invalid JSON body".into()))?;
+        self.lcu_request(reqwest::Method::PATCH, endpoint, Some(body))
             .await
-            .map_err(|e| AppError::Custom(format!("LCU PATCH failed: {}", e)))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| AppError::Custom(format!("LCU response read failed: {}", e)))?;
-
-        log::info!(
-            "[LCU] PATCH {} -> {} resp={}",
-            endpoint,
-            status,
-            &text[..text.len().min(300)]
-        );
-
-        if !status.is_success() {
-            return Err(AppError::Custom(format!(
-                "LCU PATCH {} returned {}: {}",
-                endpoint, status, text
-            )));
-        }
-
-        Ok(text)
     }
 
     // --- Account Info ---

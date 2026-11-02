@@ -135,6 +135,10 @@ pub fn run() {
             commands::riot_client::is_league_running,
             commands::unglitch::unglitch_status,
             commands::unglitch::unglitch_execute,
+            commands::unglitch::unglitch_watch_status,
+            commands::unglitch::unglitch_diagnostics,
+            commands::unglitch::unglitch_export_diagnostics,
+            commands::unglitch::unglitch_watch_enabled,
             commands::riot_client::kill_league,
             commands::riot_client::start_riot_client,
             commands::riot_client::restart_league,
@@ -280,6 +284,10 @@ pub fn run() {
             });
 
             state.cloud_sync.set_app_handle(app.handle().clone());
+            tauri::async_runtime::spawn(state.unglitch.clone().run(
+                state.riot_client.clone(), state.logger.clone(),
+            ));
+            tauri::async_runtime::spawn(state.riot_client.diagnostics.clone().run(state.logger.clone()));
             state.cloud_sync.start_debounce_loop(&app.handle().clone());
 
             let cleanup_handle = app.handle().clone();
