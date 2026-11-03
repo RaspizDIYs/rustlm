@@ -24,6 +24,20 @@ pub struct LocalVault {
     pub revision: Option<String>,
     pub baseline: Option<Value>,
 }
+impl LocalVault {
+    pub fn open_remote(&mut self, user: &str, envelope: &Envelope) -> Result<Value, AppError> {
+        match open(user, &self.key, envelope) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let Some(pending) = self.pending_key.as_ref() else { return Err(error); };
+                let value = open(user, pending, envelope)?;
+                self.key = pending.clone();
+                self.pending_key = None;
+                Ok(value)
+            }
+        }
+    }
+}
 fn error() -> AppError {
     AppError::Custom(
         "Хранилище не удалось расшифровать: проверьте код подключения и аккаунт GoodLuck".into(),
@@ -144,6 +158,20 @@ pub fn merge_with_choice(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn interrupted_rotation_recovers_only_the_key_matching_remote_data() {
+        let old = new_key(); let new = new_key();
+        let value = json!({"accounts":{}});
+        let mut state = LocalVault { key:old.clone(), pending_key:Some(new.clone()), ..Default::default() };
+        assert_eq!(state.open_remote("synthetic-user", &seal("synthetic-user", &old, &value).unwrap()).unwrap(), value);
+        assert_eq!(state.key, old);
+        assert_eq!(state.pending_key, Some(new.clone()));
+        assert!(state.open_remote("wrong-user", &seal("synthetic-user", &new, &value).unwrap()).is_err());
+        assert_eq!(state.key, old);
+        assert_eq!(state.open_remote("synthetic-user", &seal("synthetic-user", &new, &value).unwrap()).unwrap(), value);
+        assert_eq!(state.key, new);
+        assert!(state.pending_key.is_none());
+    }
     #[test]
     fn first_join_and_conflict_choice_keep_accounts_unique_to_either_pc() {
         let base = json!({"accounts":{}});

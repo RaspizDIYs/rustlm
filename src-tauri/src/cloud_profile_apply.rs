@@ -16,7 +16,7 @@ pub async fn apply_cloud_profile(
     if let Some(ref us) = payload.update_settings {
         state.settings.save_update_settings(us)?;
     }
-    crate::commands::auto_accept::load_persisted_automation_settings(state);
+    crate::commands::auto_accept::load_persisted_automation_settings(state).await;
     state.reveal.reload_from_settings().await;
     Ok(imported)
 }

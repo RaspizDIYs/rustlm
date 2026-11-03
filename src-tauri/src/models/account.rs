@@ -119,6 +119,8 @@ pub struct ExportAccountRecord {
     #[serde(default)]
     pub rank_icon_url: String,
     #[serde(default)]
+    pub server: String,
+    #[serde(default)]
     pub summoner_level: i32,
     #[serde(default)]
     pub pinned: bool,

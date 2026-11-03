@@ -975,11 +975,22 @@ impl RiotClientService {
         body: Option<&str>,
         log_errors: bool,
     ) -> Result<String, AppError> {
-        let lockfile = Self::find_rc_lockfile()
-            .ok_or_else(|| AppError::Custom("RC lockfile not found".to_string()))?;
-
-        let url = format!("https://127.0.0.1:{}{}", lockfile.port, endpoint);
-        let auth = Self::make_auth_header(&lockfile.password);
+        if !endpoint.starts_with('/') || endpoint.starts_with("//") {
+            return Err(AppError::Custom("Invalid RC endpoint".into()));
+        }
+        #[cfg(debug_assertions)]
+        let simulated = env::var_os("RUSTLM_TEST_LCU").is_some();
+        #[cfg(not(debug_assertions))]
+        let simulated = false;
+        let (port, password, scheme) = if simulated {
+            let (port, password) = self.get_lcu_auth().ok_or_else(|| AppError::Custom("RC simulator not connected".into()))?;
+            (port, password, "http")
+        } else {
+            let lockfile = Self::find_rc_lockfile().ok_or_else(|| AppError::Custom("RC lockfile not found".into()))?;
+            (lockfile.port, lockfile.password, "https")
+        };
+        let url = format!("{scheme}://127.0.0.1:{port}{endpoint}");
+        let auth = Self::make_auth_header(&password);
 
         let mut req = self
             .http_client
@@ -1002,17 +1013,13 @@ impl RiotClientService {
             .await
             .map_err(|e| AppError::Custom(format!("RC response read failed: {}", e)))?;
 
-        if log_errors && !status.is_success() {
-            eprintln!(
-                "[RC_API] {} → {} | {}",
-                endpoint,
-                status.as_u16(),
-                if text.len() > 200 {
-                    &text[..200]
-                } else {
-                    &text
-                }
-            );
+        if !status.is_success() {
+            // RC error bodies may contain account or authorization data.
+            let eula = serde_json::from_str::<serde_json::Value>(&text).ok()
+                .is_some_and(|body| body["errorCode"] == "eula_not_accepted" || body["error"] == "eula_not_accepted");
+            let message = format!("RC {}: HTTP {}{}", endpoint, status.as_u16(), if eula { " eula_not_accepted" } else { "" });
+            if log_errors { log::warn!("{}", message); }
+            return Err(AppError::Custom(message));
         }
 
         Ok(text)
@@ -1038,25 +1045,31 @@ impl RiotClientService {
 
     /// Check if a user is currently authorized via RSO (Riot Sign-On).
     pub async fn is_rso_authorized(&self) -> bool {
+        self.rso_authorization_state().await == Some(true)
+    }
+
+    pub async fn rso_authorization_state(&self) -> Option<bool> {
+        let mut observed = false;
         for ep in ["/rso-auth/v2/authorizations", "/rso-auth/v1/authorization"] {
             let resp = match self.rc_request_silent(reqwest::Method::GET, ep, None).await {
                 Ok(r) => r,
                 Err(_) => continue,
             };
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
-                if json.get("errorCode").is_some() {
+                if !json.is_object() || json.get("errorCode").is_some() {
                     continue;
                 }
+                observed = true;
                 if json.get("isAuthorized").and_then(|v| v.as_bool()) == Some(true) {
-                    return true;
+                    return Some(true);
                 }
                 if let Some(auth) = json.get("authorization") {
-                    if auth.get("accessToken").and_then(|v| v.as_str()).is_some() {
-                        return true;
+                    if auth.get("accessToken").and_then(|v| v.as_str()).is_some_and(|token| !token.is_empty()) {
+                        return Some(true);
                     }
                 }
                 if json.get("authorized").and_then(|v| v.as_bool()) == Some(true) {
-                    return true;
+                    return Some(true);
                 }
                 if json
                     .get("subject")
@@ -1064,18 +1077,18 @@ impl RiotClientService {
                     .map(|s| !s.is_empty())
                     == Some(true)
                 {
-                    return true;
+                    return Some(true);
                 }
                 if json
                     .get("currentAccountId")
                     .and_then(|v| v.as_u64())
-                    .is_some()
+                    .is_some_and(|id| id > 0)
                 {
-                    return true;
+                    return Some(true);
                 }
             }
         }
-        false
+        observed.then_some(false)
     }
 
     /// Initialize RSO session — required before login_via_rc can work.
@@ -1186,6 +1199,7 @@ impl RiotClientService {
                     // This is not a routing error, stop trying other endpoints.
                     return Err(AppError::Custom("eula_not_accepted".to_string()));
                 }
+                Err(e) if e.to_string().contains("eula_not_accepted") => return Err(e),
                 _ => continue,
             }
         }
@@ -1284,7 +1298,7 @@ impl RiotClientService {
     pub async fn wait_for_rso_state(&self, authorized: bool, timeout: Duration) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            if self.is_rso_authorized().await == authorized {
+            if self.rso_authorization_state().await == Some(authorized) {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1427,5 +1441,28 @@ mod native_process_tests {
             std::env::current_exe().unwrap()
         );
         assert!(super::RiotClientService::process_path(0).is_none());
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod rc_simulator_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_rc_rejects_http_errors_and_does_not_confirm_unknown_logout() {
+        assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
+        let client = RiotClientService::new();
+        for status in [401, 403, 404, 429, 500, 503] {
+            client.lcu_post("/__test/failure", &format!(r#"{{"route":"/lol-gameflow/v1/session","status":{status}}}"#)).await.unwrap();
+            let error = client.rc_request_impl(reqwest::Method::GET, "/lol-gameflow/v1/session", None, true).await.unwrap_err().to_string();
+            assert!(error.contains(&status.to_string()));
+            assert!(!error.contains("synthetic private response"));
+        }
+        assert!(client.rc_request_impl(reqwest::Method::GET, "/lol-gameflow/v1/session", None, false).await.is_ok());
+        assert!(client.rc_request_impl(reqwest::Method::GET, "//other-host", None, false).await.is_err());
+        assert!(client.init_rso_session().await.is_err());
+        assert!(!client.wait_for_rc_api_ready(Duration::from_millis(1)).await);
+        assert_eq!(client.rso_authorization_state().await, None);
+        assert!(!client.wait_for_rso_state(false, Duration::from_millis(1)).await);
     }
 }

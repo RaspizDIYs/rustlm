@@ -143,22 +143,22 @@ impl RevealService {
         (key, region)
     }
 
-    pub async fn set_api_configuration(&self, api_key: &str, region: &str) {
+    pub async fn set_api_configuration(&self, api_key: &str, region: &str) -> Result<(), AppError> {
+        self.settings.save_settings(&[
+            (REVEAL_API_KEY_SETTING, Value::String(api_key.to_owned())),
+            (REVEAL_REGION_SETTING, Value::String(region.to_owned())),
+        ])?;
         *self.api_key.write().await = if api_key.is_empty() {
             None
         } else {
             Some(api_key.to_string())
         };
         *self.region.write().await = region.to_string();
-        let _ = self
-            .settings
-            .save_setting(REVEAL_API_KEY_SETTING, &api_key.to_string());
-        let _ = self
-            .settings
-            .save_setting(REVEAL_REGION_SETTING, &region.to_string());
         // Регион мог измениться — старые ранги к другому серверу не относятся.
         self.ranked_cache.lock().await.clear();
         self.match_cache.lock().await.clear();
+        self.name_cache.lock().await.clear();
+        Ok(())
     }
 
     pub async fn reload_from_settings(&self) {
@@ -174,6 +174,9 @@ impl RevealService {
             Some(saved_key)
         };
         *self.region.write().await = saved_region;
+        self.ranked_cache.lock().await.clear();
+        self.match_cache.lock().await.clear();
+        self.name_cache.lock().await.clear();
     }
 
     async fn riot_api_get(&self, url: &str) -> Result<String, AppError> {
@@ -1257,6 +1260,28 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn config_failure_preserves_runtime_and_reload_clears_all_caches() {
+        let dir = std::env::temp_dir().join(format!("rustlm-reveal-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let settings = Arc::new(SettingsService::for_test(path.clone()));
+        let service = RevealService::new(Arc::new(RiotClientService::new()), settings.clone(), Arc::new(FileLogger::for_test(dir.join("debug.log"))));
+        service.set_api_configuration("synthetic-key", "ru").await.unwrap();
+        assert_eq!(service.get_api_config().await, ("synthetic-key".into(), "ru".into()));
+        service.ranked_cache.lock().await.insert("a".into(), (Instant::now(), RankedInfo::default()));
+        service.match_cache.lock().await.insert("a".into(), (Instant::now(), vec![]));
+        service.name_cache.lock().await.insert("a".into(), (Instant::now(), None));
+        settings.save_setting(REVEAL_REGION_SETTING, &"euw1").unwrap();
+        service.reload_from_settings().await;
+        assert!(service.ranked_cache.lock().await.is_empty());
+        assert!(service.match_cache.lock().await.is_empty());
+        assert!(service.name_cache.lock().await.is_empty());
+        std::fs::remove_file(&path).unwrap(); std::fs::create_dir(&path).unwrap();
+        assert!(service.set_api_configuration("other-synthetic-key", "na1").await.is_err());
+        assert_eq!(service.get_api_config().await, ("synthetic-key".into(), "euw1".into()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn parse_slot_reads_full_ranked_payload() {
         let member = json!({

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,7 @@ struct LolCfgFile {
 pub struct LolConfigService {
     riot_client: Arc<RiotClientService>,
     logger: Arc<FileLogger>,
+    lock: Mutex<()>,
 }
 
 impl LolConfigService {
@@ -60,6 +61,7 @@ impl LolConfigService {
         Self {
             riot_client,
             logger,
+            lock: Mutex::new(()),
         }
     }
 
@@ -82,6 +84,7 @@ impl LolConfigService {
     }
 
     fn preset_file_path(id: &str) -> Result<PathBuf, AppError> {
+        validate_preset_id(id)?;
         Ok(Self::presets_dir()?.join(format!("{}.json", id)))
     }
 
@@ -104,14 +107,14 @@ impl LolConfigService {
             return Ok(PresetsIndex::default());
         }
         let raw = std::fs::read_to_string(&path)?;
-        let index: PresetsIndex = serde_json::from_str(&raw).unwrap_or_default();
+        let index: PresetsIndex = serde_json::from_str(&raw)?;
         Ok(index)
     }
 
     fn write_index(index: &PresetsIndex) -> Result<(), AppError> {
         let path = Self::metadata_path()?;
         let raw = serde_json::to_string_pretty(index)?;
-        std::fs::write(&path, raw)?;
+        super::network::atomic_write(&path, raw.as_bytes()).map_err(AppError::Custom)?;
         Ok(())
     }
 
@@ -133,6 +136,7 @@ impl LolConfigService {
     }
 
     pub fn set_readonly(&self, readonly: bool) -> Result<(), AppError> {
+        let _guard = self.lock.lock().unwrap();
         let path = self
             .persisted_settings_path()
             .ok_or_else(|| AppError::Custom("Установка League of Legends не найдена".into()))?;
@@ -152,6 +156,7 @@ impl LolConfigService {
     }
 
     pub fn list_presets(&self) -> Result<Vec<PresetMeta>, AppError> {
+        let _guard = self.lock.lock().unwrap();
         let mut index = Self::read_index()?;
         // Drop orphans (preset metadata without backing file on disk).
         let dir = Self::presets_dir()?;
@@ -170,6 +175,7 @@ impl LolConfigService {
     }
 
     pub fn create_preset(&self, name: String) -> Result<PresetMeta, AppError> {
+        let _guard = self.lock.lock().unwrap();
         let trimmed = name.trim().to_string();
         if trimmed.is_empty() {
             return Err(AppError::Custom("Имя пресета не может быть пустым".into()));
@@ -190,7 +196,7 @@ impl LolConfigService {
 
         let id = generate_preset_id();
         let dst = Self::preset_file_path(&id)?;
-        std::fs::write(&dst, raw)?;
+        super::network::atomic_write(&dst, raw.as_bytes()).map_err(AppError::Custom)?;
 
         let meta = PresetMeta {
             id: id.clone(),
@@ -209,6 +215,7 @@ impl LolConfigService {
     }
 
     pub fn apply_preset(&self, id: String) -> Result<(), AppError> {
+        let _guard = self.lock.lock().unwrap();
         let src = Self::preset_file_path(&id)?;
         if !src.exists() {
             return Err(AppError::Custom("Пресет не найден".into()));
@@ -221,8 +228,9 @@ impl LolConfigService {
         }
 
         let raw = std::fs::read_to_string(&src)?;
+        let _: serde_json::Value = serde_json::from_str(&raw)?;
         with_writable_swap(&dst, |target| {
-            std::fs::write(target, &raw)?;
+            super::network::atomic_write(target, raw.as_bytes()).map_err(AppError::Custom)?;
             Ok(())
         })?;
 
@@ -235,6 +243,7 @@ impl LolConfigService {
     }
 
     pub fn delete_preset(&self, id: String) -> Result<(), AppError> {
+        let _guard = self.lock.lock().unwrap();
         let path = Self::preset_file_path(&id)?;
         if path.exists() {
             std::fs::remove_file(&path)?;
@@ -248,6 +257,7 @@ impl LolConfigService {
     }
 
     pub fn export_preset(&self, id: String, dst_path: String) -> Result<(), AppError> {
+        let _guard = self.lock.lock().unwrap();
         let preset_path = Self::preset_file_path(&id)?;
         if !preset_path.exists() {
             return Err(AppError::Custom("Пресет не найден".into()));
@@ -282,6 +292,7 @@ impl LolConfigService {
     }
 
     pub fn import_preset(&self, src_path: String) -> Result<PresetMeta, AppError> {
+        let _guard = self.lock.lock().unwrap();
         let raw = std::fs::read_to_string(&src_path)?;
         let payload: LolCfgFile = serde_json::from_str(&raw)
             .map_err(|e| AppError::Custom(format!("Файл не является валидным .lolcfg: {}", e)))?;
@@ -290,7 +301,7 @@ impl LolConfigService {
                 "Файл не является пресетом RustLM (неверный формат)".into(),
             ));
         }
-        if payload.version > LOLCFG_FORMAT_VERSION {
+        if payload.version != LOLCFG_FORMAT_VERSION {
             return Err(AppError::Custom(format!(
                 "Версия .lolcfg ({}) новее, чем поддерживает приложение",
                 payload.version
@@ -300,7 +311,7 @@ impl LolConfigService {
         let id = generate_preset_id();
         let dst = Self::preset_file_path(&id)?;
         let settings_raw = serde_json::to_string_pretty(&payload.settings)?;
-        std::fs::write(&dst, settings_raw)?;
+        super::network::atomic_write(&dst, settings_raw.as_bytes()).map_err(AppError::Custom)?;
 
         let meta = PresetMeta {
             id: id.clone(),
@@ -317,6 +328,13 @@ impl LolConfigService {
         ));
         Ok(meta)
     }
+}
+
+fn validate_preset_id(id: &str) -> Result<(), AppError> {
+    if !id.starts_with("p_") || id.len() > 100 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-') {
+        return Err(AppError::Custom("Некорректный идентификатор пресета".into()));
+    }
+    Ok(())
 }
 
 // --- Preset ID generation ---
@@ -405,4 +423,29 @@ where
         let _ = set_readonly_attribute(path, true);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn preset_ids_cannot_escape_the_preset_directory() {
+        assert!(validate_preset_id(&generate_preset_id()).is_ok());
+        for id in ["", "..", "../accounts", r"..\accounts", "C:/accounts", "metadata.json", "a:b", "a/b", r"a\b"] {
+            assert!(validate_preset_id(id).is_err(), "{id}");
+        }
+    }
+    #[test]
+    fn failed_config_replacement_restores_readonly_attribute() {
+        let dir = std::env::temp_dir().join(format!("rustlm-config-test-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("PersistedSettings.json");
+        std::fs::write(&path, b"{}").unwrap();
+        set_readonly_attribute(&path, true).unwrap();
+        assert!(with_writable_swap(&path, |_| Err(AppError::Custom("synthetic failure".into()))).is_err());
+        assert!(is_readonly(&path).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        set_readonly_attribute(&path, false).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -397,7 +397,7 @@ pub async fn process_shared_account_cleanups(state: &AppState) -> Result<u32, Ap
             if crate::services::riot_client::RiotClientService::is_league_running() {
                 crate::services::riot_client::RiotClientService::kill_league(false);
             }
-            if state.riot_client.is_rso_authorized().await {
+            if state.riot_client.rso_authorization_state().await != Some(false) {
                 log::warn!(
                     "Shared account {} cleanup: RSO is still authorized",
                     task.id
@@ -501,6 +501,12 @@ pub async fn publish_lm_friends(state: &AppState) -> Result<serde_json::Value, A
         .filter_map(|f| f.get("puuid").and_then(|p| p.as_str()))
         .filter(|p| crate::models::account::is_valid_puuid(p))
         .collect();
+    let verified: serde_json::Value = serde_json::from_str(
+        &state.riot_client.lcu_get("/lol-summoner/v1/current-summoner").await?
+    )?;
+    if verified.get("puuid").and_then(|v| v.as_str()) != Some(puuid) {
+        return Err(AppError::Custom("Riot-аккаунт изменился во время чтения друзей. Повторите обновление".into()));
+    }
     let mut result = state.goodluck
         .lm_presence(serde_json::json!({"puuid":puuid,"friends":puuids}))
         .await?;

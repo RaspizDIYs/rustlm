@@ -15,6 +15,10 @@ pub struct SettingsService {
 }
 
 impl SettingsService {
+    #[cfg(test)]
+    pub(crate) fn for_test(path: PathBuf) -> Self {
+        Self {settings_path:path.clone(), update_settings_path:path.with_extension("updates.json"), cache:Mutex::new(read_settings(&path).unwrap_or_default())}
+    }
     pub fn new() -> Self {
         let base_dir = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -46,9 +50,15 @@ impl SettingsService {
         let json_value =
             serde_json::to_value(value).map_err(|e| AppError::Custom(e.to_string()))?;
 
+        self.save_settings(&[(key, json_value)])
+    }
+
+    pub fn save_settings(&self, values: &[(&str, Value)]) -> Result<(), AppError> {
         let mut cache = self.cache.lock().unwrap();
         let mut next = cache.clone();
-        next.insert(key.to_string(), json_value);
+        for (key, value) in values {
+            next.insert((*key).to_owned(), value.clone());
+        }
         write_settings(&self.settings_path, &next)?;
         *cache = next;
         Ok(())
@@ -104,6 +114,21 @@ mod tests {
     fn folder() -> PathBuf {
         let path = std::env::temp_dir().join(format!("rustlm-settings-test-{}", rand::random::<u64>()));
         fs::create_dir_all(&path).unwrap(); path
+    }
+    #[test]
+    fn batch_settings_commit_or_fail_together() {
+        let dir = folder();
+        let path = dir.join("settings.json");
+        let service = SettingsService::for_test(path.clone());
+        service.save_settings(&[("method", Value::from("Polling")), ("enabled", Value::from(true))]).unwrap();
+        let saved = SettingsService::for_test(path.clone());
+        assert_eq!(saved.load_setting("method", String::new()), "Polling");
+        assert!(saved.load_setting("enabled", false));
+        std::fs::remove_file(&path).unwrap(); std::fs::create_dir(&path).unwrap();
+        assert!(service.save_settings(&[("method", Value::from("UIA")), ("enabled", Value::from(false))]).is_err());
+        assert_eq!(service.load_setting("method", String::new()), "Polling");
+        assert!(service.load_setting("enabled", false));
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn damaged_primary_recovers_the_last_valid_backup() {

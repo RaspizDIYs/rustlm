@@ -281,7 +281,7 @@ pub fn save_account(account: AccountRecord, state: State<AppState>) -> Result<()
             .accounts
             .load_all()
             .into_iter()
-            .find(|a| a.username == to_save.username)
+            .find(|a| a.username.eq_ignore_ascii_case(&to_save.username))
         {
             to_save.encrypted_password = existing.encrypted_password;
         }

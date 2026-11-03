@@ -7,7 +7,6 @@ use crate::state::AppState;
 const AUTOMATION_SETTINGS_KEY: &str = "AutomationSettings";
 
 pub async fn apply_auto_accept_enabled(state: &AppState, enabled: bool) -> Result<(), String> {
-    state.auto_accept.set_enabled_arc(enabled).await;
     let mut s: AutomationSettings = state
         .settings
         .load_setting(AUTOMATION_SETTINGS_KEY, AutomationSettings::default());
@@ -16,6 +15,7 @@ pub async fn apply_auto_accept_enabled(state: &AppState, enabled: bool) -> Resul
         .settings
         .save_setting(AUTOMATION_SETTINGS_KEY, &s)
         .map_err(|e| e.to_string())?;
+    state.auto_accept.set_enabled_arc(enabled).await;
     trigger_cloud_sync(state);
     Ok(())
 }
@@ -83,7 +83,7 @@ pub async fn set_automation_settings(
     {
         return Err("Некорректный профиль автоматизации".into());
     }
-    resolve_profiles(&state.data_dragon, &mut settings).await;
+    resolve_profiles(&state.data_dragon, &mut settings).await.map_err(|e| e.to_string())?;
     normalize_empty_champion_names(&mut settings);
     // Resolve champion names → numeric IDs
     resolve_champion_id(
@@ -144,7 +144,7 @@ pub async fn get_automation_settings(
 }
 
 /// Load persisted automation settings into AutoAcceptService (called at startup)
-pub fn load_persisted_automation_settings(state: &AppState) {
+pub async fn load_persisted_automation_settings(state: &AppState) {
     let mut settings: AutomationSettings = state
         .settings
         .load_setting(AUTOMATION_SETTINGS_KEY, AutomationSettings::default());
@@ -152,10 +152,14 @@ pub fn load_persisted_automation_settings(state: &AppState) {
         .settings
         .load_setting("AutoAcceptMethod", settings.auto_accept_method);
     state.auto_accept.set_enabled_flag_only(settings.is_enabled);
+    let revision = state.auto_accept.set_settings(settings.clone()).await;
     let auto_accept = state.auto_accept.clone();
     let data_dragon = state.data_dragon.clone();
     tauri::async_runtime::spawn(async move {
-        resolve_profiles(&data_dragon, &mut settings).await;
+        if resolve_profiles(&data_dragon, &mut settings).await.is_err() {
+            log::warn!("[AutoAccept] Champion catalog unavailable; keeping saved champion IDs");
+            return;
+        }
         // Resolve champion names → IDs at startup
         resolve_champion_id_with_dd(
             &data_dragon,
@@ -181,7 +185,7 @@ pub fn load_persisted_automation_settings(state: &AppState) {
             &mut settings.ban_champion_id,
         )
         .await;
-        auto_accept.set_settings(settings).await;
+        auto_accept.refresh_settings_if_unchanged(settings, revision).await;
     });
 }
 
@@ -205,8 +209,8 @@ async fn resolve_champion_id_with_dd(
 async fn resolve_profiles(
     data_dragon: &crate::services::data_dragon::DataDragonService,
     settings: &mut AutomationSettings,
-) {
-    let _ = data_dragon.get_champions().await;
+) -> Result<(), crate::error::AppError> {
+    data_dragon.get_champions().await?;
     for profile in settings.profiles.values_mut() {
         profile.pick_ids.clear();
         for name in &profile.picks {
@@ -216,5 +220,26 @@ async fn resolve_profiles(
         }
         resolve_champion_id_with_dd(data_dragon, &Some(profile.ban.clone()), &mut profile.ban_id)
             .await;
+    }
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn unavailable_champion_catalog_preserves_saved_ids() {
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all("http://127.0.0.1:0").unwrap())
+            .timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let data_dragon = crate::services::data_dragon::DataDragonService::for_test(client);
+        let mut settings = AutomationSettings::default();
+        settings.profiles.insert("aram".into(), crate::models::automation::AutomationProfile {
+            picks: vec!["Annie".into()], pick_ids: vec![1], ban: "Olaf".into(), ban_id: Some(2), ..Default::default()
+        });
+        assert!(resolve_profiles(&data_dragon, &mut settings).await.is_err());
+        assert_eq!(settings.profiles["aram"].pick_ids, vec![1]);
+        assert_eq!(settings.profiles["aram"].ban_id, Some(2));
     }
 }

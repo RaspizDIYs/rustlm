@@ -120,11 +120,13 @@ pub async fn save_setting(
         }
         let mut automation = state.auto_accept.get_settings().await;
         automation.auto_accept_method = method.to_owned();
-        state
-            .settings
-            .save_setting("AutomationSettings", &automation)
-            .map_err(|e| e.to_string())?;
+        state.settings.save_settings(&[
+            ("AutomationSettings", serde_json::to_value(&automation).map_err(|e| e.to_string())?),
+            (key, value.clone()),
+        ]).map_err(|e| e.to_string())?;
         state.auto_accept.set_settings(automation).await;
+        trigger_cloud_sync(&state);
+        return Ok(());
     }
     state
         .settings

@@ -37,6 +37,11 @@ impl DataDragonService {
         }
     }
 
+    #[cfg(test)]
+    pub fn for_test(client: reqwest::Client) -> Self {
+        Self { client, ..Self::new() }
+    }
+
     pub async fn get_latest_version(&self) -> Result<String, AppError> {
         {
             let ver = self.version.read().await;

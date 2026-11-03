@@ -17,6 +17,10 @@ pub struct FileLogger {
 }
 
 impl FileLogger {
+    #[cfg(test)]
+    pub(crate) fn for_test(log_path: PathBuf) -> Self {
+        Self { log_path, lock: Mutex::new(()), generation: AtomicU64::new(1) }
+    }
     pub fn new() -> Self {
         let base_dir = super::repair_paths::root()
             .unwrap_or_else(|_| std::env::temp_dir().join("RustLM/Repair Tools"))
@@ -53,8 +57,8 @@ impl FileLogger {
 
     pub fn http_request(&self, method: &str, url: &str, status_code: u16, response: Option<&str>) {
         let truncated = response
-            .map(|r| if r.len() > 100 { &r[..100] } else { r })
-            .unwrap_or("");
+            .map(|r| r.chars().take(100).collect::<String>())
+            .unwrap_or_default();
         let msg = format!("🌐 {} {} → {} {}", method, url, status_code, truncated);
         self.write_log("HTTP", &msg);
     }
@@ -156,6 +160,15 @@ fn read_chunk(file: fs::File, offset: u64, generation: u64, current: u64) -> std
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn http_logging_handles_unicode_at_the_truncation_boundary() {
+        let dir = std::env::temp_dir().join(format!("rustlm-log-unicode-{}", rand::random::<u64>()));
+        fs::create_dir_all(&dir).unwrap();
+        let logger = FileLogger {log_path:dir.join("debug.log"), lock:Mutex::new(()), generation:AtomicU64::new(1)};
+        logger.http_request("GET", "/synthetic", 500, Some(&format!("{}{}", "a".repeat(99), "Ошибка".repeat(10))));
+        assert!(fs::read_to_string(&logger.log_path).unwrap().contains("aО"));
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn chunks_read_only_new_lines_and_reset_after_clear() {
         let dir = std::env::temp_dir().join(format!("rustlm-log-test-{}", rand::random::<u64>()));

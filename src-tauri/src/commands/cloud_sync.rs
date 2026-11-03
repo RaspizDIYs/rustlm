@@ -80,8 +80,8 @@ pub async fn vault_resolve(mode: String, state: State<'_, AppState>) -> Result<(
 }
 
 #[tauri::command]
-pub fn vault_recovery_code(state: State<'_, AppState>) -> Result<String, AppError> {
-    state.cloud_sync.vault_recovery_code()
+pub async fn vault_recovery_code(state: State<'_, AppState>) -> Result<String, AppError> {
+    state.cloud_sync.vault_recovery_code().await
 }
 #[tauri::command]
 pub async fn vault_rotate(state: State<'_, AppState>) -> Result<String, AppError> {

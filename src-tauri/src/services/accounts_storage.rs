@@ -493,7 +493,12 @@ impl AccountsStorage {
         password: Option<&str>,
         selected_usernames: Option<&[String]>,
     ) -> Result<(), AppError> {
-        let accounts = self.load_all();
+        let cache = self.cached_accounts.lock().unwrap();
+        let accounts = match cache.as_ref() {
+            Some(records) => records.clone(),
+            None => self.read_from_disk()?,
+        };
+        drop(cache);
         let to_export: Vec<&AccountRecord> = match selected_usernames {
             Some(usernames) => accounts
                 .iter()
@@ -505,8 +510,8 @@ impl AccountsStorage {
         let export_records: Vec<ExportAccountRecord> = to_export
             .iter()
             .map(|a| {
-                let password = self.unprotect(&a.encrypted_password).unwrap_or_default();
-                ExportAccountRecord {
+                let password = self.unprotect(&a.encrypted_password)?;
+                Ok(ExportAccountRecord {
                     username: a.username.clone(),
                     password,
                     note: a.note.clone(),
@@ -518,11 +523,12 @@ impl AccountsStorage {
                     riot_id: a.riot_id.clone(),
                     puuid: a.puuid.clone(),
                     rank_icon_url: a.rank_icon_url.clone(),
+                    server: a.server.clone(),
                     summoner_level: a.summoner_level,
                     pinned: a.pinned,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_, AppError>>()?;
 
         match password {
             Some(pwd) => {
@@ -589,6 +595,7 @@ impl AccountsStorage {
                     riot_id: String::new(),
                     puuid: String::new(),
                     rank_icon_url: String::new(),
+                    server: String::new(),
                     summoner_level: 0,
                     pinned: false,
                 })
@@ -612,7 +619,7 @@ impl AccountsStorage {
                 riot_id: record.riot_id,
                 puuid: record.puuid,
                 rank_icon_url: record.rank_icon_url,
-                server: String::new(),
+                server: record.server,
                 summoner_level: record.summoner_level,
                 pinned: record.pinned,
                 is_selected: false,
@@ -740,6 +747,37 @@ fn aes_decrypt(
 mod storage_tests {
     use super::*;
     #[test]
+    fn export_import_keeps_server_credentials_and_profile() {
+        for password in [None, Some("synthetic-export-key")] {
+            let source = storage();
+            let target = storage();
+            source.save(AccountRecord { username:"roundtrip".into(), server:"EUW".into(),
+                encrypted_password:source.protect("synthetic-password").unwrap(),
+                riot_id:"Player#EUW".into(), note:"keep note".into(), pinned:true, ..Default::default() }).unwrap();
+            let path = source.accounts_path.with_file_name("export.json");
+            source.export_accounts(path.to_str().unwrap(), password, None).unwrap();
+            assert_eq!(target.import_accounts(path.to_str().unwrap(), password).unwrap(), 1);
+            let restored = target.load_all().remove(0);
+            assert_eq!(restored.server, "EUW");
+            assert_eq!(restored.riot_id, "Player#EUW");
+            assert_eq!(restored.note, "keep note");
+            assert!(restored.pinned);
+            assert_eq!(target.unprotect(&restored.encrypted_password).unwrap(), "synthetic-password");
+            cleanup(source); cleanup(target);
+        }
+    }
+    #[test]
+    fn export_refuses_corrupt_credentials_without_overwriting_existing_file() {
+        let store = storage();
+        store.save(AccountRecord { username:"corrupt".into(), encrypted_password:"invalid-dpapi".into(), ..Default::default() }).unwrap();
+        let path = store.accounts_path.with_file_name("export.json");
+        fs::write(&path, b"previous-backup").unwrap();
+        assert!(store.export_accounts(path.to_str().unwrap(), None, None).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"previous-backup");
+        cleanup(store);
+    }
+
+    #[test]
     fn vault_migration_adds_cloud_only_accounts_without_overwriting_local_credentials() {
         let store = storage();
         store
@@ -796,6 +834,11 @@ mod storage_tests {
         let store = storage();
         std::fs::write(&store.accounts_path, "invalid-json").unwrap();
         assert!(store.vault_document().is_err());
+
+        let export = store.accounts_path.with_file_name("export.json");
+        fs::write(&export, b"previous-backup").unwrap();
+        assert!(store.export_accounts(export.to_str().unwrap(), None, None).is_err());
+        assert_eq!(fs::read(export).unwrap(), b"previous-backup");
         cleanup(store);
     }
 

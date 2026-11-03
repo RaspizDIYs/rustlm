@@ -15,7 +15,7 @@ pub async fn set_reveal_api_config(
     region: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.reveal.set_api_configuration(&api_key, &region).await;
+    state.reveal.set_api_configuration(&api_key, &region).await.map_err(|e| e.to_string())?;
     trigger_cloud_sync(&state);
     Ok(())
 }

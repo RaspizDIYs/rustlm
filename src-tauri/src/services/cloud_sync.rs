@@ -257,8 +257,14 @@ impl CloudSyncService {
         self.set_status(SyncStatus::Idle);
         Ok(())
     }
-    pub fn vault_recovery_code(&self) -> Result<String, AppError> {
-        Ok(super::vault::load(&self.vault_user()?)?.key)
+    pub async fn vault_recovery_code(&self) -> Result<String, AppError> {
+        let _lock = self.sync_lock.lock().await;
+        let user = self.vault_user()?;
+        if super::vault::load(&user)?.pending_key.is_some() {
+            // A timed-out rotation may already have committed; never display an unverified old key.
+            self.vault_cycle("merge").await?;
+        }
+        Ok(super::vault::load(&user)?.key)
     }
     pub async fn rotate_vault(&self) -> Result<String, AppError> {
         let _lock = self.sync_lock.lock().await;
@@ -313,19 +319,7 @@ impl CloudSyncService {
         }
         let document = if let Some(value) = remote.get("envelope").filter(|v| !v.is_null()) {
             let envelope = serde_json::from_value(value.clone())?;
-            match super::vault::open(&user, &state.key, &envelope) {
-                Ok(value) => value,
-                Err(error) => {
-                    if let Some(pending) = state.pending_key.clone() {
-                        let value = super::vault::open(&user, &pending, &envelope)?;
-                        state.key = pending;
-                        state.pending_key = None;
-                        value
-                    } else {
-                        return Err(error);
-                    }
-                }
-            }
+            state.open_remote(&user, &envelope)?
         } else {
             serde_json::json!({"accounts":{}})
         };

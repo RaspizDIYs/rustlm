@@ -127,10 +127,10 @@ export default function SettingsPage() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const { loadSetting, getAutostartEnabled, getAutostartBackground } = await import("@/lib/tauri");
+      const { loadSetting, getAutomationSettings, getAutostartEnabled, getAutostartBackground } = await import("@/lib/tauri");
       const results = await Promise.allSettled([
         loadSetting("HideLogins", false).then(setHideLogins),
-        loadSetting("AutoAcceptMethod", "Polling").then(setAutoAcceptMethod),
+        getAutomationSettings().then((settings) => setAutoAcceptMethod(settings.AutoAcceptMethod)),
         loadSetting("AutoUpdate", true).then(setAutoUpdate),
         loadSetting("MinimizeToTray", false).then(setMinimizeToTray),
         getAutostartEnabled().then(setAutostart),

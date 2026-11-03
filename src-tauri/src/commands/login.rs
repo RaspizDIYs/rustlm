@@ -8,6 +8,14 @@ use crate::services::file_logger::FileLogger;
 use crate::services::riot_client::{LoginPhase, RiotClientService};
 use crate::state::AppState;
 
+static LOGIN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn begin_login(cancelled: &std::sync::atomic::AtomicBool) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+    let guard = LOGIN_LOCK.try_lock().map_err(|_| "Вход уже выполняется".to_string())?;
+    cancelled.store(false, Ordering::Relaxed);
+    Ok(guard)
+}
+
 fn check_cancelled(state: &AppState) -> Result<(), String> {
     if state.login_cancelled.load(Ordering::Relaxed) {
         state.logger.login_flow("CANCELLED", None);
@@ -33,6 +41,7 @@ pub async fn login_to_account(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let _guard = begin_login(&state.login_cancelled)?;
     // Local accounts use DPAPI; shared accounts never enter this storage.
     let account = state
         .accounts
@@ -59,7 +68,7 @@ async fn login_with_credentials(
     state: &AppState,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.login_cancelled.store(false, Ordering::Relaxed);
+    check_cancelled(state)?;
     let logger: &FileLogger = &state.logger;
     logger.login_flow("START", Some(&format!("user={}", username)));
     logger.login_flow("DECRYPT", Some("password available in Rust memory only"));
@@ -179,6 +188,7 @@ pub async fn login_to_shared_account(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let _guard = begin_login(&state.login_cancelled)?;
     emit_progress(&app, "Получение разрешения GoodLuck...");
     let session = state.cloud_sync.get_valid_totp_session_public();
     let credentials = state
@@ -390,5 +400,22 @@ fn delete_rc_session_data(logger: &FileLogger) {
                 ),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod login_guard_tests {
+    use super::*;
+    #[test]
+    fn duplicate_login_cannot_reset_cancellation_and_guard_releases_after_failure() {
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let guard = begin_login(&cancelled).unwrap();
+        assert!(!cancelled.load(Ordering::Relaxed));
+        cancelled.store(true, Ordering::Relaxed);
+        assert!(begin_login(&cancelled).is_err());
+        assert!(cancelled.load(Ordering::Relaxed));
+        drop(guard);
+        let _next = begin_login(&cancelled).unwrap();
+        assert!(!cancelled.load(Ordering::Relaxed));
     }
 }

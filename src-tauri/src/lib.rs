@@ -273,11 +273,14 @@ pub fn run() {
 
             // Load persisted automation settings and set app handle
             let state = app.state::<AppState>();
-            commands::auto_accept::load_persisted_automation_settings(&state);
 
             let handle = app.handle().clone();
             let auto_accept = state.auto_accept.clone();
             tauri::async_runtime::spawn(async move {
+                {
+                    let state = handle.state::<AppState>();
+                    commands::auto_accept::load_persisted_automation_settings(&state).await;
+                }
                 auto_accept.set_app_handle(handle).await;
                 // Start background listeners immediately (champ-select automation is always active)
                 auto_accept.ensure_listeners_started().await;

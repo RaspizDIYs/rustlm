@@ -29,6 +29,7 @@ pub struct AutoAcceptService {
     riot_client: Arc<RiotClientService>,
     rune_pages_storage: Arc<RunePagesStorage>,
     settings: RwLock<AutomationSettings>,
+    settings_revision: AtomicU64,
     selection_lock: Mutex<()>,
     bench_retry_at: Mutex<std::time::Instant>,
     loadout_retry_at: Mutex<std::time::Instant>,
@@ -44,6 +45,7 @@ pub struct AutoAcceptService {
     has_set_runes: AtomicBool,
     last_accepted_timer: Mutex<f64>,
     last_game_id: AtomicI64,
+    last_loadout_profile: Mutex<String>,
     champ_select_active: AtomicBool,
     champ_select_version: AtomicU64,
     cancel_tx: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
@@ -59,6 +61,7 @@ impl AutoAcceptService {
             riot_client,
             rune_pages_storage,
             settings: RwLock::new(AutomationSettings::default()),
+            settings_revision: AtomicU64::new(0),
             selection_lock: Mutex::new(()),
             bench_retry_at: Mutex::new(std::time::Instant::now()),
             loadout_retry_at: Mutex::new(std::time::Instant::now()),
@@ -73,6 +76,7 @@ impl AutoAcceptService {
             has_set_runes: AtomicBool::new(false),
             last_accepted_timer: Mutex::new(-1.0),
             last_game_id: AtomicI64::new(0),
+            last_loadout_profile: Mutex::new(String::new()),
             champ_select_active: AtomicBool::new(false),
             champ_select_version: AtomicU64::new(0),
             cancel_tx: Mutex::new(None),
@@ -84,17 +88,29 @@ impl AutoAcceptService {
         *self.app_handle.lock().await = Some(handle);
     }
 
-    pub async fn set_settings(&self, settings: AutomationSettings) {
+    pub async fn set_settings(&self, settings: AutomationSettings) -> u64 {
         log::info!("[AutoAccept] set_settings: pick1={:?}(id={:?}), ban={:?}(id={:?}), spell1={:?}, spell2={:?}",
             settings.pick_champion1, settings.pick_champion1_id,
             settings.ban_champion, settings.ban_champion_id,
             settings.spell1_id, settings.spell2_id,
         );
-        *self.settings.write().await = settings;
+        let mut current = self.settings.write().await;
+        *current = settings;
+        self.settings_revision.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub async fn refresh_settings_if_unchanged(&self, settings: AutomationSettings, revision: u64) {
+        let mut current = self.settings.write().await;
+        if self.settings_revision.load(Ordering::SeqCst) == revision {
+            *current = settings;
+            self.settings_revision.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     pub async fn get_settings(&self) -> AutomationSettings {
-        self.settings.read().await.clone()
+        let mut settings = self.settings.read().await.clone();
+        settings.is_enabled = self.is_enabled();
+        settings
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -408,22 +424,26 @@ impl AutoAcceptService {
             return;
         };
         {
-            let mut last = self.last_accepted_timer.lock().await;
+            let last = self.last_accepted_timer.lock().await;
             if (*last - timer).abs() < 0.5 && *last >= 0.0 {
                 return;
             }
-            *last = timer;
         }
-        self.accept_match().await;
+        if self.accept_match().await {
+            *self.last_accepted_timer.lock().await = timer;
+        }
     }
 
-    async fn accept_match(&self) {
+    async fn accept_match(&self) -> bool {
+        if !self.enabled.load(Ordering::SeqCst) {
+            return false;
+        }
         if self
             .accept_in_progress
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return;
+            return false;
         }
         let attempt = AcceptAttempt(&self.accept_in_progress);
 
@@ -437,7 +457,7 @@ impl AutoAcceptService {
                 .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
                 .and_then(|data| lcu_protocol::ready_timer(&data));
             if ready.is_none() || !self.enabled.load(Ordering::SeqCst) {
-                return;
+                return false;
             }
         }
         let result = if method == "UIA" {
@@ -466,9 +486,11 @@ impl AutoAcceptService {
                 log::info!("[AutoAccept] Match accepted automatically");
                 self.emit_event("match-accepted", "Матч принят автоматически")
                     .await;
+                true
             }
             Err(e) => {
                 log::error!("[AutoAccept] Failed to accept match: {}", e);
+                false
             }
         }
     }
@@ -510,6 +532,17 @@ impl AutoAcceptService {
             .ok()?;
         let fresh = serde_json::from_str::<serde_json::Value>(&body).ok()?;
         policy::bench_session_is_current(previous, &fresh, started.elapsed()).then_some(fresh)
+    }
+
+    async fn sync_loadout_profile(&self, mode: &str, role: &str) {
+        let key = format!("{mode}:{role}");
+        let mut previous = self.last_loadout_profile.lock().await;
+        if *previous != key {
+            *previous = key;
+            self.has_set_spells.store(false, Ordering::SeqCst);
+            self.has_set_runes.store(false, Ordering::SeqCst);
+            *self.loadout_retry_at.lock().await = std::time::Instant::now();
+        }
     }
 
     async fn handle_champ_select_session(&self, session: &serde_json::Value) {
@@ -570,6 +603,7 @@ impl AutoAcceptService {
                 serde_json::json!({"mode":mode,"role":role,"roles":true}),
             );
         }
+        self.sync_loadout_profile(mode, role).await;
         // Bound retries when the client rejects a restricted loadout.
         let mut retry = self.loadout_retry_at.lock().await;
         if std::time::Instant::now() >= *retry {
@@ -847,7 +881,7 @@ impl AutoAcceptService {
                                             ids
                                         }
                                         Err(_) => {
-                                            log::warn!("[ChampSelect] Failed to parse pickable champions: {}", &body[..body.len().min(200)]);
+                                            log::warn!("[ChampSelect] Invalid pickable champions response");
                                             Vec::new()
                                         }
                                     },
@@ -1424,17 +1458,6 @@ impl AutoAcceptService {
                 return;
             }
 
-            // Only poll when WS is failing (force_polling) or as periodic fallback
-            if self.settings.read().await.auto_accept_method == "WebSocket"
-                && !self.force_polling.load(Ordering::SeqCst)
-            {
-                // Even when WS is primary, do a slow poll every 5s as safety net
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => {},
-                    _ = cancel.changed() => return,
-                }
-            }
-
             // Check LCU connectivity
             let lcu_auth = self.riot_client.get_lcu_auth();
             if lcu_auth.is_none() {
@@ -1513,20 +1536,100 @@ mod simulator_tests {
     use crate::models::automation::AutomationProfile;
 
     #[tokio::test]
+    async fn changing_role_reapplies_loadout_without_repeating_the_same_profile() {
+        let service = AutoAcceptService::new(Arc::new(RiotClientService::new()), Arc::new(RunePagesStorage::for_test(
+            std::env::temp_dir().join("rustlm-lcu-unused-runes.json"))));
+        service.sync_loadout_profile("classic", "middle").await;
+        service.has_set_spells.store(true, Ordering::SeqCst);
+        service.has_set_runes.store(true, Ordering::SeqCst);
+        service.sync_loadout_profile("classic", "middle").await;
+        assert!(service.has_set_spells.load(Ordering::SeqCst));
+        assert!(service.has_set_runes.load(Ordering::SeqCst));
+        *service.loadout_retry_at.lock().await = std::time::Instant::now() + Duration::from_secs(60);
+        service.sync_loadout_profile("classic", "jungle").await;
+        assert!(!service.has_set_spells.load(Ordering::SeqCst));
+        assert!(!service.has_set_runes.load(Ordering::SeqCst));
+        assert!(*service.loadout_retry_at.lock().await <= std::time::Instant::now());
+    }
+    #[tokio::test]
+    async fn late_champion_resolution_cannot_overwrite_new_settings() {
+        let service = AutoAcceptService::new(Arc::new(RiotClientService::new()), Arc::new(RunePagesStorage::for_test(
+            std::env::temp_dir().join("rustlm-lcu-unused-runes.json"))));
+        let mut saved = AutomationSettings::default();
+        saved.auto_accept_method = "Polling".into();
+        let revision = service.set_settings(saved.clone()).await;
+        saved.pick_champion1_id = Some(1);
+        service.refresh_settings_if_unchanged(saved.clone(), revision).await;
+        assert_eq!(service.get_settings().await.pick_champion1_id, Some(1));
+        let revision = service.set_settings(saved.clone()).await;
+        let mut edited = saved.clone();
+        edited.auto_accept_method = "UIA".into();
+        edited.pick_champion1_id = Some(2);
+        service.set_settings(edited).await;
+        service.refresh_settings_if_unchanged(saved, revision).await;
+        let current = service.get_settings().await;
+        assert_eq!(current.auto_accept_method, "UIA");
+        assert_eq!(current.pick_champion1_id, Some(2));
+        service.set_enabled_flag_only(false);
+        assert!(!service.accept_match().await);
+    }
+
+    #[tokio::test]
+    async fn automation_snapshot_keeps_current_accept_enabled_flag() {
+        let service = AutoAcceptService::new(Arc::new(RiotClientService::new()), Arc::new(RunePagesStorage::for_test(
+            std::env::temp_dir().join("rustlm-lcu-unused-runes.json"))));
+        service.set_enabled_flag_only(true);
+        assert!(service.get_settings().await.is_enabled);
+        let settings = service.get_settings().await;
+        service.set_enabled_flag_only(false);
+        service.set_settings(settings).await;
+        assert!(!service.get_settings().await.is_enabled);
+        service.settings.write().await.auto_accept_method = "Polling".into();
+        assert!(!service.accept_match().await);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_ready_check_retries_failed_and_cancelled_attempts() {
+        assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
+        let client = Arc::new(RiotClientService::new());
+        let service = AutoAcceptService::new(client.clone(), Arc::new(RunePagesStorage::for_test(
+            std::env::temp_dir().join("rustlm-lcu-unused-runes.json"))));
+        service.enabled.store(true, Ordering::SeqCst);
+        for cancelled in [false, true] {
+            client.lcu_post("/__test/scenario", r#"{"name":"ready"}"#).await.unwrap();
+            *service.last_accepted_timer.lock().await = -1.0;
+            let before: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+            let ready: serde_json::Value = serde_json::from_str(&client.lcu_get("/lol-matchmaking/v1/ready-check").await.unwrap()).unwrap();
+            client.lcu_post("/__test/failure", &format!(r#"{{"route":"/lol-matchmaking/v1/ready-check/accept","status":503,"delayMs":{}}}"#, if cancelled {300} else {0})).await.unwrap();
+            if cancelled {
+                assert!(tokio::time::timeout(Duration::from_millis(30), service.handle_ready_check(&ready)).await.is_err());
+            } else {
+                service.handle_ready_check(&ready).await;
+            }
+            assert!(!service.accept_in_progress.load(Ordering::SeqCst));
+            service.handle_ready_check(&ready).await;
+            let state: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+            assert_eq!(state["ready"]["playerResponse"], "Accepted", "same-timer retry must work after cancellation={cancelled}");
+            assert_eq!(state["actions"].as_array().unwrap().len(), before["actions"].as_array().unwrap().len() + 1);
+        }
+    }
+
+    #[tokio::test]
     #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
     async fn simulator_polling_and_websocket_accept_without_optional_status_api() {
         assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
         let client = Arc::new(RiotClientService::new());
         client.lcu_post("/__test/unavailable", r#"{"routes":["/lol-service-status/v1/shard-data"]}"#).await.unwrap();
-        for method in ["Polling", "WebSocket"] {
+        for method in ["Polling", "WebSocket", "WebSocketSafetyNet"] {
             client.lcu_post("/__test/scenario", r#"{"name":"ready"}"#).await.unwrap();
             let service = Arc::new(AutoAcceptService::new(client.clone(), Arc::new(RunePagesStorage::for_test(
                 std::env::temp_dir().join("rustlm-lcu-unused-runes.json")))));
             service.enabled.store(true, Ordering::SeqCst);
-            service.settings.write().await.auto_accept_method = method.into();
+            service.settings.write().await.auto_accept_method = if method == "WebSocketSafetyNet" { "WebSocket" } else { method }.into();
             let (tx, rx) = tokio::sync::watch::channel(false);
             let task = { let service = service.clone(); tokio::spawn(async move {
-                if method == "Polling" { service.run_polling_listener(rx).await; }
+                if method != "WebSocket" { service.run_polling_listener(rx).await; }
                 else { service.run_websocket_listener(rx).await; }
             }) };
             let accepted = tokio::time::timeout(Duration::from_secs(4), async {

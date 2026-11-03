@@ -508,12 +508,13 @@ export default function RepairToolsPage() {
           throw new Error("Новая настройка ухудшила доступность сервисов Riot в двух замерах. Исходные параметры будут восстановлены.");
         }
       }
-      const pins = dnsRepairPins(latestRef.current ?? after);
+      const verifiedReport = latestRef.current ?? after;
+      const pins = dnsRepairPins(verifiedReport);
       if (pins.length && !backupRef.current?.hostsId) {
         event(
           `Найдена ошибка системного DNS. Фиксируем ${pins.length} адресов, подтверждённых успешным HTTPS.`,
         );
-        const hostsPlan = await previewHosts(after.id, pins);
+        const hostsPlan = await previewHosts(verifiedReport.id, pins);
         checkCancelled();
         const hostsId = await applyHosts(hostsPlan);
         persist({ ...backupRef.current!, hostsId });
