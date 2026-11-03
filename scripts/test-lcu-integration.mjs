@@ -12,7 +12,7 @@ try {
   const config = join(directory, 'connection.json');
   await writeFile(config, JSON.stringify({ port: simulator.port, password: simulator.password }));
   const child = spawn('cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', '--lib',
-    'simulator_', '--', '--ignored', '--test-threads=1'], {
+    process.argv[2] || 'simulator_', '--', '--ignored', '--test-threads=1'], {
     stdio: 'inherit', cwd: fileURLToPath(new URL('../', import.meta.url)),
     env: { ...process.env, RUSTLM_TEST_LCU: config,
       ...(process.platform === 'win32' ? {

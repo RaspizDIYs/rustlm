@@ -53,6 +53,21 @@ test('unknown scenarios and malformed requests do not silently change state', as
   } finally { await simulator.close(); }
 });
 
+test('an unavailable optional route stays missing without disabling ready-check', async () => {
+  const simulator = await createSimulator();
+  try {
+    const base = `http://127.0.0.1:${simulator.port}`;
+    const headers = { authorization: `Basic ${Buffer.from(`riot:${simulator.password}`).toString('base64')}` };
+    const configure = routes => fetch(base + '/__test/unavailable', { method: 'POST', headers, body: JSON.stringify({ routes }) });
+    assert.equal((await configure(['/lol-service-status/v1/shard-data'])).status, 200);
+    for (let i = 0; i < 2; i++) assert.equal((await fetch(base + '/lol-service-status/v1/shard-data', { headers })).status, 404);
+    assert.equal((await fetch(base + '/lol-matchmaking/v1/ready-check', { headers })).status, 200);
+    assert.equal((await configure(['https://example.com'])).status, 400);
+    assert.equal((await configure([])).status, 200);
+    assert.equal((await fetch(base + '/lol-service-status/v1/shard-data', { headers })).status, 200);
+  } finally { await simulator.close(); }
+});
+
 test('saved synthetic snapshots replay without mutating the fixture and invalid snapshots are rejected', async () => {
   const simulator = await createSimulator();
   try {

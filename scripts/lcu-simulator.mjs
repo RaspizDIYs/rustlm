@@ -35,6 +35,7 @@ export function scenario(name) {
 export async function createSimulator({ port = 0, password = randomUUID(), successor = null } = {}) {
   let state = scenario('idle');
   let failure = null;
+  let unavailable = new Set();
   let ux = { backend_running: true, ui_running: true, backend_pid: 100,
     ui_pid: 200, renderer_count: 1, window_responsive: true, game_running: false,
     scope_verified: true, reloadSucceeds: true };
@@ -74,6 +75,11 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
       }
       const data = body ? JSON.parse(body) : {};
       const route = request.url;
+      if (route === '/__test/unavailable' && request.method === 'POST') {
+        if (!Array.isArray(data.routes) || data.routes.length > 20 || !data.routes.every(p => typeof p === 'string' && p.startsWith('/lol-') && p.length < 200)) return reply(400, {});
+        unavailable = new Set(data.routes); return reply(200, {});
+      }
+      if (unavailable.has(route)) return reply(404, { errorCode: 'NOT_IMPLEMENTED' });
       if (route === '/__test/scenario' && request.method === 'POST') { changeScenario(data.name); return reply(200, {}); }
       if (route === '/__test/fixture' && request.method === 'POST') { loadFixture(data); return reply(200, {}); }
       if (route === '/__test/next-connection' && request.method === 'GET' && successor) return reply(200, successor);

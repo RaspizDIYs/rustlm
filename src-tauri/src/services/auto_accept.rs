@@ -182,36 +182,7 @@ impl AutoAcceptService {
     async fn run_websocket_listener(&self, mut cancel: tokio::sync::watch::Receiver<bool>) {
         log::info!("[WS] WebSocket listener started, waiting for LCU...");
 
-        // Wait for LCU to become available before attempting any connections
-        let (port, password) = loop {
-            if *cancel.borrow() {
-                log::info!("[WS] WebSocket listener stopped (cancelled while waiting for LCU)");
-                return;
-            }
-            if let Some(auth) = self.riot_client.get_lcu_auth() {
-                // Verify LCU is actually responsive, not just lockfile present
-                if self
-                    .riot_client
-                    .lcu_get("/lol-service-status/v1/shard-data")
-                    .await
-                    .is_ok()
-                {
-                    log::info!(
-                        "[WS] LCU is ready (port={}), starting WebSocket connections",
-                        auth.0
-                    );
-                    break auth;
-                }
-                self.riot_client.invalidate_cache();
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(3)) => {},
-                _ = cancel.changed() => return,
-            }
-        };
-        // Use the initial auth for first connection, then re-fetch in loop
-        let _ = (port, password);
-
+        // The WebSocket handshake validates LCU itself; optional plugin APIs must not gate startup.
         loop {
             if *cancel.borrow() {
                 log::info!("[WS] WebSocket listener stopped");
@@ -229,16 +200,8 @@ impl AutoAcceptService {
                     self.force_polling.store(false, Ordering::SeqCst);
                     loop {
                         if let Some(auth) = self.riot_client.get_lcu_auth() {
-                            if self
-                                .riot_client
-                                .lcu_get("/lol-service-status/v1/shard-data")
-                                .await
-                                .is_ok()
-                            {
-                                log::info!("[WS] LCU reconnected (port={})", auth.0);
-                                break auth;
-                            }
-                            self.riot_client.invalidate_cache();
+                            log::info!("[WS] LCU credentials found (port={})", auth.0);
+                            break auth;
                         }
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_secs(3)) => {},
@@ -1443,16 +1406,9 @@ impl AutoAcceptService {
                 return;
             }
             if let Some(auth) = self.riot_client.get_lcu_auth() {
-                if self
-                    .riot_client
-                    .lcu_get("/lol-service-status/v1/shard-data")
-                    .await
-                    .is_ok()
-                {
-                    log::info!("[Polling] LCU is ready (port={}), starting polling", auth.0);
-                    break;
-                }
-                self.riot_client.invalidate_cache();
+                // Ready-check requests validate their own availability and HTTP status.
+                log::info!("[Polling] LCU credentials found (port={}), starting polling", auth.0);
+                break;
             }
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(3)) => {},
@@ -1555,6 +1511,40 @@ impl AutoAcceptService {
 mod simulator_tests {
     use super::*;
     use crate::models::automation::AutomationProfile;
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_polling_and_websocket_accept_without_optional_status_api() {
+        assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
+        let client = Arc::new(RiotClientService::new());
+        client.lcu_post("/__test/unavailable", r#"{"routes":["/lol-service-status/v1/shard-data"]}"#).await.unwrap();
+        for method in ["Polling", "WebSocket"] {
+            client.lcu_post("/__test/scenario", r#"{"name":"ready"}"#).await.unwrap();
+            let service = Arc::new(AutoAcceptService::new(client.clone(), Arc::new(RunePagesStorage::for_test(
+                std::env::temp_dir().join("rustlm-lcu-unused-runes.json")))));
+            service.enabled.store(true, Ordering::SeqCst);
+            service.settings.write().await.auto_accept_method = method.into();
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let task = { let service = service.clone(); tokio::spawn(async move {
+                if method == "Polling" { service.run_polling_listener(rx).await; }
+                else { service.run_websocket_listener(rx).await; }
+            }) };
+            let accepted = tokio::time::timeout(Duration::from_secs(4), async {
+                loop {
+                    let state: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+                    if state["ready"]["playerResponse"] == "Accepted" { break; }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }).await.is_ok();
+            tx.send(true).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+            if !accepted {
+                client.lcu_post("/__test/unavailable", r#"{"routes":[]}"#).await.unwrap();
+                panic!("{method} did not accept: an optional status route must not gate ready-check");
+            }
+        }
+        client.lcu_post("/__test/unavailable", r#"{"routes":[]}"#).await.unwrap();
+    }
 
     // Run only against scripts/lcu-simulator.mjs, never against a real client.
     #[tokio::test]
