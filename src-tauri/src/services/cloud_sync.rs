@@ -260,11 +260,16 @@ impl CloudSyncService {
     pub async fn vault_recovery_code(&self) -> Result<String, AppError> {
         let _lock = self.sync_lock.lock().await;
         let user = self.vault_user()?;
-        if super::vault::load(&user)?.pending_key.is_some() {
-            // A timed-out rotation may already have committed; never display an unverified old key.
-            self.vault_cycle("merge").await?;
+        let mut state = super::vault::load(&user)?;
+        if state.pending_key.is_some() {
+            let remote = self.goodluck.vault_request(reqwest::Method::GET, None, self.get_valid_totp_session().as_deref()).await?;
+            let envelope = remote.get("envelope").filter(|v| !v.is_null())
+                .ok_or_else(|| AppError::Custom("Облачное хранилище удалено. Локальные аккаунты сохранены".into()))?;
+            // Recover the key independently of account conflicts; showing a code must not merge accounts.
+            state.open_remote(&user, &serde_json::from_value(envelope.clone())?)?;
+            super::vault::save(&user, &state)?;
         }
-        Ok(super::vault::load(&user)?.key)
+        Ok(state.key)
     }
     pub async fn rotate_vault(&self) -> Result<String, AppError> {
         let _lock = self.sync_lock.lock().await;

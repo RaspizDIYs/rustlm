@@ -270,6 +270,7 @@ async fn finalize_login(
             Ok(_) => {}
             Err(e) => {
                 logger.login_flow("LAUNCH", Some(&format!("launch failed: {}", e)));
+                return Err(format!("Не удалось запустить League of Legends: {}", e));
             }
         }
     }
@@ -345,7 +346,7 @@ async fn wait_rso_with_cancel(
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         check_cancelled(state)?;
-        if rc.is_rso_authorized().await == authorized {
+        if rc.rso_authorization_state().await == Some(authorized) {
             return Ok(true);
         }
         if std::time::Instant::now() > deadline {

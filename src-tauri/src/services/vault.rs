@@ -163,6 +163,10 @@ mod tests {
         let old = new_key(); let new = new_key();
         let value = json!({"accounts":{}});
         let mut state = LocalVault { key:old.clone(), pending_key:Some(new.clone()), ..Default::default() };
+        let baseline = json!({"accounts":{"conflicting-account":{"password":"synthetic-previous"}}});
+        state.baseline = Some(baseline.clone());
+        let edited = json!({"accounts":{"conflicting-account":{"password":"synthetic-local-edit"}}});
+        assert!(merge(&baseline, &edited, &value).is_err(), "account conflicts must not block key recovery");
         assert_eq!(state.open_remote("synthetic-user", &seal("synthetic-user", &old, &value).unwrap()).unwrap(), value);
         assert_eq!(state.key, old);
         assert_eq!(state.pending_key, Some(new.clone()));
@@ -171,6 +175,7 @@ mod tests {
         assert_eq!(state.open_remote("synthetic-user", &seal("synthetic-user", &new, &value).unwrap()).unwrap(), value);
         assert_eq!(state.key, new);
         assert!(state.pending_key.is_none());
+        assert_eq!(state.baseline, Some(baseline), "recovering a key cannot change the account baseline");
     }
     #[test]
     fn first_join_and_conflict_choice_keep_accounts_unique_to_either_pc() {

@@ -43,7 +43,6 @@ pub struct AutoAcceptService {
     has_banned_champion: AtomicBool,
     has_set_spells: AtomicBool,
     has_set_runes: AtomicBool,
-    last_accepted_timer: Mutex<f64>,
     last_game_id: AtomicI64,
     last_loadout_profile: Mutex<String>,
     champ_select_active: AtomicBool,
@@ -74,7 +73,6 @@ impl AutoAcceptService {
             has_banned_champion: AtomicBool::new(false),
             has_set_spells: AtomicBool::new(false),
             has_set_runes: AtomicBool::new(false),
-            last_accepted_timer: Mutex::new(-1.0),
             last_game_id: AtomicI64::new(0),
             last_loadout_profile: Mutex::new(String::new()),
             champ_select_active: AtomicBool::new(false),
@@ -310,7 +308,6 @@ impl AutoAcceptService {
 
         self.ws_failures.store(0, Ordering::SeqCst);
         self.force_polling.store(false, Ordering::SeqCst);
-        *self.last_accepted_timer.lock().await = -1.0;
         // Subscriptions do not replay events missed while disconnected.
         tokio::select! {
             _ = self.refresh_lcu_snapshot() => {},
@@ -392,9 +389,7 @@ impl AutoAcceptService {
         };
         match event.uri.as_str() {
             "/lol-matchmaking/v1/ready-check" => {
-                if event.event_type == "Delete" {
-                    *self.last_accepted_timer.lock().await = -1.0;
-                } else if self.enabled.load(Ordering::SeqCst)
+                if event.event_type != "Delete" && self.enabled.load(Ordering::SeqCst)
                     && self.settings.read().await.auto_accept_method == "WebSocket"
                 {
                     self.handle_ready_check(&event.data).await;
@@ -416,21 +411,8 @@ impl AutoAcceptService {
     }
 
     async fn handle_ready_check(&self, data: &serde_json::Value) {
-        let Some(timer) = lcu_protocol::ready_timer(data) else {
-            if matches!(data["state"].as_str(), Some("Invalid" | "Done"))
-                || matches!(data["playerResponse"].as_str(), Some("Accepted" | "Declined")) {
-                *self.last_accepted_timer.lock().await = -1.0;
-            }
-            return;
-        };
-        {
-            let last = self.last_accepted_timer.lock().await;
-            if (*last - timer).abs() < 0.5 && *last >= 0.0 {
-                return;
-            }
-        }
-        if self.accept_match().await {
-            *self.last_accepted_timer.lock().await = timer;
+        if lcu_protocol::ready_timer(data).is_some() {
+            self.accept_match().await;
         }
     }
 
@@ -448,17 +430,15 @@ impl AutoAcceptService {
         let attempt = AcceptAttempt(&self.accept_in_progress);
 
         let method = self.settings.read().await.auto_accept_method.clone();
-        if method != "UIA" {
-            let ready = self
-                .riot_client
-                .lcu_get("/lol-matchmaking/v1/ready-check")
-                .await
-                .ok()
-                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-                .and_then(|data| lcu_protocol::ready_timer(&data));
-            if ready.is_none() || !self.enabled.load(Ordering::SeqCst) {
-                return false;
-            }
+        let ready = self
+            .riot_client
+            .lcu_get("/lol-matchmaking/v1/ready-check")
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|data| lcu_protocol::ready_timer(&data));
+        if ready.is_none() || !self.enabled.load(Ordering::SeqCst) {
+            return false;
         }
         let result = if method == "UIA" {
             #[cfg(windows)]
@@ -1536,6 +1516,26 @@ mod simulator_tests {
     use crate::models::automation::AutomationProfile;
 
     #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_consecutive_ready_checks_can_have_identical_timers() {
+        assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
+        let client = Arc::new(RiotClientService::new());
+        let service = AutoAcceptService::new(client.clone(), Arc::new(RunePagesStorage::for_test(
+            std::env::temp_dir().join("rustlm-lcu-unused-runes.json"))));
+        service.enabled.store(true, Ordering::SeqCst);
+        for _ in 0..2 {
+            client.lcu_post("/__test/scenario", r#"{"name":"ready"}"#).await.unwrap();
+            let ready: serde_json::Value = serde_json::from_str(&client.lcu_get("/lol-matchmaking/v1/ready-check").await.unwrap()).unwrap();
+            let before: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+            service.handle_ready_check(&ready).await;
+            service.handle_ready_check(&ready).await;
+            let after: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+            assert_eq!(after["ready"]["playerResponse"], "Accepted");
+            assert_eq!(after["actions"].as_array().unwrap().len(), before["actions"].as_array().unwrap().len() + 1);
+        }
+    }
+
+    #[tokio::test]
     async fn changing_role_reapplies_loadout_without_repeating_the_same_profile() {
         let service = AutoAcceptService::new(Arc::new(RiotClientService::new()), Arc::new(RunePagesStorage::for_test(
             std::env::temp_dir().join("rustlm-lcu-unused-runes.json"))));
@@ -1598,7 +1598,6 @@ mod simulator_tests {
         service.enabled.store(true, Ordering::SeqCst);
         for cancelled in [false, true] {
             client.lcu_post("/__test/scenario", r#"{"name":"ready"}"#).await.unwrap();
-            *service.last_accepted_timer.lock().await = -1.0;
             let before: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
             let ready: serde_json::Value = serde_json::from_str(&client.lcu_get("/lol-matchmaking/v1/ready-check").await.unwrap()).unwrap();
             client.lcu_post("/__test/failure", &format!(r#"{{"route":"/lol-matchmaking/v1/ready-check/accept","status":503,"delayMs":{}}}"#, if cancelled {300} else {0})).await.unwrap();

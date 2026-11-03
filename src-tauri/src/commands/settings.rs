@@ -36,9 +36,18 @@ fn write_autostart(enabled: bool, background: bool) -> Result<(), String> {
         key.set_value(APP_NAME, &value.as_str())
             .map_err(|e| e.to_string())?;
     } else {
-        key.delete_value(APP_NAME).ok();
+        delete_autostart_value(&key)?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn delete_autostart_value(key: &winreg::RegKey) -> Result<(), String> {
+    match key.delete_value(APP_NAME) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 #[cfg(windows)]
@@ -152,4 +161,25 @@ pub fn save_update_settings(
         .map_err(|e| e.to_string())?;
     trigger_cloud_sync(&state);
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod autostart_tests {
+    use super::*;
+    #[test]
+    fn disabling_autostart_reports_permission_errors_and_accepts_missing_values() {
+        use winreg::{RegKey, enums::{HKEY_CURRENT_USER, KEY_READ}};
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let path = format!(r"Software\RustLM-Test-{}", rand::random::<u64>());
+        let (key, _) = hkcu.create_subkey(&path).unwrap();
+        key.set_value(APP_NAME, &"synthetic-executable").unwrap();
+        let readonly = hkcu.open_subkey_with_flags(&path, KEY_READ).unwrap();
+        assert!(delete_autostart_value(&readonly).is_err());
+        assert_eq!(key.get_value::<String, _>(APP_NAME).unwrap(), "synthetic-executable");
+        delete_autostart_value(&key).unwrap();
+        delete_autostart_value(&key).unwrap();
+        assert!(key.get_value::<String, _>(APP_NAME).is_err());
+        drop(readonly); drop(key);
+        hkcu.delete_subkey(&path).unwrap();
+    }
 }
