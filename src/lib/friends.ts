@@ -14,12 +14,10 @@ export function mergeFriends(
 ) {
  const merged=new Map<string,(typeof riot)[number]&{sources:("riot"|"goodluck")[]}>();
  for(const friend of goodluck)merged.set(friend.id,{...friend,sources:["goodluck"]});
- for(const friend of riot)merged.set(friend.id,{...merged.get(friend.id),...friend,avatar_url:friend.avatar_url?.trim()||merged.get(friend.id)?.avatar_url,sources:merged.has(friend.id)?["goodluck","riot"]:["riot"]});
+ for(const friend of riot) {
+  const previous=merged.get(friend.id);
+  const accounts=new Map([...(previous?.riot_accounts||[]),...(friend.riot_accounts||[])].map(account=>[account.puuid,account]));
+  merged.set(friend.id,{...previous,...friend,riot_accounts:[...accounts.values()],avatar_url:friend.avatar_url?.trim()||previous?.avatar_url,sources:[...new Set([...(previous?.sources||[]),"riot" as const])]});
+ }
  return [...merged.values()].sort((a,b)=>a.display_name.localeCompare(b.display_name,"ru"));
-}
-
-export function riotFriendsForScope<T extends {accounts: string[]}>(friends: T[], scope: string, currentPuuid: string | null): T[] {
- const puuid = scope === "current" ? currentPuuid : scope;
- if (scope === "all") return friends;
- return puuid ? friends.filter(friend => friend.accounts.includes(puuid)) : [];
 }

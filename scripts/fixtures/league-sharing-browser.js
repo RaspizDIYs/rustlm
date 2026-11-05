@@ -6,12 +6,13 @@
   const names = { [a]: "GL Shpinat#GULAG", [b]: "Mira#RU2" };
   const account = { Username: recipient ? "mira_fixture" : "shpinat_fixture", EncryptedPassword: "fixture-not-a-password", Note: "Основной", Server: "RU", RiotId: names[me], Puuid: me, AvatarUrl: "", Pinned: false, RankDisplay: "EMERALD I 75LP", SummonerLevel: 30 };
   const storageKey = "rustlm-league-sharing-preview-v1";
+  const removedKey=storageKey+":removed";
   const read = () => JSON.parse(localStorage.getItem(storageKey) || "[]");
   const write = (offers) => { localStorage.setItem(storageKey, JSON.stringify(offers)); };
   const callbacks = new Map(); let sequence = 0;
   window.__previewCalls = [];
   window.__previewSide = recipient ? "recipient" : "sender";
-  window.addEventListener("storage", (event) => { if (event.key === storageKey) window.dispatchEvent(new Event("focus")); });
+  window.addEventListener("storage", (event) => { if (event.key === storageKey || event.key === removedKey) window.dispatchEvent(new Event("focus")); });
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
     transformCallback: (callback) => { callbacks.set(++sequence, callback); return sequence; },
@@ -30,23 +31,28 @@
       if (command === "get_automation_settings") return { IsEnabled: false, AutoAcceptMethod: "Polling", Profiles: {} };
       if (command === "league_status") return { connected: true, matches_current: true, riot_id: names[me], owner_riot_id: names[me], puuid: me };
       if (command === "league_refresh") return {
-        friends: !window.__previewRemoved ? [{ id: "league:" + peer, username: names[peer], display_name: names[peer], accounts: [me], riot_accounts: [{ puuid: peer, riot_id: names[peer] }] }] : [],
+        friends: !localStorage.getItem(removedKey) ? [{ id: "league:" + peer, username: names[peer], display_name: names[peer], accounts: [me], riot_accounts: [{ puuid: peer, riot_id: names[peer] }] }] : [],
         offers: read().filter(o => o.owner_id === me || o.recipient_id === me).map(o => ({ metadata: o.metadata, incoming: o.recipient_id === me })),
       };
       if (command === "league_share") {
         if (args.recipient !== peer || args.username !== account.Username) throw Error("Неверный тестовый получатель");
         const offers = read();
+        if(localStorage.getItem(removedKey))throw Error("Контакт удалён из LM");
+        if(offers.some(o=>o.owner_id===me && o.recipient_id===peer && o.metadata.riot_id===account.RiotId && Date.parse(o.metadata.expires_at)>Date.now()))throw Error("Этот аккаунт уже предложен другу");
         offers.push({ owner_id: me, recipient_id: peer, metadata: { id: crypto.randomUUID().replaceAll("-", ""), owner: names[me], recipient: names[peer], riot_id: account.RiotId, server: "RU", expires_at: new Date(Date.now() + args.hours * 3600000).toISOString(), status: "pending" } });
         write(offers); return null;
       }
-      if (command === "league_remove_friend") { window.__previewRemoved = true; return null; }
+      if (command === "league_remove_friend") { localStorage.setItem(removedKey,"true"); return null; }
       if (command === "league_decide") {
         let offers = read(); const offer = offers.find(o => o.metadata.id === args.id);
         if (!offer) throw Error("Предложение недоступно");
         if (args.action === "accept") {
-          if (offer.recipient_id !== me || offer.metadata.status !== "pending") throw Error("Подтвердить может только получатель");
+          if (offer.recipient_id !== me || localStorage.getItem(removedKey)) throw Error("Подтвердить может только получатель");
           offer.metadata.status = "accepted";
-        } else offers = offers.filter(o => o.metadata.id !== args.id);
+        } else {
+          if(!["decline","revoke"].includes(args.action) || (args.action==="decline" && offer.recipient_id!==me) || (args.action==="revoke" && offer.owner_id!==me))throw Error("Действие недоступно");
+          offers = offers.filter(o => o.metadata.id !== args.id);
+        }
         write(offers); return null;
       }
       if (command === "league_login" || command === "login_to_account") throw Error("Демонстрация: реальный вход отключён");

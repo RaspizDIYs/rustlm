@@ -586,11 +586,17 @@ export default function AccountsPage() {
     }
   };
 
+  const shareRequest = useRef(0);
+  const sharePending = useRef(false);
+  const closeShareDialog = () => { ++shareRequest.current; setShareTarget(null); setSharePassword(""); };
   const openShareDialog = async (account: AccountRecord, recipient?: GoodLuckFriend) => {
     if (!account.RiotId) {
       toast.error("Сначала обнови аккаунт «Из клиента», чтобы привязать Riot ID для безопасного отзыва.");
       return;
     }
+    if (sharePending.current) return;
+    const request = ++shareRequest.current;
+    setFriends(recipient ? [recipient] : league.friends);
     setShareTarget(account);
     setSharePassword("");
     setShareFriend("");
@@ -607,8 +613,9 @@ export default function AccountsPage() {
       const results = await Promise.allSettled([
         user ? goodluckGetFriends() : Promise.resolve([]),
         user ? invoke<GoodLuckFriend[]>("lm_friends") : Promise.resolve([]),
-        league.status?.connected ? invoke<{friends: GoodLuckFriend[]}>("league_refresh", {visible: league.visible}).then(result => result.friends) : Promise.resolve([]),
+        league.status?.connected ? league.reload().then(result => result?.friends || []) : Promise.resolve([]),
       ]);
+      if (request !== shareRequest.current) return;
       const data = mergeFriends(
         results[0].status === "fulfilled" && Array.isArray(results[0].value) ? results[0].value : [],
         [...(results[1].status === "fulfilled" && Array.isArray(results[1].value) ? results[1].value : []),
@@ -621,6 +628,7 @@ export default function AccountsPage() {
       if (recipient) setShareFriend(recipient.id);
       setFriendSearchOpen(Boolean(user) && data.length === 0 && !recipient);
     } catch (e) {
+      if (request !== shareRequest.current) return;
       setFriends(recipient ? [recipient, ...league.friends.filter(f => f.id !== recipient.id)] : league.friends);
       if (recipient) setShareFriend(recipient.id);
       setFriendSearchOpen(false);
@@ -666,6 +674,8 @@ export default function AccountsPage() {
 
   const handleShareSubmit = async () => {
     if (!shareTarget || !shareFriend || (!shareFriend.startsWith("league:") && !sharePassword)) return;
+    if (sharePending.current) return;
+    sharePending.current = true;
     setShareSaving(true);
     setShareError(null);
     try {
@@ -674,7 +684,6 @@ export default function AccountsPage() {
       if (shareFriend.startsWith("league:")) {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("league_share", {recipient: shareFriend.slice(7), username: shareTarget.Username, hours});
-        await league.reload();
       } else await goodluckShareAccount({
         recipientUserId: shareFriend,
         username: shareTarget.Username,
@@ -684,16 +693,18 @@ export default function AccountsPage() {
         server: shareTarget.Server,
         expiresAt: hours > 0 ? new Date(Date.now() + hours * 3600000).toISOString() : null,
       });
-      setSharePassword("");
-      setShareTarget(null);
-      if (!shareFriend.startsWith("league:")) await fetchSharedAccounts();
-      toast.success(shareFriend.startsWith("league:") ? "Предложение отправлено. Друг примет его в LM." : "Доступ выдан. Другу придёт уведомление — пусть обновит страницу аккаунтов.");
+      closeShareDialog();
+      let refreshed = true;
+      try { if (shareFriend.startsWith("league:")) await league.reload(); else await fetchSharedAccounts(); }
+      catch { refreshed = false; }
+      toast.success((shareFriend.startsWith("league:") ? "Предложение отправлено. Друг примет его в LM." : "Доступ выдан. Другу придёт уведомление — пусть обновит страницу аккаунтов.") + (refreshed ? "" : " Обновите список вручную."));
     } catch (e) {
       const message = String(e);
       setShareError(message.includes("totp_required")
         ? "Подтверди 2FA в настройках GoodLuck и повтори выдачу."
         : message);
     } finally {
+      sharePending.current = false;
       setShareSaving(false);
     }
   };
@@ -1484,7 +1495,7 @@ export default function AccountsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={shareTarget !== null} onOpenChange={(open) => { if (!open) { setShareTarget(null); setSharePassword(""); } }}>
+      <Dialog open={shareTarget !== null} onOpenChange={(open) => { if (!open && !sharePending.current) closeShareDialog(); }}>
         <DialogContent className="accounts-dialog sm:max-w-md max-h-[calc(100dvh-4rem)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Поделиться аккаунтом</DialogTitle>
@@ -1498,7 +1509,7 @@ export default function AccountsPage() {
               <label className="text-sm text-muted-foreground">Получатель</label>
               {friends.length > 0 ? (
                 <>
-                  <Select value={shareFriend} onValueChange={(value) => { if (value) { setShareFriend(value); if (value.startsWith("league:") && shareDuration === "0") setShareDuration("168"); } }}>
+                  <Select disabled={shareSaving} value={shareFriend} onValueChange={(value) => { if (value) { setShareFriend(value); if (value.startsWith("league:") && shareDuration === "0") setShareDuration("168"); } }}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга">{friends.find((friend) => friend.id === shareFriend)?.display_name}</SelectValue></SelectTrigger>
                     <SelectContent className="accounts-dialog">
                       <SelectGroup>
@@ -1551,7 +1562,7 @@ export default function AccountsPage() {
             </div>
             <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Срок доступа</label>
-              <Select value={shareDuration} onValueChange={(value) => value && setShareDuration(value)}>
+              <Select disabled={shareSaving} value={shareDuration} onValueChange={(value) => value && setShareDuration(value)}>
                 <SelectTrigger className="w-full"><SelectValue>{{"24":"24 часа","168":"7 дней","720":"30 дней","0":"Бессрочно"}[shareDuration]}</SelectValue></SelectTrigger>
                 <SelectContent className="accounts-dialog">
                   <SelectGroup>
@@ -1565,7 +1576,7 @@ export default function AccountsPage() {
             </div>
             {!shareFriend.startsWith("league:") && <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Пароль Riot-аккаунта</label>
-              <Input type="password" value={sharePassword} onChange={(e) => setSharePassword(e.target.value)} placeholder="Только для зашифрованной передачи" autoComplete="off" />
+              <Input disabled={shareSaving} type="password" value={sharePassword} onChange={(e) => setSharePassword(e.target.value)} placeholder="Только для зашифрованной передачи" autoComplete="off" />
             </div>}
             <p className="rounded-md border border-primary/25 bg-primary/5 p-2 text-xs text-muted-foreground">
               {shareFriend.startsWith("league:")
@@ -1575,7 +1586,7 @@ export default function AccountsPage() {
             {shareError && <p className="text-sm text-destructive">{shareError}</p>}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setShareTarget(null); setSharePassword(""); }}>Отмена</Button>
+            <Button variant="outline" disabled={shareSaving} onClick={closeShareDialog}>Отмена</Button>
             <Button onClick={() => void handleShareSubmit()} disabled={shareSaving || !shareFriend || (shareFriend.startsWith("league:") ? !shareTarget?.EncryptedPassword : !sharePassword)}>
               {shareSaving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Share2 className="mr-1 h-4 w-4" />}
               {shareSaving ? "Выдача…" : "Поделиться"}

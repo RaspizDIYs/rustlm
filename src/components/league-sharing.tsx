@@ -20,34 +20,56 @@ export function useLeagueSharing() {
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const epoch = useRef(0);
-  const reload = useCallback(async (next?: boolean) => {
+  const pending = useRef<Promise<unknown>>(Promise.resolve());
+  const running = useRef(false);
+  const reload = useCallback((next?: boolean) => {
     const request = ++epoch.current;
+    const task = pending.current.catch(() => {}).then(async () => {
     try {
       const { loadSetting } = await import("@/lib/tauri");
       const enabled = next ?? await loadSetting("LeagueFriendsVisible", false);
       const identity = await invoke<Status>("league_status");
+      if (!identity || typeof identity.connected !== "boolean") throw new Error("Не удалось прочитать состояние подключения LM");
+      if (request === epoch.current) setStatus(identity);
       const result = identity.connected ? await invoke<Result>("league_refresh", { visible: enabled }) : { friends: [], offers: [] };
+      if (!result || !Array.isArray(result.friends) || !Array.isArray(result.offers)
+        || result.friends.some(friend => !friend || typeof friend.id !== "string" || typeof friend.display_name !== "string" || (friend.riot_accounts != null && (!Array.isArray(friend.riot_accounts) || friend.riot_accounts.some(a => !a || typeof a.puuid !== "string" || typeof a.riot_id !== "string"))))
+        || result.offers.some(offer => !offer || typeof offer.incoming !== "boolean" || !offer.metadata || !/^[a-f0-9]{32}$/i.test(offer.metadata.id) || typeof offer.metadata.owner !== "string" || typeof offer.metadata.recipient !== "string" || typeof offer.metadata.riot_id !== "string" || typeof offer.metadata.server !== "string" || !["pending", "accepted"].includes(offer.metadata.status) || !Number.isFinite(Date.parse(offer.metadata.expires_at)))) {
+        throw new Error("Сервер вернул несовместимый список друзей или передач. Обновите LM и повторите попытку.");
+      }
       if (request !== epoch.current) return;
       setStatus(identity); setData(result); setVisible(enabled); setError("");
+      return result;
     } catch (failure) {
       if (request !== epoch.current) return;
       setData({ friends: [], offers: [] });
       setError(String(failure));
       if (String(failure).includes("HTTP 401")) setStatus(previous => previous ? { ...previous, connected: false } : null);
+      throw failure;
     }
+    });
+    pending.current = task;
+    return task;
   }, []);
   useEffect(() => {
-    void reload();
-    const refresh = () => { if (!document.hidden) void reload(); };
+    void reload().catch(() => {});
+    const refresh = () => { if (!document.hidden && !running.current) void reload().catch(() => {}); };
     window.addEventListener("focus", refresh);
     const timer = setInterval(refresh, 60000);
     return () => { ++epoch.current; clearInterval(timer); window.removeEventListener("focus", refresh); };
   }, [reload]);
   const run = async (operation: () => Promise<unknown>) => {
+    if (running.current) return false;
+    running.current = true;
     setBusy(true); setError("");
-    try { await operation(); await reload(); }
-    catch (failure) { setError(String(failure)); }
-    finally { setBusy(false); }
+    try {
+      await pending.current.catch(() => {});
+      const version = epoch.current;
+      await operation();
+      if (version === epoch.current) await reload();
+      return true;
+    } catch (failure) { setError(String(failure)); return false; }
+    finally { running.current = false; setBusy(false); }
   };
   return { status, ...data, error, visible, busy, reload, run };
 }
@@ -63,7 +85,7 @@ export function LeagueConnection({ league }: { league: LeagueSharingState }) {
         <p className="text-xs text-muted-foreground">Оставьте League открытой вне поиска и матча. Принимаемые аккаунты доступны только в LM; отзыв не завершает уже открытую сессию Riot.</p>
         {league.error && <p role="alert" className="text-xs text-destructive">{league.error}</p>}
         <DialogFooter><Button size="sm" variant="outline" disabled={league.busy} onClick={() => setConfirmConnect(false)}>Отмена</Button><Button size="sm" disabled={league.busy} onClick={async () => {
-          await league.run(async () => { await invoke("league_connect"); await league.reload(true); setConfirmConnect(false); });
+          if (await league.run(() => league.status?.connected ? Promise.resolve() : invoke("league_connect"))) setConfirmConnect(false);
         }}>{league.busy ? <Loader2 className="animate-spin" /> : <Check />} Подключить</Button></DialogFooter>
       </DialogContent>
     </Dialog>
@@ -93,6 +115,6 @@ export function LeagueOffers({ league }: { league: LeagueSharingState }) {
       </div>;
     })}
     </div>
-    <Dialog open={Boolean(confirm)} onOpenChange={(open) => !open && setConfirm(null)}><DialogContent className="accounts-dialog max-w-sm"><DialogHeader><DialogTitle>Закрыть доступ?</DialogTitle><DialogDescription>Новые входы через LM станут недоступны. Уже открытую сессию Riot это не завершит.</DialogDescription></DialogHeader><DialogFooter><Button size="sm" variant="outline" onClick={() => setConfirm(null)}>Отмена</Button><Button size="sm" disabled={league.busy} onClick={async () => { if (!confirm) return; await league.run(() => invoke("league_decide", { id: confirm.metadata.id, action: confirm.incoming ? "decline" : "revoke" })); setConfirm(null); }}>Закрыть доступ</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={Boolean(confirm)} onOpenChange={(open) => !open && setConfirm(null)}><DialogContent className="accounts-dialog max-w-sm"><DialogHeader><DialogTitle>Закрыть доступ?</DialogTitle><DialogDescription>Новые входы через LM станут недоступны. Уже открытую сессию Riot это не завершит.</DialogDescription></DialogHeader><DialogFooter><Button size="sm" variant="outline" onClick={() => setConfirm(null)}>Отмена</Button><Button size="sm" disabled={league.busy} onClick={async () => { if (!confirm) return; if (await league.run(() => invoke("league_decide", { id: confirm.metadata.id, action: confirm.incoming ? "decline" : "revoke" }))) setConfirm(null); }}>Закрыть доступ</Button></DialogFooter></DialogContent></Dialog>
   </section>;
 }

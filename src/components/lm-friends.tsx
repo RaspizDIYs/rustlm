@@ -1,7 +1,7 @@
 "use client";
 import { LeagueConnection, type LeagueSharingState } from "@/components/league-sharing";
 import { HighlightText } from "@/components/highlight-text";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   RefreshCw,
@@ -58,22 +58,26 @@ export function LmFriends({
   const busy = league.busy;
   const currentAccount = league.status?.puuid ? { puuid: league.status.puuid, riot_id: league.status.riot_id || "" } : null;
   const errors = [...glErrors, ...(league.error ? [league.error] : [])];
+  const requests = useRef(0);
   const reload = useCallback(async () => {
+    const request = ++requests.current;
     try {
       const { goodluckGetUser, goodluckGetFriends } = await import("@/lib/tauri");
       const user = await goodluckGetUser();
-      setGl(user ? await goodluckGetFriends() : []);
+      const friends = user ? await goodluckGetFriends() : [];
+      if (request !== requests.current) return;
+      setGl(friends);
       setGlErrors([]);
-    } catch (failure) { setGlErrors([friendsError(failure)]); }
-    finally { setLoaded(true); }
+    } catch (failure) { if (request === requests.current) setGlErrors([friendsError(failure)]); }
+    finally { if (request === requests.current) setLoaded(true); }
   }, []);
   useEffect(() => {
     void reload();
     const refresh = () => void reload();
     window.addEventListener("rustlm-friends-changed", refresh);
-    return () => window.removeEventListener("rustlm-friends-changed", refresh);
+    return () => { ++requests.current; window.removeEventListener("rustlm-friends-changed", refresh); };
   }, [reload]);
-  const update = () => league.run(() => league.reload());
+  const update = () => league.run(async () => {});
   const selected = accounts.find((a) => a.Username === target);
   const visible = mergeFriends(
     gl,
@@ -277,7 +281,7 @@ export function LmFriends({
         <DialogContent className="accounts-dialog max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-sm">Удалить друга?</DialogTitle>
-            <DialogDescription>{removing?.display_name} будет удалён из друзей LM; дружба в League сохранится.</DialogDescription>
+            <DialogDescription>{removing?.display_name} будет удалён из друзей LM, доступ к переданным друг другу аккаунтам будет закрыт; дружба в League сохранится.</DialogDescription>
           </DialogHeader>
           {removeError && <p role="alert" className="text-xs text-destructive">{removeError}</p>}
           <DialogFooter>
