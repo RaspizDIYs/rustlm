@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import {strict as assert} from 'node:assert';
 import ts from 'typescript';
 const source=ts.transpileModule(readFileSync(new URL('../src/lib/friends.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
-const {friendsError,mergeFriends}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+const {friendsError,mergeFriends,riotFriendsForScope}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 test('discovery gives separate actions for unverified ownership, closed League and disconnected GoodLuck',()=>{
  assert.match(friendsError('Подтвердите владение этим Riot-аккаунтом'),/Подтвердите владение/);
  assert.match(friendsError('LCU lockfile unavailable'),/Откройте League/);
@@ -30,3 +30,17 @@ test('matching a Riot roster cannot erase an existing GoodLuck avatar',()=>{
  }
 });
 
+
+test('current account scope follows the live client and keeps unrelated League users out',()=>{
+ const current={id:'current',accounts:['current-puuid']};
+ const other={id:'other',accounts:['other-puuid']};
+ const both={id:'both',accounts:['current-puuid','other-puuid']};
+ const list=[current,other,both];
+ assert.deepEqual(riotFriendsForScope(list,'current','current-puuid'),[current,both]);
+ assert.deepEqual(riotFriendsForScope(list,'current','other-puuid'),[other,both]);
+ assert.deepEqual(riotFriendsForScope(list,'current',null),[]);
+ assert.deepEqual(riotFriendsForScope(list,'all',null),list);
+ assert.deepEqual(riotFriendsForScope(list,'other-puuid',null),[other,both]);
+ const gl={id:'gl-only',username:'gl',display_name:'GL'};
+ assert.equal(mergeFriends([gl],riotFriendsForScope([], 'current',null)).length,1);
+});

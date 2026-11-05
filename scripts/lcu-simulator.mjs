@@ -102,6 +102,8 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
         return reply(current.status, { message: 'synthetic private response' });
       }
       if (request.method === 'GET') {
+        if (route === '/lol-summoner/v1/current-summoner' && state.summoner) return reply(200, state.summoner);
+        if (route === '/lol-chat/v1/me' && state.chatMe) return reply(200, state.chatMe);
         if (route === '/lol-service-status/v1/shard-data') return reply(200, { region: 'TEST' });
         if (route === '/lol-gameflow/v1/gameflow-phase') return reply(200, state.flow.phase);
         if (route === '/lol-gameflow/v1/session') return reply(200, state.flow);

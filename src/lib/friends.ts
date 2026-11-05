@@ -1,5 +1,6 @@
 export function friendsError(error: unknown): string {
  const message=String(error);
+ if(/идентификатор текущего|Riot-аккаунт изменился/i.test(message))return "Дождитесь загрузки текущего аккаунта League и обновите друзей.";
  if(/Подтвердите владение|verified|ownership/i.test(message))return "Этот Riot-аккаунт ещё не подтверждён. Подтвердите владение в профиле GoodLuck, затем обновите друзей здесь.";
  if(/Включите обнаружение/i.test(message))return "Включите обнаружение друзей LM.";
  if(/Войдите в League|LCU|lockfile|клиент.*не|не.*клиент/i.test(message))return "Откройте League и войдите в аккаунт: список друзей читается из игрового клиента.";
@@ -15,4 +16,10 @@ export function mergeFriends(
  for(const friend of goodluck)merged.set(friend.id,{...friend,sources:["goodluck"]});
  for(const friend of riot)merged.set(friend.id,{...merged.get(friend.id),...friend,avatar_url:friend.avatar_url?.trim()||merged.get(friend.id)?.avatar_url,sources:merged.has(friend.id)?["goodluck","riot"]:["riot"]});
  return [...merged.values()].sort((a,b)=>a.display_name.localeCompare(b.display_name,"ru"));
+}
+
+export function riotFriendsForScope<T extends {accounts: string[]}>(friends: T[], scope: string, currentPuuid: string | null): T[] {
+ const puuid = scope === "current" ? currentPuuid : scope;
+ if (scope === "all") return friends;
+ return puuid ? friends.filter(friend => friend.accounts.includes(puuid)) : [];
 }

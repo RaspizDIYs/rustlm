@@ -196,6 +196,7 @@ pub fn run() {
             commands::goodluck::goodluck_refresh_profile,
             commands::goodluck::goodluck_get_friends,
             commands::goodluck::lm_friends,
+            commands::goodluck::lm_current_account,
             commands::goodluck::lm_set_visibility,
             commands::goodluck::lm_publish_friends,
             commands::goodluck::goodluck_search_users,

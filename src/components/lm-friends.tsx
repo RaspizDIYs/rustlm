@@ -1,6 +1,6 @@
 "use client";
 import { HighlightText } from "@/components/highlight-text";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   RefreshCw,
@@ -26,7 +26,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { friendsError, mergeFriends } from "@/lib/friends";
+import { friendsError, mergeFriends, riotFriendsForScope } from "@/lib/friends";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { goodluckRemoveFriend } from "@/lib/tauri";
 import type { AccountRecord, GoodLuckFriend } from "@/lib/tauri";
@@ -46,30 +46,36 @@ export function LmFriends({
 }) {
   const [gl, setGl] = useState<GoodLuckFriend[]>([]),
     [lm, setLm] = useState<LmFriend[]>([]),
-    [scope, setScope] = useState("all"),
+    [scope, setScope] = useState("current"),
     [target, setTarget] = useState(""),
     [enabled, setEnabled] = useState(false),
     [busy, setBusy] = useState(false),
     [errors, setErrors] = useState<string[]>([]),
     [loaded, setLoaded] = useState(false);
+  const [currentAccount, setCurrentAccount] = useState<{puuid: string; riot_id: string} | null>(null);
+  const reloadRequest = useRef(0);
   const [removing, setRemoving] = useState<GoodLuckFriend | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState("");
   const reload = useCallback(async () => {
+    const request = ++reloadRequest.current;
     const { goodluckGetFriends, loadSetting } = await import("@/lib/tauri");
     const results = await Promise.allSettled([
       goodluckGetFriends(),
       invoke<LmFriend[]>("lm_friends"),
       loadSetting("LmFriendsVisible", false),
+      invoke<{puuid: string; riot_id: string} | null>("lm_current_account"),
     ]);
+    if (request !== reloadRequest.current) return;
+    setCurrentAccount(results[3].status === "fulfilled" ? results[3].value : null);
     if (results[0].status === "fulfilled") setGl(results[0].value);
     if (results[1].status === "fulfilled") setLm(results[1].value);
     if (results[2].status === "fulfilled")
       setEnabled(Boolean(results[2].value));
     setErrors([
       ...new Set(
-        results.flatMap((r) =>
-          r.status === "rejected" ? [friendsError(r.reason)] : [],
+        results.flatMap((r, index) =>
+          r.status === "rejected" && (index !== 3 || (results[2].status === "fulfilled" && results[2].value)) ? [friendsError(r.reason)] : [],
         ),
       ),
     ]);
@@ -79,7 +85,12 @@ export function LmFriends({
     void reload();
     const refresh = () => void reload();
     window.addEventListener("rustlm-friends-changed", refresh);
-    return () => window.removeEventListener("rustlm-friends-changed", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      ++reloadRequest.current;
+      window.removeEventListener("rustlm-friends-changed", refresh);
+      window.removeEventListener("focus", refresh);
+    };
   }, [reload]);
   useEffect(() => {
     if (!enabled) return;
@@ -88,16 +99,16 @@ export function LmFriends({
     const refresh = async () => {
       if (running) return;
       running = true;
+      let issue = "";
       try {
         await invoke("lm_publish_friends");
+      } catch (error) {
+        issue = friendsError(error);
+      } finally {
         if (!cancelled) {
           await reload();
+          if (issue) setErrors((previous) => [...new Set([...previous, issue])]);
         }
-      } catch (error) {
-        if (!cancelled) {
-          setErrors([friendsError(error)]);
-        }
-      } finally {
         running = false;
       }
     };
@@ -122,7 +133,7 @@ export function LmFriends({
   const selected = accounts.find((a) => a.Username === target);
   const visible = mergeFriends(
     gl,
-    lm.filter((f) => scope === "all" || f.accounts.includes(scope)),
+    riotFriendsForScope(lm, scope, currentAccount?.puuid ?? null),
   ).filter((friend) =>
     [
       friend.display_name,
@@ -142,7 +153,9 @@ export function LmFriends({
             >
               <SelectTrigger size="sm" aria-label="Друзья аккаунта">
                 <SelectValue>
-                  {scope === "all"
+                  {scope === "current"
+                    ? "Сейчас в League"
+                    : scope === "all"
                     ? "Все аккаунты"
                     : accounts.find((a) => a.Puuid === scope)?.RiotId ||
                       "Аккаунт"}
@@ -150,6 +163,7 @@ export function LmFriends({
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
+                  <SelectItem value="current">Сейчас в League</SelectItem>
                   <SelectItem value="all">Все аккаунты</SelectItem>
                   {accounts
                     .filter((a) => a.Puuid)
@@ -184,7 +198,9 @@ export function LmFriends({
             </Select>
           </div>{" "}
           <div className="friends-toolbar-controls">
-            <WithTooltip label="Разрешить Riot-друзьям находить вас в LM">
+            <div className="flex items-center gap-2 text-xs">
+              <span>Друзья League</span>
+            <WithTooltip label="Разрешить Riot-друзьям находить вас в LM; Riot-профиль должен быть подтверждён">
               <Switch
                 size="sm"
                 aria-label="Обнаружение друзей LM"
@@ -204,6 +220,7 @@ export function LmFriends({
                 }}
               />
             </WithTooltip>
+            </div>
             <div className="flex items-center gap-2">
             <WithTooltip label="Прочитать друзей из открытого клиента League">
               <Button
@@ -237,6 +254,11 @@ export function LmFriends({
             </div>
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">
+          {!enabled ? "Включите «Друзья League», чтобы находить друзей с LM."
+            : currentAccount ? `League: ${currentAccount.riot_id || "текущий аккаунт"} · только друзья с LM.`
+            : "Откройте League и войдите в аккаунт, чтобы увидеть его друзей с LM."}
+        </p>
         {errors.map((error, i) => (
           <p role="alert" className="text-xs text-destructive" key={i}>
             {error}

@@ -2,6 +2,7 @@
 import { RankBadge } from "@/components/rank-badge";
 import { HighlightText } from "@/components/highlight-text";
 import { LmFriends } from "@/components/lm-friends";
+import { mergeFriends } from "@/lib/friends";
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -598,7 +600,15 @@ export default function AccountsPage() {
     setFriendSearchOpen(false);
     try {
       const { goodluckGetFriends } = await import("@/lib/tauri");
-      const data = await goodluckGetFriends();
+      const { invoke } = await import("@tauri-apps/api/core");
+      const results = await Promise.allSettled([goodluckGetFriends(), invoke<GoodLuckFriend[]>("lm_friends")]);
+      const data = mergeFriends(
+        results[0].status === "fulfilled" ? results[0].value : [],
+        results[1].status === "fulfilled" ? results[1].value : [],
+      );
+      if (!recipient && !data.length && results.some((result) => result.status === "rejected")) {
+        setShareError("Не удалось загрузить получателей. Проверьте вход в LM и повторите попытку.");
+      }
       setFriends(recipient && !data.some(f=>f.id===recipient.id) ? [recipient,...data] : data);
       if (recipient) setShareFriend(recipient.id);
       setFriendSearchOpen(data.length === 0 && !recipient);
@@ -1470,13 +1480,15 @@ export default function AccountsPage() {
               <div className="text-xs text-muted-foreground">{shareTarget?.Server}</div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm text-muted-foreground">Друг GoodLuck</label>
+              <label className="text-sm text-muted-foreground">Получатель</label>
               {friends.length > 0 ? (
                 <>
                   <Select value={shareFriend} onValueChange={(value) => value && setShareFriend(value)}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга" /></SelectTrigger>
+                    <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга">{friends.find((friend) => friend.id === shareFriend)?.display_name}</SelectValue></SelectTrigger>
                     <SelectContent className="accounts-dialog">
+                      <SelectGroup>
                       {friends.map((friend) => <SelectItem key={friend.id} value={friend.id}>{friend.display_name}</SelectItem>)}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                   <Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs" onClick={() => setFriendSearchOpen((open) => !open)}>
@@ -1525,12 +1537,14 @@ export default function AccountsPage() {
             <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Срок доступа</label>
               <Select value={shareDuration} onValueChange={(value) => value && setShareDuration(value)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full"><SelectValue>{{"24":"24 часа","168":"7 дней","720":"30 дней","0":"Бессрочно"}[shareDuration]}</SelectValue></SelectTrigger>
                 <SelectContent className="accounts-dialog">
+                  <SelectGroup>
                   <SelectItem value="24">24 часа</SelectItem>
                   <SelectItem value="168">7 дней</SelectItem>
                   <SelectItem value="720">30 дней</SelectItem>
                   <SelectItem value="0">Бессрочно</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </div>

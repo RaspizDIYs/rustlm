@@ -463,6 +463,21 @@ mod tests {
 pub async fn lm_friends(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     state.goodluck.lm_friends().await
 }
+#[tauri::command]
+pub async fn lm_current_account(state: State<'_, AppState>) -> Result<Option<crate::services::riot_friends::CurrentRiotAccount>, AppError> {
+    if state.riot_client.get_lcu_auth().is_none() { return Ok(None); }
+    live_lm_account(&state).await.map(Some)
+}
+async fn live_lm_account(state: &AppState) -> Result<crate::services::riot_friends::CurrentRiotAccount, AppError> {
+    let mut current = crate::services::riot_friends::current_account(&state.riot_client).await?;
+    if !crate::models::account::is_valid_puuid(&current.puuid) {
+        if let Some(puuid) = state.goodluck.resolve_riot_puuid(&current.riot_id).await? { current.puuid = puuid; }
+    }
+    if !crate::models::account::is_valid_puuid(&current.puuid) {
+        return Err(AppError::Custom("Не удалось получить идентификатор текущего Riot-аккаунта. Дождитесь загрузки League и повторите обновление".into()));
+    }
+    Ok(current)
+}
 // Serialize opt-out with roster writes so an in-flight refresh cannot restore presence.
 static LM_DISCOVERY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -480,17 +495,8 @@ pub async fn publish_lm_friends(state: &AppState) -> Result<serde_json::Value, A
     if !state.settings.load_setting("LmFriendsVisible", false) {
         return Err(AppError::Custom("Включите обнаружение друзей LM".into()));
     }
-    let current: serde_json::Value = serde_json::from_str(
-        &state
-            .riot_client
-            .lcu_get("/lol-summoner/v1/current-summoner")
-            .await?,
-    )?;
-    let puuid = current
-        .get("puuid")
-        .and_then(|v| v.as_str())
-        .filter(|p| crate::models::account::is_valid_puuid(p))
-        .ok_or_else(|| AppError::Custom("Войдите в League, чтобы обновить Riot-друзей".into()))?;
+    let current = live_lm_account(state).await?;
+    let puuid = &current.puuid;
     let friends: serde_json::Value =
         serde_json::from_str(&state.riot_client.lcu_get("/lol-chat/v1/friends").await?)?;
     let list = friends
@@ -501,19 +507,16 @@ pub async fn publish_lm_friends(state: &AppState) -> Result<serde_json::Value, A
         .filter_map(|f| f.get("puuid").and_then(|p| p.as_str()))
         .filter(|p| crate::models::account::is_valid_puuid(p))
         .collect();
-    let verified: serde_json::Value = serde_json::from_str(
-        &state.riot_client.lcu_get("/lol-summoner/v1/current-summoner").await?
-    )?;
-    if verified.get("puuid").and_then(|v| v.as_str()) != Some(puuid) {
+    let verified = live_lm_account(state).await?;
+    if verified.puuid != current.puuid {
         return Err(AppError::Custom("Riot-аккаунт изменился во время чтения друзей. Повторите обновление".into()));
     }
     let mut result = state.goodluck
         .lm_presence(serde_json::json!({"puuid":puuid,"friends":puuids}))
         .await?;
     result["friends_count"] = serde_json::json!(puuids.len());
-    result["riot_id"] = serde_json::json!(format!("{}#{}",
-        current.get("gameName").and_then(|v| v.as_str()).unwrap_or(""),
-        current.get("tagLine").and_then(|v| v.as_str()).unwrap_or("")));
+    result["riot_id"] = serde_json::json!(current.riot_id);
+    result["puuid"] = serde_json::json!(current.puuid);
     Ok(result)
 }
 #[tauri::command]
