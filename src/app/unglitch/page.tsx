@@ -213,7 +213,7 @@ export default function UnglitchPage() {
         </div>
       </header>
       <p className="text-xs text-muted-foreground">
-        Восстановление интерфейса League без полного перезапуска клиента.
+        Помогает при лагах и зависаниях клиента: перезапускает его интерфейс без перезапуска игры.
       </p>
       <div
         className="flex flex-wrap items-center gap-2"

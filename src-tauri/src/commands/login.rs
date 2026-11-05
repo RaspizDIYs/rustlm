@@ -10,8 +10,12 @@ use crate::state::AppState;
 
 static LOGIN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn begin_login(cancelled: &std::sync::atomic::AtomicBool) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
-    let guard = LOGIN_LOCK.try_lock().map_err(|_| "Вход уже выполняется".to_string())?;
+fn begin_login(
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+    let guard = LOGIN_LOCK
+        .try_lock()
+        .map_err(|_| "Вход уже выполняется".to_string())?;
     cancelled.store(false, Ordering::Relaxed);
     Ok(guard)
 }
@@ -41,7 +45,15 @@ pub async fn login_to_account(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let _guard = begin_login(&state.login_cancelled)?;
+    login_local_for_party(username, &state, app).await.map(|_| ())
+}
+
+pub(crate) async fn login_local_for_party(
+    username: String,
+    state: &AppState,
+    app: tauri::AppHandle,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, String> {
+    let guard = begin_login(&state.login_cancelled)?;
     // Local accounts use DPAPI; shared accounts never enter this storage.
     let account = state
         .accounts
@@ -58,10 +70,76 @@ pub async fn login_to_account(
         .accounts
         .unprotect(&account.encrypted_password)
         .map_err(|e| e.to_string())?;
-    login_with_credentials(username, plain_password, false, &state, app).await
+    login_with_credentials(username, plain_password, false, &state, app).await?;
+    // The party caller keeps other logins excluded until lobby membership is confirmed.
+    Ok(guard)
 }
 
+// The wrapper always releases the config lifecycle, including cancellation and launch failures.
 async fn login_with_credentials(
+    username: String,
+    plain_password: String,
+    shared_account: bool,
+    state: &AppState,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    ensure_safe_switch(state).await?;
+    let result =
+        login_with_credentials_inner(username, plain_password, shared_account, state, app).await;
+    let config = state.lol_config.clone();
+    let success = result.is_ok();
+    let recovery = tokio::task::spawn_blocking(move || config.finish_login(success))
+        .await
+        .map_err(|_| "Не завершено восстановление настроек".to_string())?
+        .map_err(|error| error.to_string());
+    match (result, recovery) {
+        (Err(login), Err(recovery)) => Err(format!(
+            "{login}. Настройки ожидают восстановления: {recovery}"
+        )),
+        (Err(login), _) => Err(login),
+        (Ok(()), recovery) => recovery,
+    }
+}
+
+async fn ensure_safe_switch(state: &AppState) -> Result<(), String> {
+    let probe = RiotClientService::unglitch_probe();
+    if probe.game_running {
+        return Err("Сначала завершите игру; LM не будет закрывать её ради смены аккаунта".into());
+    }
+    if probe.backend_running || probe.ui_running {
+        let raw = state
+            .riot_client
+            .lcu_get("/lol-gameflow/v1/gameflow-phase")
+            .await
+            .map_err(|_| {
+                "Не удалось безопасно проверить состояние League. Закройте клиент вручную"
+                    .to_string()
+            })?;
+        let phase: String =
+            serde_json::from_str(&raw).map_err(|_| "Неизвестное состояние League".to_string())?;
+        if !matches!(phase.as_str(), "None" | "Lobby") {
+            return Err("Сначала выйдите из поиска, выбора чемпионов или игры".into());
+        }
+    }
+    Ok(())
+}
+
+async fn wait_league_closed(state: &AppState) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        check_cancelled(state)?;
+        let probe = RiotClientService::unglitch_probe();
+        if !probe.backend_running && !probe.ui_running && !probe.game_running {
+            return Ok(());
+        }
+        if probe.game_running || tokio::time::Instant::now() >= deadline {
+            return Err("League ещё работает. Закройте клиент и повторите вход".into());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+async fn login_with_credentials_inner(
     username: String,
     plain_password: String,
     shared_account: bool,
@@ -114,6 +192,14 @@ async fn login_with_credentials(
     };
     check_cancelled(&state)?;
 
+    wait_league_closed(state).await?;
+    let config = state.lol_config.clone();
+    tokio::task::spawn_blocking(move || config.prepare_login(shared_account))
+        .await
+        .map_err(|_| "Не удалось подготовить личные настройки".to_string())?
+        .map_err(|error| error.to_string())?;
+    check_cancelled(state)?;
+
     // 4. UIA login with phase-specific timeout
     emit_progress(&app, "Вход в аккаунт...");
     logger.login_flow("UIA", Some(&format!("timeout={}s", uia_timeout)));
@@ -123,7 +209,7 @@ async fn login_with_credentials(
 
     if uia_ok {
         logger.login_flow("UIA", Some("success"));
-        return finalize_login(rc, logger, &app, &state, shared_account).await;
+        return finalize_login(rc, logger, &app, &state, shared_account, &username).await;
     }
 
     // 5. Fallback — two stages: soft (retry logout), then hard (kill+restart)
@@ -135,12 +221,16 @@ async fn login_with_credentials(
         logger.login_flow("FALLBACK_SOFT", Some("RC UI alive, retrying logout + UIA"));
 
         emit_progress(&app, "Повторная попытка выхода...");
+        ensure_safe_switch(state).await?;
         rc.invalidate_cache();
         let _ = rc.logout_via_rc().await;
         check_cancelled(&state)?;
 
         // Kill League if still lingering
         if RiotClientService::is_league_running() {
+            if RiotClientService::unglitch_probe().game_running {
+                return Err("Игра запущена; автоматическое закрытие отменено".into());
+            }
             RiotClientService::kill_league(false);
         }
 
@@ -150,7 +240,7 @@ async fn login_with_credentials(
 
         if uia_ok {
             logger.login_flow("FALLBACK_SOFT", Some("succeeded"));
-            return finalize_login(rc, logger, &app, &state, shared_account).await;
+            return finalize_login(rc, logger, &app, &state, shared_account, &username).await;
         }
         logger.login_flow("FALLBACK_SOFT", Some("failed"));
     }
@@ -176,16 +266,22 @@ async fn login_with_credentials(
 
     if uia_ok {
         logger.login_flow("FALLBACK_HARD", Some("succeeded"));
-        return finalize_login(rc, logger, &app, &state, shared_account).await;
+        return finalize_login(rc, logger, &app, &state, shared_account, &username).await;
     }
 
     Err("Не удалось войти после нескольких попыток".to_string())
 }
 
 #[tauri::command]
-pub async fn league_login(id: String, state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn league_login(
+    id: String,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let _guard = begin_login(&state.login_cancelled)?;
-    let (username, password) = crate::commands::league_sharing::credentials(&id, &state).await.map_err(|e|e.to_string())?;
+    let (username, password) = crate::commands::league_sharing::credentials(&id, &state)
+        .await
+        .map_err(|e| e.to_string())?;
     login_with_credentials(username, password, true, &state, app).await
 }
 
@@ -226,6 +322,7 @@ async fn prepare_logout(
     // Logout FIRST while RC is in a stable state.
     // If we kill League before logout, RC detects a crash and enters a
     // broken state (crash dialog / hidden UX), making logout unreliable.
+    ensure_safe_switch(state).await?;
     emit_progress(app, "Выход из текущей сессии...");
     rc.invalidate_cache();
     let _ = rc.logout_via_rc().await;
@@ -235,6 +332,9 @@ async fn prepare_logout(
     // of League won't confuse it.
     if league_running && RiotClientService::is_league_running() {
         emit_progress(app, "Закрытие League of Legends...");
+        if RiotClientService::unglitch_probe().game_running {
+            return Err("Игра запущена; автоматическое закрытие отменено".into());
+        }
         RiotClientService::kill_league(false);
     }
 
@@ -261,6 +361,7 @@ async fn finalize_login(
     app: &tauri::AppHandle,
     state: &AppState,
     shared_account: bool,
+    username: &str,
 ) -> Result<(), String> {
     emit_progress(app, "Ожидание авторизации...");
     logger.login_flow("AUTH", Some("waiting for RSO authorization..."));
@@ -269,6 +370,16 @@ async fn finalize_login(
     }
 
     check_cancelled(state)?;
+
+    if shared_account {
+        let config = state.lol_config.clone();
+        let username = username.to_owned();
+        tokio::task::spawn_blocking(move || config.apply_for_shared_login(&username))
+            .await
+            .map_err(|_| "Не удалось применить личные клавиши".to_string())?
+            .map_err(|error| error.to_string())?;
+        check_cancelled(state)?;
+    }
 
     if !RiotClientService::is_league_running() {
         emit_progress(app, "Запуск League of Legends...");
@@ -365,6 +476,7 @@ async fn wait_rso_with_cancel(
 
 /// Kill all RC/League processes and wait until they are actually dead.
 async fn kill_and_wait(logger: &FileLogger, state: &AppState) -> Result<(), String> {
+    ensure_safe_switch(state).await?;
     RiotClientService::kill_league(true);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while RiotClientService::is_riot_client_running() {

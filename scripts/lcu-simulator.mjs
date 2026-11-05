@@ -25,10 +25,12 @@ export function scenario(name) {
     session: { gameId: 100, localPlayerCellId: 1,
       myTeam: [{ cellId: 1, championId: 3, assignedPosition: aram ? '' : 'middle' }],
       actions: [], benchEnabled: aram, benchChampions: [{ championId: 1 }, { championId: 2 }],
-      timer: { phase: aram ? 'FINALIZATION' : 'BAN_PICK', totalTimeInPhase: 45000,
+      allowSubsetChampionPicks: name.endsWith('locked'),
+      timer: { phase: aram && !name.endsWith('locked') ? 'FINALIZATION' : 'BAN_PICK', totalTimeInPhase: 45000,
         adjustedTimeLeftInPhase: name.endsWith('locked') ? 43000 : 40000 },
     },
-    pickable: [1, 2, 3],
+    pickable: [1, 2, 3, 4],
+    subset: name.endsWith('locked') ? [3, 4] : [],
   };
 }
 
@@ -109,6 +111,7 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
         if (route === '/lol-gameflow/v1/session') return reply(200, state.flow);
         if (route === readyRoute) return reply(200, state.ready);
         if (route === sessionRoute && state.flow.phase === 'ChampSelect') return reply(200, state.session);
+        if (route === '/lol-lobby-team-builder/champ-select/v1/subset-champion-list') return reply(200, state.subset || []);
         if (route === '/lol-champ-select/v1/pickable-champion-ids') return reply(200, state.pickable);
       }
       if (request.method === 'POST' && route === '/riotclient/kill-and-restart-ux') {
@@ -127,7 +130,7 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
         const index = state.session.benchChampions.findIndex(c => c.championId === id);
         const timer = state.session.timer;
         if (!state.session.benchEnabled || index < 0 || !state.pickable.includes(id)
-          || timer.adjustedTimeLeftInPhase <= 0 || timer.totalTimeInPhase - timer.adjustedTimeLeftInPhase < 3000) return reply(409, {});
+          || timer.adjustedTimeLeftInPhase <= 0 || (timer.phase !== 'FINALIZATION' && !(state.session.allowSubsetChampionPicks && (state.subset || []).includes(id)))) return reply(409, {});
         state.session.benchChampions[index].championId = state.session.myTeam[0].championId;
         state.session.myTeam[0].championId = id;
         actions.push({ method: request.method, route }); publish(sessionRoute, state.session); return reply(204);

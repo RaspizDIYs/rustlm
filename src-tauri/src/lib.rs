@@ -149,6 +149,7 @@ pub fn run() {
             commands::riot_client::get_authorized_riot_login_username,
             commands::data_dragon::get_ddragon_version,
             commands::data_dragon::get_champions,
+            commands::data_dragon::get_champion_search_aliases,
             commands::data_dragon::get_champion_info,
             commands::data_dragon::get_summoner_spells,
             commands::data_dragon::get_champion_image_url,
@@ -242,6 +243,24 @@ pub fn run() {
             commands::lol_config::lol_cfg_delete_preset,
             commands::lol_config::lol_cfg_export_preset,
             commands::lol_config::lol_cfg_import_preset,
+            commands::lol_config::lol_cfg_guest_status,
+            commands::lol_config::lol_cfg_guest_start,
+            commands::lol_config::lol_cfg_guest_restore,
+            commands::lol_config::lol_cfg_guest_set_default,
+            commands::party::party_snapshot,
+            commands::party::party_friends,
+            commands::party::party_create,
+            commands::party::party_action,
+            commands::party::party_lobby,
+            commands::party::party_accept_lobby,
+            commands::party::party_queue,
+            commands::party::party_cancel_queue,
+            commands::party::party_join_with_account,
+            commands::draft_coordination::draft_enabled,
+            commands::draft_coordination::draft_set_enabled,
+            commands::draft_coordination::draft_local,
+            commands::draft_coordination::draft_share_current,
+            commands::draft_coordination::draft_set_preference,
             commands::webview::repair_webview_cache,
             commands::webview::webview_ready,
             commands::refresh_tray,
@@ -294,6 +313,8 @@ pub fn run() {
                 auto_accept.ensure_listeners_started().await;
             });
 
+            tauri::async_runtime::spawn(services::guest_config_watcher::run(state.lol_config.clone()));
+            tauri::async_runtime::spawn(commands::party::run(app.handle().clone()));
             state.cloud_sync.set_app_handle(app.handle().clone());
             tauri::async_runtime::spawn(state.unglitch.clone().run(
                 state.riot_client.clone(), state.logger.clone(),

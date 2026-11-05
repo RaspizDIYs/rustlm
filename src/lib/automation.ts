@@ -88,3 +88,29 @@ export function removePriority(picks: string[], index: number, count: number): s
   active.push("");
   return [...active,...picks.slice(count)];
 }
+
+
+export function banPriorities(profile: AutomationProfile): string[] {
+  const names = profile.Bans?.length ? profile.Bans : [profile.Ban || ""];
+  return Array.from({ length: 3 }, (_, index) => {
+    const name = names[index] || "";
+    return name && profile.Picks.includes(name) ? "" : name;
+  });
+}
+export function setBanPriority(profile: AutomationProfile, index: number, name: string): Pick<AutomationProfile, "Bans" | "Ban" | "Picks"> {
+  const bans = banPriorities(profile);
+  const duplicate = name ? bans.indexOf(name) : -1;
+  if (duplicate >= 0 && duplicate !== index) bans[duplicate] = bans[index];
+  bans[index] = name;
+  return { Bans: bans, Ban: bans[0], Picks: profile.Picks.map(pick => name && pick === name ? "" : pick) };
+}
+
+
+export function setPickPriority(profile: AutomationProfile, index: number, name: string): Pick<AutomationProfile, "Picks" | "Bans" | "Ban"> {
+  const picks = [...profile.Picks];
+  const duplicate = name ? picks.indexOf(name) : -1;
+  if (duplicate >= 0 && duplicate !== index) picks[duplicate] = picks[index] || "";
+  picks[index] = name;
+  const bans = banPriorities(profile).map(ban => name && ban === name ? "" : ban);
+  return { Picks: picks, Bans: bans, Ban: bans[0] };
+}

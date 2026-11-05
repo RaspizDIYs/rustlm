@@ -205,6 +205,10 @@ export async function getChampions(): Promise<Record<string, string>> {
   return invoke<Record<string, string>>("get_champions");
 }
 
+export async function getChampionSearchAliases(): Promise<Record<string, string[]>> {
+  return invoke<Record<string, string[]>>("get_champion_search_aliases");
+}
+
 export async function getChampionInfo(displayName: string): Promise<ChampionInfo | null> {
   return invoke<ChampionInfo | null>("get_champion_info", { displayName });
 }
@@ -301,6 +305,8 @@ export interface AutomationProfile {
   Picks: string[];
   PickIds?: number[];
   Ban: string;
+  Bans?: string[];
+  BanIds?: number[];
   BanId?: number | null;
   Spell1Id?: number | null;
   Spell2Id?: number | null;
@@ -792,6 +798,19 @@ export interface LolConfigStatus {
   readonly: boolean;
   league_running: boolean;
 }
+
+export interface GuestConfigStatus {
+  personal_preset_id: string | null;
+  active: boolean;
+  changed: boolean;
+  pending_restore: boolean;
+}
+export const lolCfgGuestStatus = () => invoke<GuestConfigStatus>("lol_cfg_guest_status");
+export const lolCfgGuestSetDefault = (id: string) => invoke<void>("lol_cfg_guest_set_default", { id });
+export type GuestConfigMode = "keyboard" | "full";
+export const lolCfgGuestStart = (id: string, mode: GuestConfigMode = "keyboard") => invoke<void>("lol_cfg_guest_start", { id, mode });
+export const lolCfgGuestRestore = (confirmChanges: boolean, saveName: string | null = null) =>
+  invoke<void>("lol_cfg_guest_restore", { confirmChanges, saveName });
 
 export interface LolConfigPreset {
   id: string;

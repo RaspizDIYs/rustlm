@@ -254,7 +254,10 @@ pub async fn goodluck_accept_friend_request(
     if request_id.trim().is_empty() {
         return Err(AppError::Custom("Не выбрана заявка в друзья".to_string()));
     }
-    state.goodluck.accept_friend_request(request_id.trim()).await
+    state
+        .goodluck
+        .accept_friend_request(request_id.trim())
+        .await
 }
 
 #[tauri::command]
@@ -265,7 +268,10 @@ pub async fn goodluck_decline_friend_request(
     if request_id.trim().is_empty() {
         return Err(AppError::Custom("Не выбрана заявка в друзья".to_string()));
     }
-    state.goodluck.decline_friend_request(request_id.trim()).await
+    state
+        .goodluck
+        .decline_friend_request(request_id.trim())
+        .await
 }
 
 #[tauri::command]
@@ -385,6 +391,19 @@ pub async fn process_shared_account_cleanups(state: &AppState) -> Result<u32, Ap
         };
 
         if same_account {
+            let probe = crate::services::riot_client::RiotClientService::unglitch_probe();
+            if probe.game_running {
+                continue;
+            }
+            let phase = state
+                .riot_client
+                .lcu_get("/lol-gameflow/v1/gameflow-phase")
+                .await
+                .ok()
+                .and_then(|raw| serde_json::from_str::<String>(&raw).ok());
+            if !matches!(phase.as_deref(), Some("None" | "Lobby")) {
+                continue;
+            }
             state.riot_client.invalidate_cache();
             if let Err(error) = state.riot_client.logout_via_rc().await {
                 log::warn!(
@@ -392,6 +411,9 @@ pub async fn process_shared_account_cleanups(state: &AppState) -> Result<u32, Ap
                     task.id,
                     error
                 );
+                continue;
+            }
+            if crate::services::riot_client::RiotClientService::unglitch_probe().game_running {
                 continue;
             }
             if crate::services::riot_client::RiotClientService::is_league_running() {
@@ -404,6 +426,11 @@ pub async fn process_shared_account_cleanups(state: &AppState) -> Result<u32, Ap
                 );
                 continue;
             }
+        }
+
+        // A running client or external edit leaves the durable config journal for the watcher/UI.
+        if let Err(error) = state.lol_config.observe_shared_login().await {
+            log::debug!("Shared settings restoration pending: {error}");
         }
 
         if let Err(error) = state.goodluck.complete_shared_cleanup(&task.id).await {
@@ -464,14 +491,22 @@ pub async fn lm_friends(state: State<'_, AppState>) -> Result<serde_json::Value,
     state.goodluck.lm_friends().await
 }
 #[tauri::command]
-pub async fn lm_current_account(state: State<'_, AppState>) -> Result<Option<crate::services::riot_friends::CurrentRiotAccount>, AppError> {
-    if state.riot_client.get_lcu_auth().is_none() { return Ok(None); }
+pub async fn lm_current_account(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::services::riot_friends::CurrentRiotAccount>, AppError> {
+    if state.riot_client.get_lcu_auth().is_none() {
+        return Ok(None);
+    }
     live_lm_account(&state).await.map(Some)
 }
-async fn live_lm_account(state: &AppState) -> Result<crate::services::riot_friends::CurrentRiotAccount, AppError> {
+async fn live_lm_account(
+    state: &AppState,
+) -> Result<crate::services::riot_friends::CurrentRiotAccount, AppError> {
     let mut current = crate::services::riot_friends::current_account(&state.riot_client).await?;
     if !crate::models::account::is_valid_puuid(&current.puuid) {
-        if let Some(puuid) = state.goodluck.resolve_riot_puuid(&current.riot_id).await? { current.puuid = puuid; }
+        if let Some(puuid) = state.goodluck.resolve_riot_puuid(&current.riot_id).await? {
+            current.puuid = puuid;
+        }
     }
     if !crate::models::account::is_valid_puuid(&current.puuid) {
         return Err(AppError::Custom("Не удалось получить идентификатор текущего Riot-аккаунта. Дождитесь загрузки League и повторите обновление".into()));
@@ -509,9 +544,12 @@ pub async fn publish_lm_friends(state: &AppState) -> Result<serde_json::Value, A
         .collect();
     let verified = live_lm_account(state).await?;
     if verified.puuid != current.puuid {
-        return Err(AppError::Custom("Riot-аккаунт изменился во время чтения друзей. Повторите обновление".into()));
+        return Err(AppError::Custom(
+            "Riot-аккаунт изменился во время чтения друзей. Повторите обновление".into(),
+        ));
     }
-    let mut result = state.goodluck
+    let mut result = state
+        .goodluck
         .lm_presence(serde_json::json!({"puuid":puuid,"friends":puuids}))
         .await?;
     result["friends_count"] = serde_json::json!(puuids.len());

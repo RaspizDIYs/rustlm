@@ -30,3 +30,7 @@ pub mod lcu_protocol;
 pub mod client_diagnostics;
 
 pub mod riot_friends;
+
+pub mod draft_coordination;
+
+pub mod guest_config_watcher;

@@ -83,3 +83,46 @@ pub async fn lol_cfg_import_preset(
         .await
         .map_err(join_err)?
 }
+
+#[tauri::command]
+pub async fn lol_cfg_guest_status(
+    state: State<'_, AppState>,
+) -> Result<crate::services::lol_config::GuestConfigStatus, AppError> {
+    let svc = Arc::clone(&state.lol_config);
+    tokio::task::spawn_blocking(move || svc.guest_status())
+        .await
+        .map_err(join_err)?
+}
+#[tauri::command]
+pub async fn lol_cfg_guest_start(
+    state: State<'_, AppState>,
+    id: String,
+    mode: Option<crate::services::lol_config::GuestConfigMode>,
+) -> Result<(), AppError> {
+    let svc = Arc::clone(&state.lol_config);
+    tokio::task::spawn_blocking(move || svc.guest_start(id, mode.unwrap_or_default()))
+        .await
+        .map_err(join_err)?
+}
+#[tauri::command]
+pub async fn lol_cfg_guest_restore(
+    state: State<'_, AppState>,
+    confirm_changes: bool,
+    save_name: Option<String>,
+) -> Result<(), AppError> {
+    let svc = Arc::clone(&state.lol_config);
+    tokio::task::spawn_blocking(move || svc.guest_restore(confirm_changes, save_name))
+        .await
+        .map_err(join_err)?
+}
+
+#[tauri::command]
+pub async fn lol_cfg_guest_set_default(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), AppError> {
+    let svc = Arc::clone(&state.lol_config);
+    tokio::task::spawn_blocking(move || svc.set_personal_preset(id))
+        .await
+        .map_err(join_err)?
+}

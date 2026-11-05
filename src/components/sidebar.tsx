@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   Users,
+  UserRoundPlus,
   Zap,
   Search,
   SlidersHorizontal,
@@ -48,6 +49,7 @@ import { needsCloudTotpVerification } from "@/lib/cloud-totp";
 
 const navItems = [
   { href: "/accounts", label: "Аккаунты", icon: Users },
+  { href: "/party", label: "Пати", icon: UserRoundPlus },
   { href: "/automation", label: "Автоматизация", icon: Zap },
   { href: "/configs", label: "Конфиги", icon: SlidersHorizontal },
   { href: "/repair-tools", label: "Repair Tools", icon: Network },

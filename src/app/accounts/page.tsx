@@ -3,6 +3,9 @@ import { RankBadge } from "@/components/rank-badge";
 import { HighlightText } from "@/components/highlight-text";
 import { LmFriends } from "@/components/lm-friends";
 import { useLeagueSharing, LeagueOffers } from "@/components/league-sharing";
+import { PartyInvitations } from "@/components/party-invitations";
+import Link from "next/link";
+import type { PartySnapshot } from "@/lib/party";
 import { mergeFriends } from "@/lib/friends";
 
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -53,6 +56,7 @@ import {
   Share2,
   ShieldOff,
   UserPlus,
+  UserRoundPlus,
   Search,
   Plus,
   Ellipsis,
@@ -93,6 +97,20 @@ const hasValidPuuid = (value: string) => /^[A-Za-z0-9_-]{78}$/.test(value);
 
 export default function AccountsPage() {
   const league = useLeagueSharing();
+  const [partyState, setPartyState] = useState<PartySnapshot | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    setPartyState(null);
+    if (!league.status?.connected) return;
+    const update = (snapshot: PartySnapshot) => { if (!disposed && Array.isArray(snapshot?.invitations)) setPartyState(snapshot); };
+    void import("@tauri-apps/api/event").then(async ({listen}) => {
+      const stop = await listen<PartySnapshot>("party-changed", event => update(event.payload));
+      if (disposed) stop(); else unlisten = stop;
+    }).catch(() => {});
+    void import("@/lib/party").then(({partySnapshot}) => partySnapshot()).then(update).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, [league.status?.connected, league.status?.owner_riot_id]);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loginInProgress, setLoginInProgress] = useState<string | null>(null);
@@ -856,8 +874,14 @@ export default function AccountsPage() {
                 </Button>
               </WithTooltip>
             </div>
-            <div className="accounts-header-controls">
+            <div className="accounts-header-controls has-party">
               <AutoAcceptSwitch className="accounts-autoaccept" />
+              <WithTooltip label="Собрать пати">
+                <Button className="party-trigger relative" variant="outline" size="icon-sm" aria-label="Собрать пати" render={<Link href="/party" />}>
+                  <UserRoundPlus className="size-4" />
+                  {!!partyState?.invitations.length && <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1 text-[9px] text-primary-foreground">{partyState.invitations.length}</span>}
+                </Button>
+              </WithTooltip>
               <Button size="sm" onClick={() => setAddOpen(true)}>
                 <Plus data-icon="inline-start" />
                 Добавить
@@ -866,6 +890,7 @@ export default function AccountsPage() {
           </>
         )}
       </div>
+      <PartyInvitations snapshot={partyState} accounts={accounts} onSnapshot={setPartyState} />
       <LeagueOffers league={league} />
       {!friendsTab && league.error && <p role="alert" className="text-xs text-destructive">{league.error}</p>}
       {friendsTab ? (

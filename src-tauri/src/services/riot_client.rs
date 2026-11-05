@@ -40,7 +40,9 @@ impl RiotClientService {
         Self {
             cached_lcu_auth: Mutex::new(None),
             http_client,
-            diagnostics: std::sync::Arc::new(super::client_diagnostics::ClientDiagnostics::default()),
+            diagnostics: std::sync::Arc::new(
+                super::client_diagnostics::ClientDiagnostics::default(),
+            ),
         }
     }
 
@@ -346,44 +348,91 @@ impl RiotClientService {
         {
             use windows::core::BOOL;
             use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-            use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId,
-                IsHungAppWindow, IsWindowVisible, SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_ERRORONEXIT, WM_NULL};
-            struct WindowProbe { pid: u32, responsive: Option<bool> }
+            use windows::Win32::UI::WindowsAndMessaging::{
+                EnumWindows, GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible,
+                SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_ERRORONEXIT, WM_NULL,
+            };
+            struct WindowProbe {
+                pid: u32,
+                responsive: Option<bool>,
+            }
             unsafe extern "system" fn inspect(hwnd: HWND, param: LPARAM) -> BOOL {
                 let data = &mut *(param.0 as *mut WindowProbe);
                 let mut pid = 0;
                 GetWindowThreadProcessId(hwnd, Some(&mut pid));
-                if pid != data.pid || !IsWindowVisible(hwnd).as_bool() { return BOOL(1); }
-                let result = SendMessageTimeoutW(hwnd, WM_NULL, WPARAM(0), LPARAM(0),
-                    SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT, 500, None);
+                if pid != data.pid || !IsWindowVisible(hwnd).as_bool() {
+                    return BOOL(1);
+                }
+                let result = SendMessageTimeoutW(
+                    hwnd,
+                    WM_NULL,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT,
+                    500,
+                    None,
+                );
                 // A denied probe is not evidence of a freeze. Require Windows' hung-window signal too.
-                data.responsive = if result.0 != 0 { Some(true) }
-                    else if IsHungAppWindow(hwnd).as_bool() { Some(false) } else { None };
+                data.responsive = if result.0 != 0 {
+                    Some(true)
+                } else if IsHungAppWindow(hwnd).as_bool() {
+                    Some(false)
+                } else {
+                    None
+                };
                 BOOL(0)
             }
             let backends = Self::find_process_pids("LeagueClient.exe");
             let interfaces = Self::find_process_pids("LeagueClientUx.exe");
             let backend_pid = (backends.len() == 1).then(|| backends[0]);
             let ui_pid = (interfaces.len() == 1).then(|| interfaces[0]);
-            let root = backend_pid.and_then(Self::process_path)
+            let root = backend_pid
+                .and_then(Self::process_path)
                 .and_then(|path| path.parent().map(|p| p.to_path_buf()));
-            let same_install = root.as_ref().is_some_and(|root| ui_pid.and_then(Self::process_path)
-                .and_then(|path| path.parent().map(|p| p.to_path_buf()))
-                .is_some_and(|parent| parent.to_string_lossy().eq_ignore_ascii_case(&root.to_string_lossy())));
+            let same_install = root.as_ref().is_some_and(|root| {
+                ui_pid
+                    .and_then(Self::process_path)
+                    .and_then(|path| path.parent().map(|p| p.to_path_buf()))
+                    .is_some_and(|parent| {
+                        parent
+                            .to_string_lossy()
+                            .eq_ignore_ascii_case(&root.to_string_lossy())
+                    })
+            });
             let session_matches = Self::find_lcu_lockfile()
                 .is_some_and(|lock| Some(lock.pid) == backend_pid || Some(lock.pid) == ui_pid);
-            let mut window = WindowProbe { pid: ui_pid.unwrap_or(0), responsive: None };
+            let mut window = WindowProbe {
+                pid: ui_pid.unwrap_or(0),
+                responsive: None,
+            };
             if ui_pid.is_some() && same_install {
-                unsafe { let _ = EnumWindows(Some(inspect), LPARAM(&mut window as *mut WindowProbe as isize)); }
+                unsafe {
+                    let _ = EnumWindows(
+                        Some(inspect),
+                        LPARAM(&mut window as *mut WindowProbe as isize),
+                    );
+                }
             }
             let renderer_pids = Self::find_process_pids("LeagueClientUxRender.exe");
-            let renderer_count = root.as_ref().map(|root| renderer_pids.iter().copied()
-                .filter(|pid| Self::unglitch_renderer_matches(*pid, root)).count()).unwrap_or(0);
+            let renderer_count = root
+                .as_ref()
+                .map(|root| {
+                    renderer_pids
+                        .iter()
+                        .copied()
+                        .filter(|pid| Self::unglitch_renderer_matches(*pid, root))
+                        .count()
+                })
+                .unwrap_or(0);
             // An unreadable or differently located renderer is unknown, not proof that it disappeared.
             let render_scope_known = renderer_pids.is_empty() || renderer_count > 0;
             UxProbe {
-                backend_running: !backends.is_empty(), ui_running: !interfaces.is_empty(),
-                backend_pid, ui_pid, renderer_count, window_responsive: window.responsive,
+                backend_running: !backends.is_empty(),
+                ui_running: !interfaces.is_empty(),
+                backend_pid,
+                ui_pid,
+                renderer_count,
+                window_responsive: window.responsive,
                 game_running: Self::is_process_running("League of Legends.exe"),
                 scope_verified: same_install && session_matches && render_scope_known,
             }
@@ -663,7 +712,8 @@ impl RiotClientService {
         }
         let started = std::time::Instant::now();
         let response = request.send().await.map_err(|_| {
-            self.diagnostics.request(method.as_str(), endpoint, None, started.elapsed());
+            self.diagnostics
+                .request(method.as_str(), endpoint, None, started.elapsed());
             self.invalidate_cache();
             AppError::Custom(format!(
                 "LCU {} {}: connection failed or timed out",
@@ -672,7 +722,12 @@ impl RiotClientService {
         })?;
         let status = response.status();
         if !status.is_success() {
-            self.diagnostics.request(method.as_str(), endpoint, Some(status.as_u16()), started.elapsed());
+            self.diagnostics.request(
+                method.as_str(),
+                endpoint,
+                Some(status.as_u16()),
+                started.elapsed(),
+            );
             if matches!(status.as_u16(), 401 | 403) {
                 self.invalidate_cache();
             }
@@ -683,10 +738,16 @@ impl RiotClientService {
             )));
         }
         let text = response.text().await.map_err(|_| {
-            self.diagnostics.request(method.as_str(), endpoint, None, started.elapsed());
+            self.diagnostics
+                .request(method.as_str(), endpoint, None, started.elapsed());
             AppError::Custom("LCU response read failed".into())
         })?;
-        self.diagnostics.request(method.as_str(), endpoint, Some(status.as_u16()), started.elapsed());
+        self.diagnostics.request(
+            method.as_str(),
+            endpoint,
+            Some(status.as_u16()),
+            started.elapsed(),
+        );
         Ok(text)
     }
 
@@ -983,10 +1044,13 @@ impl RiotClientService {
         #[cfg(not(debug_assertions))]
         let simulated = false;
         let (port, password, scheme) = if simulated {
-            let (port, password) = self.get_lcu_auth().ok_or_else(|| AppError::Custom("RC simulator not connected".into()))?;
+            let (port, password) = self
+                .get_lcu_auth()
+                .ok_or_else(|| AppError::Custom("RC simulator not connected".into()))?;
             (port, password, "http")
         } else {
-            let lockfile = Self::find_rc_lockfile().ok_or_else(|| AppError::Custom("RC lockfile not found".into()))?;
+            let lockfile = Self::find_rc_lockfile()
+                .ok_or_else(|| AppError::Custom("RC lockfile not found".into()))?;
             (lockfile.port, lockfile.password, "https")
         };
         let url = format!("{scheme}://127.0.0.1:{port}{endpoint}");
@@ -1015,10 +1079,20 @@ impl RiotClientService {
 
         if !status.is_success() {
             // RC error bodies may contain account or authorization data.
-            let eula = serde_json::from_str::<serde_json::Value>(&text).ok()
-                .is_some_and(|body| body["errorCode"] == "eula_not_accepted" || body["error"] == "eula_not_accepted");
-            let message = format!("RC {}: HTTP {}{}", endpoint, status.as_u16(), if eula { " eula_not_accepted" } else { "" });
-            if log_errors { log::warn!("{}", message); }
+            let eula = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .is_some_and(|body| {
+                    body["errorCode"] == "eula_not_accepted" || body["error"] == "eula_not_accepted"
+                });
+            let message = format!(
+                "RC {}: HTTP {}{}",
+                endpoint,
+                status.as_u16(),
+                if eula { " eula_not_accepted" } else { "" }
+            );
+            if log_errors {
+                log::warn!("{}", message);
+            }
             return Err(AppError::Custom(message));
         }
 
@@ -1064,7 +1138,11 @@ impl RiotClientService {
                     return Some(true);
                 }
                 if let Some(auth) = json.get("authorization") {
-                    if auth.get("accessToken").and_then(|v| v.as_str()).is_some_and(|token| !token.is_empty()) {
+                    if auth
+                        .get("accessToken")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|token| !token.is_empty())
+                    {
                         return Some(true);
                     }
                 }
@@ -1408,7 +1486,7 @@ pub enum LoginPhase {
     LeagueRunning,
 }
 
-fn platform_to_server(platform: &str) -> String {
+pub(crate) fn platform_to_server(platform: &str) -> String {
     let upper = platform.to_uppercase();
     match upper.as_str() {
         "EUW1" | "EUW" => "EUW",
@@ -1453,16 +1531,41 @@ mod rc_simulator_tests {
         assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
         let client = RiotClientService::new();
         for status in [401, 403, 404, 429, 500, 503] {
-            client.lcu_post("/__test/failure", &format!(r#"{{"route":"/lol-gameflow/v1/session","status":{status}}}"#)).await.unwrap();
-            let error = client.rc_request_impl(reqwest::Method::GET, "/lol-gameflow/v1/session", None, true).await.unwrap_err().to_string();
+            client
+                .lcu_post(
+                    "/__test/failure",
+                    &format!(r#"{{"route":"/lol-gameflow/v1/session","status":{status}}}"#),
+                )
+                .await
+                .unwrap();
+            let error = client
+                .rc_request_impl(reqwest::Method::GET, "/lol-gameflow/v1/session", None, true)
+                .await
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(&status.to_string()));
             assert!(!error.contains("synthetic private response"));
         }
-        assert!(client.rc_request_impl(reqwest::Method::GET, "/lol-gameflow/v1/session", None, false).await.is_ok());
-        assert!(client.rc_request_impl(reqwest::Method::GET, "//other-host", None, false).await.is_err());
+        assert!(client
+            .rc_request_impl(
+                reqwest::Method::GET,
+                "/lol-gameflow/v1/session",
+                None,
+                false
+            )
+            .await
+            .is_ok());
+        assert!(client
+            .rc_request_impl(reqwest::Method::GET, "//other-host", None, false)
+            .await
+            .is_err());
         assert!(client.init_rso_session().await.is_err());
         assert!(!client.wait_for_rc_api_ready(Duration::from_millis(1)).await);
         assert_eq!(client.rso_authorization_state().await, None);
-        assert!(!client.wait_for_rso_state(false, Duration::from_millis(1)).await);
+        assert!(
+            !client
+                .wait_for_rso_state(false, Duration::from_millis(1))
+                .await
+        );
     }
 }

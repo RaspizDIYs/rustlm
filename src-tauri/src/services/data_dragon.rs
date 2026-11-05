@@ -195,7 +195,12 @@ impl DataDragonService {
                             id,
                             image_file_name: image_file,
                             tags,
-                            aliases: vec![display_name.clone(), english_name.clone()],
+                            aliases: vec![
+                                display_name.clone(),
+                                english_name.clone(),
+                                champ_data.get("name").and_then(|n| n.as_str())
+                                    .unwrap_or(&english_name).to_string(),
+                            ],
                             skins,
                         },
                     );
@@ -205,6 +210,13 @@ impl DataDragonService {
 
         *self.champions.write().await = Some(result.clone());
         Ok(result)
+    }
+
+    pub async fn get_champion_search_aliases(&self) -> Result<HashMap<String, Vec<String>>, AppError> {
+        self.get_champions().await?;
+        Ok(self.champion_info_cache.read().await.values()
+            .map(|info| (info.english_name.clone(), info.aliases.clone()))
+            .collect())
     }
 
     pub async fn get_champion_info(&self, display_name: &str) -> Option<ChampionInfo> {

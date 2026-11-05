@@ -23,6 +23,13 @@ pub async fn get_champions(state: State<'_, AppState>) -> Result<HashMap<String,
 }
 
 #[tauri::command]
+pub async fn get_champion_search_aliases(
+    state: State<'_, AppState>,
+) -> Result<HashMap<String, Vec<String>>, String> {
+    state.data_dragon.get_champion_search_aliases().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_champion_info(
     display_name: String,
     state: State<'_, AppState>,

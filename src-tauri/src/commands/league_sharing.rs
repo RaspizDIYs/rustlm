@@ -13,9 +13,9 @@ use tauri::State;
 const BASE: &str = "https://test.gltournament.ru/api/rustlm/league";
 #[cfg(not(feature = "goodluck-test"))]
 const BASE: &str = "https://gltournament.ru/api/rustlm/league";
-static LEAGUE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(super) static LEAGUE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn request(
+pub(super) async fn request(
     method: reqwest::Method,
     path: &str,
     token: Option<&str>,
@@ -46,6 +46,11 @@ async fn request(
         // Never surface the response body: sharing endpoints handle credentials.
         let message = match status.as_u16() {
             401 => "Подключите текущий аккаунт League к LM заново",
+            503 if path.starts_with("/party") => "Пати LM пока не включена на сервере",
+            403 if path.starts_with("/party") => "Это действие недоступно для данного участника группы",
+            404 if path.starts_with("/party") => "Группа закрыта или приглашение больше не действует",
+            409 if path.starts_with("/party") => "Группа изменилась. Обновите состав, готовность или договорённость",
+            429 if path.starts_with("/party") => "Подождите немного перед следующим действием с группой",
             403 => "Друг недоступен для передачи: обновите списки на обоих ПК",
             404 => "Предложение недоступно или срок доступа истёк",
             409 if path == "/offers" => {
@@ -86,7 +91,7 @@ fn bind_identity(
     }
     me
 }
-async fn identity(state: &AppState) -> Result<riot_friends::CurrentRiotAccount, AppError> {
+pub(super) async fn identity(state: &AppState) -> Result<riot_friends::CurrentRiotAccount, AppError> {
     let me = riot_friends::current_account(&state.riot_client).await?;
     if !me
         .riot_id
@@ -126,7 +131,7 @@ fn valid_connection(value: &Value) -> bool {
             .unwrap_or(false)
 }
 
-async fn session(state: &AppState) -> Result<String, AppError> {
+pub(super) async fn session(state: &AppState) -> Result<String, AppError> {
     connection(state)
         .and_then(|v| v["token"].as_str().map(str::to_owned))
         .ok_or_else(|| AppError::Custom("Подключите аккаунт League к LM".into()))

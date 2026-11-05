@@ -28,6 +28,8 @@ import { WithTooltip } from "@/components/ui/with-tooltip";
 
 import type { LolConfigPreset, LolConfigStatus } from "@/lib/tauri";
 
+import { GuestConfig } from "@/components/guest-config";
+
 type ApplyTarget = { id: string; name: string };
 
 function formatDate(iso: string): string {
@@ -195,13 +197,16 @@ export default function ConfigsPage() {
     <div className="flex flex-col gap-3">
       <h1 className="text-lg font-semibold">Конфиги</h1>
       <Card>
-        <CardHeader>
+      <GuestConfig presets={presets} onChange={refresh} />
+      <section className="space-y-2 border-t pt-2">
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2">
             <Lock className="h-4 w-4" />
             Файл настроек игры
           </CardTitle>
+          <Button size="sm" variant="outline" onClick={() => void refresh()}><RefreshCw className="size-3.5" />Обновить</Button>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-2">
           {loading ? (
             <div className="text-xs text-muted-foreground">Загрузка…</div>
           ) : installNotFound ? (
@@ -242,22 +247,16 @@ export default function ConfigsPage() {
 
               {status?.league_running && (
                 <p className="text-xs text-amber-500">
-                  League запущен — рекомендуется выйти из клиента перед сменой пресета.
+                  League запущен — закройте клиент и игру перед изменением настроек.
                 </p>
               )}
             </>
           )}
 
-          <div className="flex justify-end">
-            <Button size="sm" variant="outline" onClick={() => void refresh()}>
-              <RefreshCw className="h-3.5 w-3.5" />
-              Обновить
-            </Button>
-          </div>
         </CardContent>
-      </Card>
+      </section>
 
-      <Card>
+      <section className="space-y-2 border-t pt-2">
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
             <CardTitle>Пресеты</CardTitle>
@@ -326,7 +325,7 @@ export default function ConfigsPage() {
                             size="icon-sm"
                             variant="ghost"
                             onClick={() => handleApplyClick(p)}
-                            disabled={busy !== null || !status?.path}
+                            disabled={busy !== null || !status?.path || status?.league_running}
                           >
                             <Play className="h-3.5 w-3.5" />
                           </Button>
@@ -359,6 +358,7 @@ export default function ConfigsPage() {
             </Table>
           )}
         </CardContent>
+      </section>
       </Card>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

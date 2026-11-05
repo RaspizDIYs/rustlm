@@ -237,3 +237,7 @@ html[data-maximized] .window-frame {
 html[data-animations="off"] :is([data-slot="button"], [data-slot="switch"], [data-slot="switch-thumb"], [data-slot="input"], [data-slot="select-trigger"], .lm-sidebar, .lm-image-choice) { transition: none !important; }
 html[data-animations="off"] :is([data-slot="dialog-content"], [data-slot="tooltip-content"], [data-slot="select-content"], [data-slot="dropdown-menu-content"]) { animation: none !important; }
 html[data-animations="off"] .lm-image-choice::after { animation: none; display: none; }
+
+.accounts-header-controls.has-party { grid-template-columns: minmax(0,1fr) 30px 88px; gap: 6px; }
+.accounts-header-controls.has-party > button { padding-inline: 8px; }
+.accounts-header-controls.has-party > .party-trigger { width: 30px; padding: 0; }
