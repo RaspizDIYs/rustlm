@@ -2,6 +2,7 @@
 import { RankBadge } from "@/components/rank-badge";
 import { HighlightText } from "@/components/highlight-text";
 import { LmFriends } from "@/components/lm-friends";
+import { useLeagueSharing, LeagueOffers } from "@/components/league-sharing";
 import { mergeFriends } from "@/lib/friends";
 
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -91,6 +92,7 @@ const hasValidPuuid = (value: string) => /^[A-Za-z0-9_-]{78}$/.test(value);
 
 
 export default function AccountsPage() {
+  const league = useLeagueSharing();
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loginInProgress, setLoginInProgress] = useState<string | null>(null);
@@ -599,24 +601,30 @@ export default function AccountsPage() {
     setFriendNotice(null);
     setFriendSearchOpen(false);
     try {
-      const { goodluckGetFriends } = await import("@/lib/tauri");
+      const { goodluckGetFriends, goodluckGetUser } = await import("@/lib/tauri");
       const { invoke } = await import("@tauri-apps/api/core");
-      const results = await Promise.allSettled([goodluckGetFriends(), invoke<GoodLuckFriend[]>("lm_friends")]);
+      const user = await goodluckGetUser();
+      const results = await Promise.allSettled([
+        user ? goodluckGetFriends() : Promise.resolve([]),
+        user ? invoke<GoodLuckFriend[]>("lm_friends") : Promise.resolve([]),
+        league.status?.connected ? invoke<{friends: GoodLuckFriend[]}>("league_refresh", {visible: league.visible}).then(result => result.friends) : Promise.resolve([]),
+      ]);
       const data = mergeFriends(
-        results[0].status === "fulfilled" ? results[0].value : [],
-        results[1].status === "fulfilled" ? results[1].value : [],
+        results[0].status === "fulfilled" && Array.isArray(results[0].value) ? results[0].value : [],
+        [...(results[1].status === "fulfilled" && Array.isArray(results[1].value) ? results[1].value : []),
+          ...(results[2].status === "fulfilled" && Array.isArray(results[2].value) ? results[2].value : league.friends)],
       );
       if (!recipient && !data.length && results.some((result) => result.status === "rejected")) {
         setShareError("Не удалось загрузить получателей. Проверьте вход в LM и повторите попытку.");
       }
       setFriends(recipient && !data.some(f=>f.id===recipient.id) ? [recipient,...data] : data);
       if (recipient) setShareFriend(recipient.id);
-      setFriendSearchOpen(data.length === 0 && !recipient);
+      setFriendSearchOpen(Boolean(user) && data.length === 0 && !recipient);
     } catch (e) {
-      setFriends(recipient ? [recipient] : []);
+      setFriends(recipient ? [recipient, ...league.friends.filter(f => f.id !== recipient.id)] : league.friends);
       if (recipient) setShareFriend(recipient.id);
-      setFriendSearchOpen(!recipient);
-      if (!recipient) setShareError(`Не удалось загрузить друзей GoodLuck: ${String(e)}`);
+      setFriendSearchOpen(false);
+      if (!recipient && !league.friends.length) setShareError("Не удалось загрузить получателей. Обновите друзей и повторите попытку.");
     }
   };
 
@@ -657,13 +665,17 @@ export default function AccountsPage() {
   };
 
   const handleShareSubmit = async () => {
-    if (!shareTarget || !shareFriend || !sharePassword) return;
+    if (!shareTarget || !shareFriend || (!shareFriend.startsWith("league:") && !sharePassword)) return;
     setShareSaving(true);
     setShareError(null);
     try {
       const { goodluckShareAccount } = await import("@/lib/tauri");
       const hours = Number(shareDuration);
-      await goodluckShareAccount({
+      if (shareFriend.startsWith("league:")) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("league_share", {recipient: shareFriend.slice(7), username: shareTarget.Username, hours});
+        await league.reload();
+      } else await goodluckShareAccount({
         recipientUserId: shareFriend,
         username: shareTarget.Username,
         password: sharePassword,
@@ -674,8 +686,8 @@ export default function AccountsPage() {
       });
       setSharePassword("");
       setShareTarget(null);
-      await fetchSharedAccounts();
-      toast.success("Доступ выдан. Другу придёт уведомление — пусть обновит страницу аккаунтов.");
+      if (!shareFriend.startsWith("league:")) await fetchSharedAccounts();
+      toast.success(shareFriend.startsWith("league:") ? "Предложение отправлено. Друг примет его в LM." : "Доступ выдан. Другу придёт уведомление — пусть обновит страницу аккаунтов.");
     } catch (e) {
       const message = String(e);
       setShareError(message.includes("totp_required")
@@ -843,8 +855,11 @@ export default function AccountsPage() {
           </>
         )}
       </div>
+      <LeagueOffers league={league} />
+      {!friendsTab && league.error && <p role="alert" className="text-xs text-destructive">{league.error}</p>}
       {friendsTab ? (
         <LmFriends
+          league={league}
           accounts={accounts}
           query={query}
           onShare={(account, friend) => void openShareDialog(account, friend)}
@@ -1483,21 +1498,21 @@ export default function AccountsPage() {
               <label className="text-sm text-muted-foreground">Получатель</label>
               {friends.length > 0 ? (
                 <>
-                  <Select value={shareFriend} onValueChange={(value) => value && setShareFriend(value)}>
+                  <Select value={shareFriend} onValueChange={(value) => { if (value) { setShareFriend(value); if (value.startsWith("league:") && shareDuration === "0") setShareDuration("168"); } }}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Выбери друга">{friends.find((friend) => friend.id === shareFriend)?.display_name}</SelectValue></SelectTrigger>
                     <SelectContent className="accounts-dialog">
                       <SelectGroup>
-                      {friends.map((friend) => <SelectItem key={friend.id} value={friend.id}>{friend.display_name}</SelectItem>)}
+                      {friends.map((friend) => <SelectItem key={friend.id} value={friend.id}>{friend.display_name}<span className="text-muted-foreground"> · {friend.id.startsWith("league:") ? "League · LM" : "GoodLuck"}</span></SelectItem>)}
                       </SelectGroup>
                     </SelectContent>
                   </Select>
                   <Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs" onClick={() => setFriendSearchOpen((open) => !open)}>
-                    <UserPlus className="mr-1 h-3.5 w-3.5" /> Добавить друга
+                    <UserPlus className="mr-1 h-3.5 w-3.5" /> Добавить в GoodLuck
                   </Button>
                 </>
               ) : (
                 <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-                  Друзей пока нет. Найди пользователя и отправь заявку — открывать пустой список не нужно.
+                  Подключите League во вкладке «Друзья» или добавьте друга в GoodLuck.
                 </p>
               )}
               {friendSearchOpen && (
@@ -1543,23 +1558,25 @@ export default function AccountsPage() {
                   <SelectItem value="24">24 часа</SelectItem>
                   <SelectItem value="168">7 дней</SelectItem>
                   <SelectItem value="720">30 дней</SelectItem>
-                  <SelectItem value="0">Бессрочно</SelectItem>
+                  {!shareFriend.startsWith("league:") && <SelectItem value="0">Бессрочно</SelectItem>}
                   </SelectGroup>
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1">
+            {!shareFriend.startsWith("league:") && <div className="space-y-1">
               <label className="text-sm text-muted-foreground">Пароль Riot-аккаунта</label>
               <Input type="password" value={sharePassword} onChange={(e) => setSharePassword(e.target.value)} placeholder="Только для зашифрованной передачи" autoComplete="off" />
-            </div>
+            </div>}
             <p className="rounded-md border border-primary/25 bg-primary/5 p-2 text-xs text-muted-foreground">
-              Отзыв запрещает новую выдачу и ставит выход из Riot в очередь на устройстве друга. Если его RustLM офлайн, очистка произойдёт при следующей связи; при компрометации также смени пароль Riot. Передача аккаунта может нарушать правила Riot.
+              {shareFriend.startsWith("league:")
+                ? "Друг примет предложение в LM. Отзыв запрещает новые входы, но не завершает сессию Riot; скрытый пароль можно извлечь техническими средствами. Передача может нарушать правила Riot."
+                : "Отзыв запрещает новую выдачу и ставит выход из Riot в очередь на устройстве друга. Если его RustLM офлайн, очистка произойдёт при следующей связи; при компрометации также смени пароль Riot. Передача аккаунта может нарушать правила Riot."}
             </p>
             {shareError && <p className="text-sm text-destructive">{shareError}</p>}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setShareTarget(null); setSharePassword(""); }}>Отмена</Button>
-            <Button onClick={() => void handleShareSubmit()} disabled={shareSaving || !shareFriend || !sharePassword}>
+            <Button onClick={() => void handleShareSubmit()} disabled={shareSaving || !shareFriend || (shareFriend.startsWith("league:") ? !shareTarget?.EncryptedPassword : !sharePassword)}>
               {shareSaving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Share2 className="mr-1 h-4 w-4" />}
               {shareSaving ? "Выдача…" : "Поделиться"}
             </Button>

@@ -183,6 +183,13 @@ async fn login_with_credentials(
 }
 
 #[tauri::command]
+pub async fn league_login(id: String, state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let _guard = begin_login(&state.login_cancelled)?;
+    let (username, password) = crate::commands::league_sharing::credentials(&id, &state).await.map_err(|e|e.to_string())?;
+    login_with_credentials(username, password, true, &state, app).await
+}
+
+#[tauri::command]
 pub async fn login_to_shared_account(
     id: String,
     state: State<'_, AppState>,
