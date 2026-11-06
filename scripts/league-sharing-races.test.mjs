@@ -57,3 +57,15 @@ test('malformed server lists become a readable failure instead of crashing the a
   assert.match(states[2],/несовместимый список/);
  }
 });
+
+
+test('pending icon restoration does not hide an authenticated friend list', async()=>{
+ const warning='Возврат исходного значка отложен';
+ const friend={id:'friend',display_name:'Friend'};
+ const {hook,states}=harness(async command=>command==='league_status'?{...status,warning}:{friends:[friend],offers:[]});
+ assert.equal(await hook.run(async()=>{}),true);
+ assert.equal(states[0].connected,true);
+ assert.equal(states[0].warning,warning);
+ assert.deepEqual(states[1].friends,[friend]);
+ assert.equal(states[2],'');
+});

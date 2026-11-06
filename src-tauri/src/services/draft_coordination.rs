@@ -460,12 +460,9 @@ pub fn confirmed(party: &Value) {
 }
 
 fn group_active() -> &'static AtomicBool {
-    static ACTIVE: OnceLock<AtomicBool> = OnceLock::new();
-    ACTIVE.get_or_init(|| {
-        AtomicBool::new(
-            crate::services::settings::SettingsService::new().load_setting(SETTING, false),
-        )
-    })
+    // Membership is runtime evidence; a saved flag cannot authorize or block a new session.
+    static ACTIVE: AtomicBool = AtomicBool::new(false);
+    &ACTIVE
 }
 
 pub fn is_enabled() -> bool {
@@ -755,6 +752,11 @@ mod tests {
         json!({"id":id,"accepted":true,"online":true,"draftChoice":null,
             "draft":{"sessionKey":"123","mode":"aram","candidates":candidates,
                 "preferences":{"pick":preferences}}})
+    }
+
+    #[test]
+    fn group_activity_starts_inactive_without_live_membership() {
+        assert!(!is_enabled());
     }
 
     #[test]

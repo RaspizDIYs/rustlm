@@ -9,7 +9,7 @@ import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { LmFriend } from "@/components/lm-friends";
 
-type Status = { connected: boolean; riot_id: string | null; puuid: string | null; owner_riot_id: string | null; matches_current: boolean };
+type Status = { connected: boolean; riot_id: string | null; puuid: string | null; owner_riot_id: string | null; matches_current: boolean; warning?: string | null };
 type Offer = { metadata: { id: string; owner: string; recipient: string; riot_id: string; server: string; expires_at: string; status: "pending" | "accepted" }; incoming: boolean };
 type Result = { friends: LmFriend[]; offers: Offer[] };
 
@@ -78,6 +78,7 @@ export type LeagueSharingState = ReturnType<typeof useLeagueSharing>;
 export function LeagueConnection({ league }: { league: LeagueSharingState }) {
   const [confirmConnect, setConfirmConnect] = useState(false);
   return <>
+    {league.status?.warning && <p role="status" className="text-xs text-amber-400">{league.status.warning}</p>}
     {!league.status?.connected && <Button size="sm" variant="outline" disabled={league.busy} onClick={() => setConfirmConnect(true)}><Swords /> Подключить League</Button>}
     <Dialog open={confirmConnect} onOpenChange={(open) => { if (!league.busy) setConfirmConnect(open); }}>
       <DialogContent className="accounts-dialog max-w-sm">

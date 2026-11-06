@@ -47,10 +47,18 @@ pub(super) async fn request(
         let message = match status.as_u16() {
             401 => "Подключите текущий аккаунт League к LM заново",
             503 if path.starts_with("/party") => "Пати LM пока не включена на сервере",
-            403 if path.starts_with("/party") => "Это действие недоступно для данного участника группы",
-            404 if path.starts_with("/party") => "Группа закрыта или приглашение больше не действует",
-            409 if path.starts_with("/party") => "Группа изменилась. Обновите состав, готовность или договорённость",
-            429 if path.starts_with("/party") => "Подождите немного перед следующим действием с группой",
+            403 if path.starts_with("/party") => {
+                "Это действие недоступно для данного участника группы"
+            }
+            404 if path.starts_with("/party") => {
+                "Группа закрыта или приглашение больше не действует"
+            }
+            409 if path.starts_with("/party") => {
+                "Группа изменилась. Обновите состав, готовность или договорённость"
+            }
+            429 if path.starts_with("/party") => {
+                "Подождите немного перед следующим действием с группой"
+            }
             403 => "Друг недоступен для передачи: обновите списки на обоих ПК",
             404 => "Предложение недоступно или срок доступа истёк",
             409 if path == "/offers" => {
@@ -91,7 +99,9 @@ fn bind_identity(
     }
     me
 }
-pub(super) async fn identity(state: &AppState) -> Result<riot_friends::CurrentRiotAccount, AppError> {
+pub(super) async fn identity(
+    state: &AppState,
+) -> Result<riot_friends::CurrentRiotAccount, AppError> {
     let me = riot_friends::current_account(&state.riot_client).await?;
     if !me
         .riot_id
@@ -149,25 +159,60 @@ fn valid_id(id: &str) -> Result<(), AppError> {
 #[tauri::command]
 pub async fn league_status(state: State<'_, AppState>) -> Result<Value, AppError> {
     let current = identity(&state).await.ok();
-    // Recover an interrupted icon proof only on its original Riot account.
+    let active = connection(&state);
+    let mut recovery_error = None;
+    // Status polling must not hold party authentication for a minute or hammer icon limits.
+    static LAST_RECOVERY: std::sync::Mutex<Option<std::time::Instant>> =
+        std::sync::Mutex::new(None);
     if let (Some(me), Ok(_guard)) = (current.as_ref(), LEAGUE_LOCK.try_lock()) {
         let key = format!("LeagueRestoreIcon:{}", me.puuid);
-        let pending: Option<u64> = state.settings.load_setting(&key, None);
-        if let Some(icon) = pending {
-            state
-                .riot_client
-                .lcu_put(
-                    "/lol-summoner/v1/current-summoner/icon",
-                    &json!({"profileIconId":icon}).to_string(),
+        if state
+            .settings
+            .load_setting::<Option<u64>>(&key, None)
+            .is_some()
+        {
+            let attempt = LAST_RECOVERY
+                .lock()
+                .map(|mut last| {
+                    if last.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(30)) {
+                        false
+                    } else {
+                        *last = Some(std::time::Instant::now());
+                        true
+                    }
+                })
+                .unwrap_or(false);
+            if attempt {
+                recovery_error = match tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    restore_icon(&state, me),
                 )
-                .await?;
-            state.settings.save_setting(&key, &Value::Null)?;
+                .await
+                {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error),
+                    Err(_) => Some(AppError::Custom(
+                        "Возврат исходного значка отложен — повторите позже".into(),
+                    )),
+                };
+            }
         }
     }
-    let active = connection(&state);
+    if active.is_none() {
+        if let Some(error) = recovery_error {
+            return Err(error);
+        }
+    }
+    let pending = current.as_ref().is_some_and(|me| {
+        state
+            .settings
+            .load_setting::<Option<u64>>(&format!("LeagueRestoreIcon:{}", me.puuid), None)
+            .is_some()
+    });
     Ok(
         json!({"connected":active.is_some(),"riot_id":current.as_ref().map(|v|&v.riot_id),
         "puuid":current.as_ref().map(|v|&v.puuid), "owner_riot_id":active.as_ref().and_then(|v|v["riot_id"].as_str()),
+        "warning":if pending {Some("Исходный значок будет восстановлен позже")} else {None},
         "matches_current":active.as_ref().and_then(|v|v["puuid"].as_str()) == current.as_ref().map(|v|v.puuid.as_str()) && active.is_some()}),
     )
 }
@@ -187,6 +232,15 @@ pub async fn league_connect(state: State<'_, AppState>) -> Result<(), AppError> 
             "Подключите LM вне поиска, выбора чемпионов и матча".into(),
         ));
     }
+    if let Some(active) = connection(&state) {
+        let current = identity(&state).await?;
+        if active["puuid"].as_str() == Some(current.puuid.as_str())
+            && active["riot_id"].as_str().map(str::to_lowercase)
+                == Some(current.riot_id.to_lowercase())
+        {
+            return restore_icon(&state, &current).await;
+        }
+    }
     let summoner: Value = serde_json::from_str(
         &state
             .riot_client
@@ -198,13 +252,31 @@ pub async fn league_connect(state: State<'_, AppState>) -> Result<(), AppError> 
         .rsplit_once('#')
         .filter(|(name, tag)| !name.is_empty() && !tag.is_empty())
         .ok_or_else(|| AppError::Custom("Дождитесь загрузки Riot ID".into()))?;
-    let mut proof = request(
-        reqwest::Method::POST,
-        "/connect",
-        None,
-        Some(json!({"gameName":name,"tagLine":tag})),
-    )
-    .await?;
+    let pending_key = format!("LeaguePendingProof:{}", me.riot_id.to_lowercase());
+    let raw: String = state.settings.load_setting(&pending_key, String::new());
+    let pending = if raw.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str::<Value>(&dpapi_unprotect(&raw)?)?
+    };
+    let now = chrono::Utc::now().timestamp();
+    let reusable = reusable_proof(&pending, &me.riot_id, now);
+    let deadline = if reusable {
+        pending["deadline"].as_i64().unwrap()
+    } else {
+        now + 600
+    };
+    let mut proof = if reusable {
+        pending["proof"].clone()
+    } else {
+        request(
+            reqwest::Method::POST,
+            "/connect",
+            None,
+            Some(json!({"gameName":name,"tagLine":tag})),
+        )
+        .await?
+    };
     let canonical = proof["puuid"]
         .as_str()
         .filter(|p| crate::models::account::is_valid_puuid(p))
@@ -231,52 +303,201 @@ pub async fn league_connect(state: State<'_, AppState>) -> Result<(), AppError> 
             json!(me.puuid),
         ),
     ])?;
-    let result: Result<(),AppError> = async {
-        let secret = proof["proof"].as_str().filter(|s|s.len()==64).ok_or_else(||AppError::Custom("Не получено подтверждение сервера".into()))?.to_owned();
-        for _ in 0..3 {
-            if identity(&state).await?.puuid != me.puuid { return Err(AppError::Custom("Аккаунт League изменился: подключение остановлено".into())); }
-            let phase = state.riot_client.lcu_get("/lol-gameflow/v1/gameflow-phase").await?;
-            if !matches!(phase.trim_matches('"'), "None" | "Lobby") { return Err(AppError::Custom("Начался поиск или выбор чемпионов: подключение остановлено".into())); }
-            let icon = proof["icon"].as_u64().filter(|v| (1..=28).contains(v)).ok_or_else(||AppError::Custom("Неверный значок подтверждения".into()))?;
-            state.riot_client.lcu_put("/lol-summoner/v1/current-summoner/icon", &json!({"profileIconId":icon}).to_string()).await?;
-            let mut verified = None;
-            for _ in 0..6 {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                match request(reqwest::Method::POST,"/connect/confirm",None,Some(json!({"proof":secret,"step":proof["step"].as_u64().unwrap_or(0)}))).await {
-                    Ok(value) => { verified=Some(value); break; }
-                    Err(error) if error.to_string().contains("HTTP 409") => continue,
-                    Err(error) => return Err(error),
-                }
-            }
-            proof=verified.ok_or_else(||AppError::Custom("Riot не подтвердил смену значка вовремя. Исходный значок будет восстановлен".into()))?;
+    let secret = if reusable {
+        pending["secret"].as_str()
+    } else {
+        proof["proof"].as_str()
+    }
+    .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+    .ok_or_else(|| AppError::Custom("Не получено подтверждение сервера".into()))?
+    .to_owned();
+    save_proof(&state, &pending_key, &me.riot_id, deadline, &secret, &proof)?;
+    let result: Result<(), AppError> = async {
+        for stage in 0..=3 {
             if proof["complete"] == true {
-                let secret=proof["token"].as_str().filter(|s|s.len()==64).ok_or_else(||AppError::Custom("Не получен ключ LM".into()))?;
-                if proof["identity"]["Puuid"].as_str().or_else(||proof["identity"]["puuid"].as_str()) != Some(me.puuid.as_str()) { return Err(AppError::Custom("Сервер подтвердил другой аккаунт".into())); }
-                let protected=dpapi_protect(json!({"token":secret,"puuid":me.puuid,"riot_id":me.riot_id,"expires":chrono::Utc::now().timestamp()+30*86400}).to_string().as_bytes())?;
-                state.settings.save_settings(&[("LeagueConnection",json!(protected)),("LeagueFriendsVisible",json!(true))])?;
+                let token = proof["token"].as_str().filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+                    .ok_or_else(|| AppError::Custom("Не получен ключ LM".into()))?;
+                if proof["identity"]["Puuid"].as_str().or_else(|| proof["identity"]["puuid"].as_str()) != Some(me.puuid.as_str()) {
+                    return Err(AppError::Custom("Сервер подтвердил другой аккаунт".into()));
+                }
+                let protected = dpapi_protect(json!({"token":token,"puuid":me.puuid,"riot_id":me.riot_id,"expires":chrono::Utc::now().timestamp()+30*86400}).to_string().as_bytes())?;
+                state.settings.save_settings(&[("LeagueConnection",json!(protected)),("LeagueFriendsVisible",json!(true)),(&pending_key, json!(""))])?;
                 return Ok(());
             }
+            if stage == 3 {
+                break;
+            }
+            let remaining = deadline - chrono::Utc::now().timestamp();
+            if remaining <= 0 {
+                return Err(AppError::Custom("Срок подтверждения League истёк".into()));
+            }
+            let icon = proof["icon"].as_u64().filter(|v| (1..=28).contains(v))
+                .ok_or_else(|| AppError::Custom("Неверный значок подтверждения".into()))?;
+            let step = proof["step"].as_u64().filter(|v| *v <= 3)
+                .ok_or_else(|| AppError::Custom("Неверный этап подтверждения".into()))?;
+            let next = tokio::time::timeout(std::time::Duration::from_secs(remaining.min(60) as u64), async {
+                set_icon(&state, &me, icon).await?;
+                let mut attempt = 0;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    ensure_icon_account(&state, &me).await?;
+                    match request(reqwest::Method::POST, "/connect/confirm", None, Some(json!({"proof":secret,"step":step}))).await {
+                        Ok(value) => return Ok::<Value, AppError>(value),
+                        Err(error) if retryable_confirm(&error) => {
+                            if is_status(&error, 429) {
+                                tokio::time::sleep(std::time::Duration::from_secs(retry_delay(attempt))).await;
+                                attempt += 1;
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }).await.map_err(|_| AppError::Custom("Riot не подтвердил значок за минуту. Повторите подключение для продолжения".into()))??;
+            // Confirm responses omit the initial binding; keep it with every persisted step.
+            if !next.is_object() {
+                return Err(AppError::Custom("Сервер вернул неверное подтверждение League".into()));
+            }
+            proof = next;
+            proof["puuid"] = json!(me.puuid);
+            proof["riot_id"] = json!(me.riot_id);
+            save_proof(&state, &pending_key, &me.riot_id, deadline, &secret, &proof)?;
         }
-        Err(AppError::Custom("Подтверждение League не завершено".into()))
+        Err(AppError::Custom("Подтверждение League не завершено. Повторите для продолжения".into()))
     }.await;
-    if identity(&state)
-        .await
-        .map(|v| v.puuid == me.puuid)
-        .unwrap_or(false)
-    {
-        state.riot_client.lcu_put("/lol-summoner/v1/current-summoner/icon", &json!({"profileIconId":original}).to_string()).await
-            .map_err(|_|AppError::Custom("Не удалось вернуть значок League. Повторите подключение на этом аккаунте для восстановления".into()))?;
-        state.settings.save_setting(&restore_key, &Value::Null)?;
+    let restored = restore_icon(&state, &me).await;
+    match (result, restored) {
+        (Err(error), Err(restore)) => Err(AppError::Custom(format!(
+            "{error}. Восстановление значка: {restore}"
+        ))),
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => {
+            log::warn!("League connected; original icon recovery remains pending: {error}");
+            Ok(())
+        }
+        (Ok(()), Ok(())) => Ok(()),
     }
-    if result.is_ok()
-        && identity(&state)
+}
+
+fn reusable_proof(pending: &Value, riot_id: &str, now: i64) -> bool {
+    pending["riot_id"].as_str().map(str::to_lowercase) == Some(riot_id.to_lowercase())
+        && pending["deadline"]
+            .as_i64()
+            .map(|d| d > now && d <= now + 600)
+            .unwrap_or(false)
+        && pending["proof"].is_object()
+        && pending["secret"]
+            .as_str()
+            .map(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+            .unwrap_or(false)
+}
+
+fn save_proof(
+    state: &AppState,
+    key: &str,
+    riot_id: &str,
+    deadline: i64,
+    secret: &str,
+    proof: &Value,
+) -> Result<(), AppError> {
+    let protected = dpapi_protect(
+        json!({"riot_id":riot_id,"deadline":deadline,"secret":secret,"proof":proof})
+            .to_string()
+            .as_bytes(),
+    )?;
+    state.settings.save_setting(key, &json!(protected))
+}
+
+fn is_status(error: &AppError, status: u16) -> bool {
+    match error {
+        AppError::Http(error) => error.status().map(|s| s.as_u16()) == Some(status),
+        AppError::Custom(message) => {
+            message.ends_with(&format!("(HTTP {status})"))
+                || (message.starts_with("LCU PUT /lol-summoner/v1/current-summoner/icon returned ")
+                    && message
+                        .split(" returned ")
+                        .nth(1)
+                        .and_then(|s| s.split_whitespace().next())
+                        == Some(status.to_string().as_str()))
+        }
+        _ => false,
+    }
+}
+
+fn retryable_confirm(error: &AppError) -> bool {
+    is_status(error, 409) || is_status(error, 429)
+}
+
+fn retry_delay(attempt: u32) -> u64 {
+    3 * (1_u64 << attempt.min(3))
+}
+
+async fn ensure_icon_account(
+    state: &AppState,
+    expected: &riot_friends::CurrentRiotAccount,
+) -> Result<(), AppError> {
+    let current = identity(state).await?;
+    if current.puuid != expected.puuid
+        || current.riot_id.to_lowercase() != expected.riot_id.to_lowercase()
+    {
+        return Err(AppError::Custom(
+            "Аккаунт League изменился: значок не изменён".into(),
+        ));
+    }
+    let phase = state
+        .riot_client
+        .lcu_get("/lol-gameflow/v1/gameflow-phase")
+        .await?;
+    if !matches!(phase.trim_matches('"'), "None" | "Lobby") {
+        return Err(AppError::Custom(
+            "Изменение значка отложено до выхода из поиска, выбора чемпионов и матча".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn set_icon(
+    state: &AppState,
+    me: &riot_friends::CurrentRiotAccount,
+    icon: u64,
+) -> Result<(), AppError> {
+    for attempt in 0..4 {
+        ensure_icon_account(state, me).await?;
+        match state
+            .riot_client
+            .lcu_put(
+                "/lol-summoner/v1/current-summoner/icon",
+                &json!({"profileIconId":icon}).to_string(),
+            )
             .await
-            .map(|v| v.puuid != me.puuid)
-            .unwrap_or(true)
-    {
-        return Err(AppError::Custom("Подключение сохранено, но аккаунт League изменился. Исходный значок будет восстановлен при возвращении на прежний аккаунт".into()));
+        {
+            Ok(_) => return Ok(()),
+            Err(error) if is_status(&error, 429) && attempt < 3 => {
+                tokio::time::sleep(std::time::Duration::from_secs(retry_delay(attempt))).await;
+            }
+            Err(error) => return Err(error),
+        }
     }
-    result
+    unreachable!()
+}
+
+async fn restore_icon(
+    state: &AppState,
+    me: &riot_friends::CurrentRiotAccount,
+) -> Result<(), AppError> {
+    let key = format!("LeagueRestoreIcon:{}", me.puuid);
+    let pending: Option<u64> = state.settings.load_setting(&key, None);
+    if let Some(icon) = pending {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            set_icon(state, me, icon),
+        )
+        .await
+        .map_err(|_| {
+            AppError::Custom("Восстановление значка отложено. Обновите статус League позже".into())
+        })??;
+        state.settings.save_setting(&key, &Value::Null)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -420,6 +641,55 @@ pub async fn credentials(id: &str, state: &AppState) -> Result<(String, String),
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resume_is_bound_to_account_and_original_finite_deadline() {
+        let pending = json!({"riot_id":"Player#RU1", "deadline":1600,
+            "secret":"a".repeat(64), "proof":{"step":2,"icon":17}});
+        assert!(reusable_proof(&pending, "player#ru1", 1000));
+        assert!(reusable_proof(&pending, "Player#RU1", 1599));
+        assert!(!reusable_proof(&pending, "Other#RU1", 1000));
+        assert!(!reusable_proof(&pending, "Player#RU1", 1600));
+        assert!(!reusable_proof(&pending, "Player#RU1", 999));
+        for (field, value) in [
+            ("secret", json!("invalid")),
+            ("proof", Value::Null),
+            ("deadline", json!("later")),
+        ] {
+            let mut corrupted = pending.clone();
+            corrupted[field] = value;
+            assert!(!reusable_proof(&corrupted, "Player#RU1", 1000));
+        }
+    }
+
+    #[test]
+    fn only_propagation_and_rate_limits_are_retried_with_capped_backoff() {
+        for status in [409, 429] {
+            assert!(retryable_confirm(&AppError::Custom(format!(
+                "message (HTTP {status})"
+            ))));
+        }
+        for status in [400, 401, 403, 404, 500, 503] {
+            assert!(!retryable_confirm(&AppError::Custom(format!(
+                "message (HTTP {status})"
+            ))));
+        }
+        assert!(is_status(
+            &AppError::Custom(
+                "LCU PUT /lol-summoner/v1/current-summoner/icon returned 429 Too Many Requests"
+                    .into()
+            ),
+            429
+        ));
+        assert!(!is_status(
+            &AppError::Custom("unrelated error mentioning HTTP 429".into()),
+            429
+        ));
+        assert_eq!(
+            (0..5).map(retry_delay).collect::<Vec<_>>(),
+            vec![3, 6, 12, 24, 24]
+        );
+    }
+
     #[test]
     fn offer_identifiers_cannot_escape_the_fixed_api_route() {
         assert!(valid_id(&"a".repeat(32)).is_ok());

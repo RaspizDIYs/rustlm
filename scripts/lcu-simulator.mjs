@@ -113,6 +113,7 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
         if (route === sessionRoute && state.flow.phase === 'ChampSelect') return reply(200, state.session);
         if (route === '/lol-lobby-team-builder/champ-select/v1/subset-champion-list') return reply(200, state.subset || []);
         if (route === '/lol-champ-select/v1/pickable-champion-ids') return reply(200, state.pickable);
+        if (route === '/lol-champ-select/v1/bannable-champion-ids') return reply(200, state.bannable || state.pickable);
       }
       if (request.method === 'POST' && route === '/riotclient/kill-and-restart-ux') {
         actions.push({ method: request.method, route });
@@ -134,6 +135,16 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
         state.session.benchChampions[index].championId = state.session.myTeam[0].championId;
         state.session.myTeam[0].championId = id;
         actions.push({ method: request.method, route }); publish(sessionRoute, state.session); return reply(204);
+      }
+      const actionMatch = route?.match(/^\/lol-champ-select\/v1\/session\/actions\/(\d+)$/);
+      if (request.method === 'PATCH' && actionMatch && state.flow.phase === 'ChampSelect') {
+        const action = state.session.actions.flat().find(a => a.id === Number(actionMatch[1]));
+        const pool = action?.type === 'ban' ? state.bannable || state.pickable : state.pickable;
+        if (!action || action.actorCellId !== state.session.localPlayerCellId || !action.isInProgress || action.completed || !pool.includes(data.championId)) return reply(409, {});
+        action.championId = data.championId;
+        if (data.completed === true) { action.completed = true; action.isInProgress = false; }
+        actions.push({ method: request.method, route, championId: data.championId, completed: action.completed });
+        publish(sessionRoute, state.session); return reply(204);
       }
       // Unknown writes fail closed rather than pretending that all Riot commands work.
       return reply(404, { errorCode: 'NOT_IMPLEMENTED' });

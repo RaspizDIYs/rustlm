@@ -493,7 +493,7 @@ pub async fn refresh_intent(
 
 #[tauri::command]
 pub async fn draft_share_current(state: State<'_, AppState>) -> Result<DraftIntent, AppError> {
-    if !state.settings.load_setting(draft::SETTING, false) {
+    if !draft::is_enabled() {
         return Err(AppError::Custom("Сначала включите согласование".into()));
     }
     let current = local(&state).await?;

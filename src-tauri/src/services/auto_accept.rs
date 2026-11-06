@@ -2403,6 +2403,80 @@ mod simulator_tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_modes_pick_and_ban_without_lm_identity() {
+        use serde_json::json;
+        let client = Arc::new(RiotClientService::new());
+        for mode in ["classic", "arena", "aram", "mayhem"] {
+            let service = AutoAcceptService::new(
+                client.clone(),
+                Arc::new(RunePagesStorage::for_test(
+                    std::env::temp_dir().join("rustlm-unused-draft-runes.json"),
+                )),
+            );
+            let mut settings = AutomationSettings::default();
+            settings.profiles.insert(
+                if mode == "classic" {
+                    "classic:middle"
+                } else {
+                    mode
+                }
+                .into(),
+                AutomationProfile {
+                    picks: vec!["One".into()],
+                    pick_ids: vec![1],
+                    bans: vec!["Two".into()],
+                    ban_ids: vec![2],
+                    auto_pick: true,
+                    auto_ban: true,
+                    bench: true,
+                    ..Default::default()
+                },
+            );
+            service.set_settings(settings).await;
+            let random = matches!(mode, "aram" | "mayhem");
+            for ban in [true, false] {
+                if ban && random {
+                    continue;
+                }
+                let session = json!({"gameId":101,"localPlayerCellId":1,
+                  "myTeam":if mode=="arena" {json!([{"cellId":1,"championId":0},{"cellId":2,"championId":3}])} else {json!([{"cellId":1,"championId":if random {3} else {0},"assignedPosition":"middle"}])},
+                  "actions":[[{"id":10,"actorCellId":1,"type":if ban {"ban"} else {"pick"},"isInProgress":true,"completed":false,"championId":0}]],
+                  "benchEnabled":random,"benchChampions":[{"championId":1},{"championId":2}],"allowSubsetChampionPicks":random,
+                  "timer":{"phase":"BAN_PICK","adjustedTimeLeftInPhase":30000}});
+                let fixture = json!({"flow":{"phase":"ChampSelect","gameData":{"gameId":101,"queue":{"id":if random {450} else {420},"gameMode":match mode {"arena"=>"CHERRY","aram"=>"ARAM","mayhem"=>"ARAM_MAYHEM",_=>"CLASSIC"},"mapId":11,"numPlayersPerTeam":2}}},"ready":{"state":"Invalid"},"session":session,"pickable":[1,2,3],"subset":[1,2,3]});
+                client
+                    .lcu_post("/__test/fixture", &fixture.to_string())
+                    .await
+                    .unwrap();
+                service.has_picked_champion.store(false, Ordering::SeqCst);
+                service.has_banned_champion.store(false, Ordering::SeqCst);
+                service.handle_champ_select_session(&session).await;
+                let state: Value =
+                    serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+                if random {
+                    assert_eq!(
+                        state["session"]["myTeam"][0]["championId"], 1,
+                        "{mode} personal card was not selected"
+                    );
+                } else {
+                    assert_eq!(
+                        state["session"]["actions"][0][0]["completed"],
+                        true,
+                        "native {mode} {} never completed: {}",
+                        if ban { "ban" } else { "pick" },
+                        state["actions"]
+                    );
+                    assert_eq!(
+                        state["session"]["actions"][0][0]["championId"],
+                        if ban { 2 } else { 1 }
+                    );
+                }
+            }
+        }
+    }
+
     // Run only against scripts/lcu-simulator.mjs, never against a real client.
     #[tokio::test]
     #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
