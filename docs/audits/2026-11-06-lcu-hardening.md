@@ -335,3 +335,14 @@ Backend worktree rustlm-vault-friends/goodluckv2: decline теперь атом�
 Регрессии: 287 unit, 32 native LCU +1 записанный replay прошли; JS102. Новый native сценарий проверяет отказ без подтверждения, ровно один штатный dispatch и ошибку при неудачном восстановлении. Исправлена независимость watch-теста от накопленных действий других сценариев (baseline count вместо глобального2).
 
 Дополнительный UI: одинаковые высота34px и вертикальный шаг38px двух навигационных сторон; правая панель начинается под строкой RustLM. Футеры таблицы/версии выровнены с учётом границы таблицы; версия/помощь сохранены. Browser1100x700: первые кнопки y96, height34; поиск справа y96. Промежуточный снимок футеров различался на1px; скорректирована внутренняя высота status footer63px при sidebar64px.
+
+
+### Итог публикации 0.5.25
+
+- Клиент опубликован: https://github.com/RaspizDIYs/rustlm/releases/tag/v0.5.25, tag b3a8896a15c73b90c4605cac3766aeccb5397382. Release и Verify CI завершились success.
+- Установщик7421702 bytes, SHA256 beb2825bcbdfbcd40a2be02bce00c104f8370d45e0ab5e54d5f33140905f4998. Проверены Ed25519/minisign, trusted comment, совпадение с embedded updater key и отказ на изменённом payload. latest/download/latest.json вернул HTTP200 и version0.5.25 с той же подписью и корректным URL.
+- Backend PR293 в master: 137a2f21593de4433b177de597976036ed009fbf. Build на homepc; штатный rollout backend --skip-build --no-migrate переключил goodluck-backend-35. Образ sha256:d36366b8ea985614a95a4b7d20656c0847504288737e62fee21242d66b915fc5, revision label совпал, healthy. Внешние /api/health200, /api/rustlm/league/party без авторизации401 проверены через Ethernet. Повторные соединения с рабочего ПК временами прерывались и через VPN, и через Ethernet; настройки VPN не менялись.
+- Хотфиксы возвращены в test через PR294. Блокирующие backend CI build/frontend typecheck/migrations зелёные; отдельный backend CI test job не запустил тесты из-за отсутствующей лицензии Six Labors. Локальные licensed build/typecheck и isolated Redis отказ/fairness прошли.
+- CI поймал смену LF/CRLF у fixtures: .gitattributes фиксирует LF для побайтовой проверки provenance. Первая попытка релиза не была опубликована; тег переставлен на исправленный коммит до публикации.
+- Локальные проверки: JS102, Rust287, native LCU32 + recorded replay1; frontend static export17 маршрутов. Browser1100x700 и900x640: навигация y96/h34, футеры соответственно y612/y552 с совпадающими разделителями; горизонтального overflow нет.
+- Подробности измерений: artifacts/release-0.5.25/verification.json. Реальный League/отрисовка после UX restart, игровой матч и два физических ПК по-прежнему требуют домашней проверки; симулятор этого не доказывает.
