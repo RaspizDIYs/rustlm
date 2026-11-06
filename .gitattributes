@@ -1,0 +1,2 @@
+# Fixture provenance hashes require identical bytes on every checkout.
+src-tauri/fixtures/** text eol=lf
