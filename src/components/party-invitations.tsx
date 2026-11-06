@@ -1,5 +1,6 @@
 "use client";
 
+import { serverCode } from "@/lib/lol-servers";
 import { Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -11,10 +12,7 @@ import { createPartyRequestGate, partyActionError } from "./party-dialog-request
 import { allowedSizes, partyAction, partyJoinWithAccount, partySnapshot, type PartySnapshot, type Party } from "@/lib/party";
 import type { AccountRecord } from "@/lib/tauri";
 
-const serverCode = (server: string) => {
-  const code = server.trim().toUpperCase();
-  return ({ EUW1: "EUW", EUN1: "EUNE", NA1: "NA", TR1: "TR", BR1: "BR", JP1: "JP", LA1: "LAN", LA2: "LAS", OC1: "OCE" } as Record<string, string>)[code] || code;
-};
+
 
 export function PartyInvitations({ snapshot, accounts, onSnapshot }: {
   snapshot: PartySnapshot | null; accounts: AccountRecord[]; onSnapshot: (snapshot: PartySnapshot) => void;

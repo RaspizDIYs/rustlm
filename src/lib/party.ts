@@ -28,6 +28,7 @@ export type PartyMember = {
 };
 export type Party = {
   id: string; revision: number; leaderId: string; queueId: number;
+  declined?: { id: string; name: string }[];
   state: "forming" | "queuing" | "queued"; expiresAt: string; members: PartyMember[];
 };
 export type PartyLocal = {

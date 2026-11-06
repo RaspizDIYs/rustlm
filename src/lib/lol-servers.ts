@@ -28,3 +28,8 @@ function serverSelectOrder(a: LolServerOption, b: LolServerOption): number {
 }
 
 export const LOL_SERVERS_FOR_SELECT = [...RAW].sort(serverSelectOrder);
+
+export function serverCode(server: string): string {
+  const code = server.trim().toUpperCase();
+  return ({ EUW1: "EUW", EUN1: "EUNE", NA1: "NA", TR1: "TR", BR1: "BR", JP1: "JP", LA1: "LAN", LA2: "LAS", OC1: "OCE" } as Record<string,string>)[code] || code;
+}

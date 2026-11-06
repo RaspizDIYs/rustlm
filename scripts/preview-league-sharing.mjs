@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../out/", import.meta.url));
 const fixture = await readFile(new URL("./fixtures/league-sharing-browser.js", import.meta.url), "utf8");
-const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" };
+const types = { ".txt": "text/plain; charset=utf-8", ".webp": "image/webp", ".jpg": "image/jpeg", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" };
 const server = createServer(async (request, response) => {
   try {
     let path = decodeURIComponent(new URL(request.url, "http://127.0.0.1").pathname);

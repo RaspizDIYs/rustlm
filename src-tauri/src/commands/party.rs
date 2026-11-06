@@ -150,7 +150,16 @@ fn game_outcome(session: &Value, own: &Value) -> (String, u64) {
     (game, champion)
 }
 async fn read_local(state: &AppState) -> Result<(Value, Value), AppError> {
-    let started = Instant::now();
+    let generation = state.riot_client.connection_generation();
+    let snapshot = tokio::time::timeout(Duration::from_secs(3), read_local_inner(state))
+        .await
+        .map_err(|_| error("League отвечает медленно; готовность не подтверждена"))??;
+    if state.riot_client.connection_generation() != generation {
+        return Err(error("Подключение League изменилось. Повторите проверку"));
+    }
+    Ok(snapshot)
+}
+async fn read_local_inner(state: &AppState) -> Result<(Value, Value), AppError> {
     let phase: Value = serde_json::from_str(
         &state
             .riot_client
@@ -170,11 +179,6 @@ async fn read_local(state: &AppState) -> Result<(Value, Value), AppError> {
         return Err(error("Аккаунт League изменился"));
     }
     let lobby = optional_lcu(state, "/lol-lobby/v2/lobby").await?;
-    if started.elapsed() > Duration::from_secs(3) {
-        return Err(error(
-            "League отвечает медленно; готовность не подтверждена",
-        ));
-    }
     let members: Vec<String> = lobby["members"]
         .as_array()
         .into_iter()
@@ -223,6 +227,15 @@ async fn read_local(state: &AppState) -> Result<(Value, Value), AppError> {
     } else {
         (String::new(), 0)
     };
+    let latest_phase: Value = serde_json::from_str(
+        &state
+            .riot_client
+            .lcu_get("/lol-gameflow/v1/gameflow-phase")
+            .await?,
+    )?;
+    if phase != latest_phase {
+        return Err(error("Стадия League изменилась. Повторите проверку"));
+    }
     let is_leader = lobby["localMember"]["isLeader"].as_bool() == Some(true)
         && id(&lobby["localMember"]["summonerId"]).as_ref() == Some(&summoner_id);
     Ok((
@@ -545,7 +558,10 @@ fn source_lobby_matches(snapshot: &Value, local: &Value, lobby: &Value) -> bool 
 fn local_lobby_unchanged(previous: &Value, fresh: &Value, lobby: &Value) -> bool {
     fresh["phase"] == "Lobby"
         && previous["phase"] == "Lobby"
-        && previous["lobbyId"].as_str().is_some_and(|s| !s.is_empty())
+        && lobby_identity_unchanged(previous, fresh, lobby)
+}
+fn lobby_identity_unchanged(previous: &Value, fresh: &Value, lobby: &Value) -> bool {
+    previous["lobbyId"].as_str().is_some_and(|s| !s.is_empty())
         && fresh["lobbyId"] == previous["lobbyId"]
         && fresh["puuid"] == previous["puuid"]
         && fresh["server"] == previous["server"]
@@ -556,6 +572,41 @@ fn local_lobby_unchanged(previous: &Value, fresh: &Value, lobby: &Value) -> bool
             ms.iter()
                 .any(|m| id(&m["summonerId"]) == id(&fresh["summonerId"]))
         })
+}
+fn search_dispatch_matches(
+    previous: &Value,
+    fresh: &Value,
+    party: &Value,
+    lobby: &Value,
+    starting: bool,
+) -> bool {
+    let phase = if starting { "Lobby" } else { "Matchmaking" };
+    previous["phase"] == phase
+        && fresh["phase"] == phase
+        && lobby_identity_unchanged(previous, fresh, lobby)
+        && lobby_matches(party, lobby, starting).is_ok()
+        && (!starting || lobby_positions_match(party, lobby).is_ok())
+}
+async fn search_dispatch_current(
+    state: &AppState,
+    previous: &Value,
+    party: &Value,
+    starting: bool,
+) -> bool {
+    read_local(state).await.is_ok_and(|(fresh, lobby)| {
+        search_dispatch_matches(previous, &fresh, party, &lobby, starting)
+    })
+}
+async fn leave_league_lobby(state: &AppState, previous: &Value) -> Result<(), AppError> {
+    state
+        .riot_client
+        .lcu_delete_checked("/lol-lobby/v2/lobby", || async {
+            read_local(state)
+                .await
+                .is_ok_and(|(fresh, lobby)| local_lobby_unchanged(previous, &fresh, &lobby))
+        })
+        .await
+        .map(|_| ())
 }
 fn selected_login_matches(
     account: &crate::models::account::AccountRecord,
@@ -583,15 +634,108 @@ fn selected_login_matches(
     username.is_some_and(|name| name.eq_ignore_ascii_case(account.username.trim()))
 }
 fn invitation_party_unchanged(snapshot: &Value, party: &Value) -> bool {
+    party_revision_unchanged(snapshot, party) && is_leader(snapshot, &snapshot["active"])
+}
+fn party_revision_unchanged(snapshot: &Value, party: &Value) -> bool {
     let current = &snapshot["active"];
     party["id"].as_str().is_some()
         && party["revision"].as_u64().is_some()
         && current["id"] == party["id"]
         && current["revision"] == party["revision"]
         && current["state"] == "forming"
+        && party["state"] == "forming"
         && current["leaderId"] == party["leaderId"]
-        && is_leader(snapshot, current)
+        && current["queueId"] == party["queueId"]
 }
+fn empty_lobby_current(previous: &Value, fresh: &Value, lobby: &Value) -> bool {
+    previous["phase"] == "None"
+        && fresh["phase"] == "None"
+        && lobby.is_null()
+        && id(&previous["summonerId"]).is_some()
+        && id(&previous["summonerId"]) == id(&fresh["summonerId"])
+        && previous["puuid"] == fresh["puuid"]
+        && previous["server"] == fresh["server"]
+}
+fn acceptance_current(
+    snapshot: &Value,
+    party: &Value,
+    previous: &Value,
+    fresh: &Value,
+    lobby: &Value,
+    invitations: &Value,
+    invitation: &str,
+) -> bool {
+    party_revision_unchanged(snapshot, party)
+        && snapshot["me"].as_str().is_some_and(|me| {
+            accepted(&snapshot["active"]).is_ok_and(|members| {
+                members.iter().any(|m| {
+                    m["id"] == me
+                        && id(&m["gameSummonerId"]).is_some()
+                        && id(&m["gameSummonerId"]) == id(&fresh["summonerId"])
+                })
+            })
+        })
+        && empty_lobby_current(previous, fresh, lobby)
+        && party_server(party).as_deref() == fresh["server"].as_str()
+        && matching_invitation(party, invitations).as_deref() == Some(invitation)
+}
+async fn accept_league_invitation(
+    state: &AppState,
+    token: &str,
+    party: &Value,
+    previous: &Value,
+    invitation: &str,
+) -> Result<(), AppError> {
+    state
+        .riot_client
+        .lcu_post_checked(
+            &format!(
+                "/lol-lobby/v2/received-invitations/{}/accept",
+                urlencoding::encode(invitation)
+            ),
+            "{}",
+            || async {
+                tokio::time::timeout(Duration::from_secs(4), async {
+                    let latest = league::request(reqwest::Method::GET, "/party", Some(token), None)
+                        .await
+                        .ok()?;
+                    let (fresh, lobby) = read_local(state).await.ok()?;
+                    let invitations = optional_lcu(state, "/lol-lobby/v2/received-invitations")
+                        .await
+                        .ok()?;
+                    Some(acceptance_current(
+                        &latest,
+                        party,
+                        previous,
+                        &fresh,
+                        &lobby,
+                        &invitations,
+                        invitation,
+                    ))
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+            },
+        )
+        .await
+        .map(|_| ())
+}
+fn lobby_has_recipient(lobby: &Value, summoner: &str) -> bool {
+    lobby["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|m| id(&m["summonerId"]).as_deref() == Some(summoner))
+        || lobby["invitations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["state"] != "Declined" && i["state"] != "Expired")
+            .any(|i| id(&i["toSummonerId"]).as_deref() == Some(summoner))
+}
+
 async fn invite_new_members(state: &AppState, token: &str, party: &Value) -> Result<(), AppError> {
     use std::sync::{Mutex, OnceLock};
     static SENT: OnceLock<Mutex<std::collections::BTreeMap<String, Instant>>> = OnceLock::new();
@@ -610,19 +754,6 @@ async fn invite_new_members(state: &AppState, token: &str, party: &Value) -> Res
         return Ok(());
     }
     lobby_matches(party, &lobby, false)?;
-    let present: BTreeSet<String> = lobby["members"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|m| id(&m["summonerId"]))
-        .collect();
-    let pending: BTreeSet<String> = lobby["invitations"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|i| i["state"] != "Declined" && i["state"] != "Expired")
-        .filter_map(|i| id(&i["toSummonerId"]))
-        .collect();
     let mut recipients = vec![];
     {
         let mut sent = SENT
@@ -635,7 +766,7 @@ async fn invite_new_members(state: &AppState, token: &str, party: &Value) -> Res
                 continue;
             };
             let key = format!("{}:{sid}", party["id"].as_str().unwrap_or(""));
-            if !present.contains(&sid) && !pending.contains(&sid) && !sent.contains_key(&key) {
+            if !lobby_has_recipient(&lobby, &sid) && !sent.contains_key(&key) {
                 recipients.push((sid, key));
             }
         }
@@ -647,15 +778,48 @@ async fn invite_new_members(state: &AppState, token: &str, party: &Value) -> Res
     if !invitation_party_unchanged(&latest, party) {
         return Err(error("Состав группы изменился. Приглашения не отправлены"));
     }
+    let (fresh, fresh_lobby) = read_local(state).await?;
+    if !local_lobby_unchanged(&local, &fresh, &fresh_lobby) {
+        return Err(error(
+            "Лобби или аккаунт изменились. Приглашения не отправлены",
+        ));
+    }
+    lobby_matches(party, &fresh_lobby, false)?;
+    recipients.retain(|(sid, _)| !lobby_has_recipient(&fresh_lobby, sid));
+    if recipients.is_empty() {
+        return Ok(());
+    }
     state
         .riot_client
-        .lcu_post(
+        .lcu_post_checked(
             "/lol-lobby/v2/lobby/invitations",
             &json!(recipients
                 .iter()
                 .map(|(id, _)| json!({"toSummonerId":id}))
                 .collect::<Vec<_>>())
             .to_string(),
+            || async {
+                tokio::time::timeout(Duration::from_secs(4), async {
+                    let latest = league::request(reqwest::Method::GET, "/party", Some(token), None)
+                        .await
+                        .ok()?;
+                    if !invitation_party_unchanged(&latest, party) {
+                        return Some(false);
+                    }
+                    let (now, lobby) = read_local(state).await.ok()?;
+                    Some(
+                        local_lobby_unchanged(&fresh, &now, &lobby)
+                            && lobby_matches(party, &lobby, false).is_ok()
+                            && recipients
+                                .iter()
+                                .all(|(sid, _)| !lobby_has_recipient(&lobby, sid)),
+                    )
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+            },
         )
         .await?;
     if let Ok(mut sent) = SENT
@@ -803,7 +967,7 @@ pub async fn party_join_with_account(
                         {
                             return Err(error("Группа покинута; выйдите из лобби League вручную"));
                         }
-                        state.riot_client.lcu_delete("/lol-lobby/v2/lobby").await?;
+                        leave_league_lobby(&state, &last_local).await?;
                     }
                     continue;
                 }
@@ -819,7 +983,7 @@ pub async fn party_join_with_account(
                     {
                         return Err(error("Лобби изменилось. Повторите присоединение"));
                     }
-                    state.riot_client.lcu_delete("/lol-lobby/v2/lobby").await?;
+                    leave_league_lobby(&state, &fresh).await?;
                     continue;
                 }
                 if join_attempts >= 3 {
@@ -871,16 +1035,8 @@ pub async fn party_join_with_account(
                 if let Some(invitation) = matching_invitation(&party, &invitations) {
                     sent_accept = true;
                     // No blind retry: after an uncertain response only observe actual lobby membership.
-                    let _ = state
-                        .riot_client
-                        .lcu_post(
-                            &format!(
-                                "/lol-lobby/v2/received-invitations/{}/accept",
-                                urlencoding::encode(&invitation)
-                            ),
-                            "{}",
-                        )
-                        .await;
+                    let _ =
+                        accept_league_invitation(&state, &token, &party, &local, &invitation).await;
                 }
             }
         }
@@ -892,6 +1048,14 @@ fn error_string(message: String) -> AppError {
 }
 
 pub async fn snapshot(state: &AppState) -> Result<Value, AppError> {
+    let attempt = crate::services::draft_coordination::snapshot_attempt();
+    let result = snapshot_inner(state).await;
+    if result.is_ok() {
+        attempt.complete();
+    }
+    result
+}
+async fn snapshot_inner(state: &AppState) -> Result<Value, AppError> {
     let _guard = auth_lock().await?;
     let started = Instant::now();
     let current = read_local(state).await;
@@ -1190,6 +1354,26 @@ fn lobby_positions_match(party: &Value, lobby: &Value) -> Result<(), AppError> {
     }
     Ok(())
 }
+fn role_target_matches(
+    party: &Value,
+    me: &Value,
+    local: &Value,
+    lobby: &Value,
+    preferences: &Value,
+) -> bool {
+    local["phase"] == "Lobby"
+        && lobby["gameConfig"]["queueId"] == party["queueId"]
+        && lobby["gameConfig"]["showPositionSelector"] == true
+        && id(&local["summonerId"]).is_some()
+        && id(&lobby["localMember"]["summonerId"]) == id(&local["summonerId"])
+        && accepted(party).is_ok_and(|members| {
+            members.iter().any(|member| {
+                member["id"] == *me
+                    && id(&member["gameSummonerId"]) == id(&local["summonerId"])
+                    && position_preferences(member).as_ref() == Some(preferences)
+            })
+        })
+}
 async fn sync_positions(
     state: &AppState,
     party: &Value,
@@ -1216,15 +1400,50 @@ async fn sync_positions(
     {
         return Ok(());
     }
+    let (previous, original_lobby) = read_local(state).await?;
+    if !role_target_matches(party, me, &previous, &original_lobby, &preferences) {
+        return Err(error(
+            "Аккаунт, роли или лобби изменились. Повторите проверку",
+        ));
+    }
+    let token = league::session(state).await?;
     state
         .riot_client
-        .lcu_put(
+        .lcu_put_checked(
             "/lol-lobby/v2/lobby/members/localMember/position-preferences",
             &preferences.to_string(),
+            || async {
+                tokio::time::timeout(Duration::from_secs(4), async {
+                    let latest =
+                        league::request(reqwest::Method::GET, "/party", Some(&token), None)
+                            .await
+                            .ok()?;
+                    if latest["me"] != *me || !party_revision_unchanged(&latest, party) {
+                        return Some(false);
+                    }
+                    let (fresh, actual) = read_local(state).await.ok()?;
+                    Some(
+                        local_lobby_unchanged(&previous, &fresh, &actual)
+                            && role_target_matches(
+                                &latest["active"],
+                                me,
+                                &fresh,
+                                &actual,
+                                &preferences,
+                            ),
+                    )
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+            },
         )
         .await?;
-    let actual = optional_lcu(state, "/lol-lobby/v2/lobby").await?;
-    if actual["localMember"]["firstPositionPreference"] != preferences["firstPreference"]
+    let (fresh, actual) = read_local(state).await?;
+    if !local_lobby_unchanged(&previous, &fresh, &actual)
+        || !role_target_matches(party, me, &fresh, &actual, &preferences)
+        || actual["localMember"]["firstPositionPreference"] != preferences["firstPreference"]
         || actual["localMember"]["secondPositionPreference"] != preferences["secondPreference"]
     {
         return Err(error("League не подтвердила выбранные роли"));
@@ -1274,6 +1493,8 @@ async fn ensure_party_lobby(party_id: &str, state: &AppState) -> Result<(), AppE
     }
     let (fresh, current_lobby) = read_local(&state).await?;
     if fresh["summonerId"] != local["summonerId"]
+        || fresh["puuid"] != local["puuid"]
+        || fresh["server"] != local["server"]
         || !matches!(fresh["phase"].as_str(), Some("None" | "Lobby"))
     {
         return Err(error("Состояние League изменилось. Лобби не создавалось"));
@@ -1282,35 +1503,32 @@ async fn ensure_party_lobby(party_id: &str, state: &AppState) -> Result<(), AppE
     if lobby.is_null() {
         state
             .riot_client
-            .lcu_post(
+            .lcu_post_checked(
                 "/lol-lobby/v2/lobby",
                 &json!({"queueId":party["queueId"]}).to_string(),
+                || async {
+                    tokio::time::timeout(Duration::from_secs(4), async {
+                        let latest =
+                            league::request(reqwest::Method::GET, "/party", Some(&token), None)
+                                .await
+                                .ok()?;
+                        if !invitation_party_unchanged(&latest, party) {
+                            return Some(false);
+                        }
+                        let (now, actual) = read_local(state).await.ok()?;
+                        Some(empty_lobby_current(&fresh, &now, &actual))
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false)
+                },
             )
             .await?;
         lobby = optional_lcu(&state, "/lol-lobby/v2/lobby").await?;
     }
     lobby_matches(party, &lobby, false)?;
-    let present: BTreeSet<String> = lobby["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|m| id(&m["summonerId"]))
-        .collect();
-    let invites: Vec<Value> = accepted(party)?
-        .iter()
-        .filter_map(|m| id(&m["gameSummonerId"]))
-        .filter(|sid| !present.contains(sid))
-        .map(|sid| json!({"toSummonerId":sid}))
-        .collect();
-    if !invites.is_empty() {
-        state
-            .riot_client
-            .lcu_post(
-                "/lol-lobby/v2/lobby/invitations",
-                &json!(invites).to_string(),
-            )
-            .await?;
-    }
+    invite_new_members(&state, &token, party).await?;
     Ok(())
 }
 #[tauri::command]
@@ -1332,17 +1550,7 @@ pub async fn party_accept_lobby(
     let invitations = optional_lcu(&state, "/lol-lobby/v2/received-invitations").await?;
     let invitation = matching_invitation(party, &invitations)
         .ok_or_else(|| error("Ожидаем приглашение League от лидера группы"))?;
-    state
-        .riot_client
-        .lcu_post(
-            &format!(
-                "/lol-lobby/v2/received-invitations/{}/accept",
-                urlencoding::encode(&invitation)
-            ),
-            "{}",
-        )
-        .await?;
-    Ok(())
+    accept_league_invitation(&state, &token, party, &local, &invitation).await
 }
 fn search_outcome(phase: &Value) -> Option<bool> {
     let phase = phase.as_str()?;
@@ -1356,6 +1564,31 @@ fn search_outcome(phase: &Value) -> Option<bool> {
     } else {
         None
     }
+}
+// Only a completed window of idle reads after an acknowledged POST confirms failure.
+async fn reconcile_search<R, RF, W, WF>(
+    acknowledged: bool,
+    mut read: R,
+    mut wait: W,
+) -> Option<bool>
+where
+    R: FnMut() -> RF,
+    RF: std::future::Future<Output = Value>,
+    W: FnMut() -> WF,
+    WF: std::future::Future<Output = ()>,
+{
+    let mut all_idle = true;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            wait().await;
+        }
+        let outcome = search_outcome(&read().await);
+        if outcome == Some(true) {
+            return outcome;
+        }
+        all_idle &= outcome == Some(false);
+    }
+    (acknowledged && all_idle).then_some(false)
 }
 #[tauri::command]
 pub async fn party_queue(
@@ -1392,30 +1625,47 @@ pub async fn party_queue(
             return Err(e);
         }
     };
-    let result = if fresh["phase"] == "Lobby" {
-        match lobby_matches(&changed, &lobby, true)
-            .and_then(|_| lobby_positions_match(&changed, &lobby))
-        {
-            Ok(()) => state
-                .riot_client
-                .lcu_post("/lol-lobby/v2/lobby/matchmaking/search", "{}")
-                .await
-                .map(|_| ()),
-            Err(e) => Err(e),
-        }
+    let preflight = if fresh["phase"] == "Lobby" {
+        lobby_matches(&changed, &lobby, true).and_then(|_| lobby_positions_match(&changed, &lobby))
     } else {
         Err(error("Состояние League изменилось. Поиск не запускался"))
     };
-    let actual: Value = serde_json::from_str(
-        &state
-            .riot_client
-            .lcu_get("/lol-gameflow/v1/gameflow-phase")
-            .await
-            .unwrap_or_else(|_| "null".into()),
+    if let Err(e) = preflight {
+        // No POST was attempted; a later unrelated phase cannot confirm this search.
+        let _ = league::request(reqwest::Method::POST, &format!("/party/{party_id}/action"), Some(&token), Some(json!({"expectedRevision":changed["revision"],"action":"finishQueue","success":false}))).await;
+        return Err(e);
+    }
+    let result = state
+        .riot_client
+        .lcu_post_checked("/lol-lobby/v2/lobby/matchmaking/search", "{}", || {
+            search_dispatch_current(&state, &fresh, &changed, true)
+        })
+        .await;
+    if matches!(&result, Err(AppError::LcuNotDispatched(_))) {
+        // No search was sent; another actor's later ReadyCheck is not our acknowledgement.
+        let _ = league::request(reqwest::Method::POST, &format!("/party/{party_id}/action"), Some(&token), Some(json!({"expectedRevision":changed["revision"],"action":"finishQueue","success":false}))).await;
+        return result.map(|_| ());
+    }
+    let confirmed = tokio::time::timeout(
+        Duration::from_secs(3),
+        reconcile_search(
+            result.is_ok(),
+            || async {
+                state
+                    .riot_client
+                    .lcu_get("/lol-gameflow/v1/gameflow-phase")
+                    .await
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .unwrap_or(Value::Null)
+            },
+            || tokio::time::sleep(Duration::from_millis(250)),
+        ),
     )
-    .unwrap_or(Value::Null);
-    let confirmed = search_outcome(&actual)
-        .ok_or_else(|| error("Результат поиска не подтверждён. Проверьте League перед повтором"))?;
+    .await
+    .ok()
+    .flatten()
+    .ok_or_else(|| error("Результат поиска не подтверждён. Проверьте League перед повтором"))?;
     // Reconcile an uncertain response against LCU; never blindly repeat the search POST.
     let ack=league::request(reqwest::Method::POST,&format!("/party/{party_id}/action"),Some(&token),Some(json!({"expectedRevision":changed["revision"],"action":"finishQueue","success":confirmed}))).await;
     if confirmed {
@@ -1447,7 +1697,9 @@ pub async fn party_cancel_queue(
     if local["phase"] == "Matchmaking" {
         state
             .riot_client
-            .lcu_delete("/lol-lobby/v2/lobby/matchmaking/search")
+            .lcu_delete_checked("/lol-lobby/v2/lobby/matchmaking/search", || {
+                search_dispatch_current(&state, &local, party, false)
+            })
             .await?;
     }
     let phase = state
@@ -1483,10 +1735,7 @@ pub async fn run(app: tauri::AppHandle) {
                     2
                 }
             }
-            Err(_) => {
-                crate::services::draft_coordination::unavailable();
-                5
-            }
+            Err(_) => 5,
         };
         tokio::time::sleep(Duration::from_secs(delay)).await;
     }
@@ -1585,6 +1834,77 @@ mod tests {
 #[cfg(test)]
 mod queue_outcome_tests {
     use super::*;
+
+    async fn reconcile(acknowledged: bool, phases: Vec<Value>) -> (Option<bool>, usize, usize) {
+        let reads = std::cell::Cell::new(0);
+        let waits = std::cell::Cell::new(0);
+        let outcome = reconcile_search(
+            acknowledged,
+            || {
+                let at = reads.get();
+                reads.set(at + 1);
+                std::future::ready(phases[at].clone())
+            },
+            || {
+                waits.set(waits.get() + 1);
+                std::future::ready(())
+            },
+        )
+        .await;
+        (outcome, reads.get(), waits.get())
+    }
+
+    #[tokio::test]
+    async fn search_reconciles_transient_lobby_without_replaying_post() {
+        for acknowledged in [true, false] {
+            assert_eq!(
+                reconcile(acknowledged, vec![json!("Lobby"), json!("Matchmaking")]).await,
+                (Some(true), 2, 1)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn persistent_lobby_is_negative_only_after_acknowledged_search_window() {
+        assert_eq!(
+            reconcile(true, vec![json!("Lobby"); 6]).await,
+            (Some(false), 6, 5)
+        );
+        assert_eq!(
+            reconcile(false, vec![json!("Lobby"); 6]).await,
+            (None, 6, 5)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_or_unknown_search_reads_never_produce_negative_ack() {
+        for phase in [
+            Value::Null,
+            json!({}),
+            json!("Unknown"),
+            json!("WaitingForStats"),
+        ] {
+            for acknowledged in [true, false] {
+                assert_eq!(
+                    reconcile(acknowledged, vec![phase.clone(); 6]).await,
+                    (None, 6, 5)
+                );
+                let mut phases = vec![json!("Lobby"); 6];
+                phases[2] = phase.clone();
+                assert_eq!(reconcile(acknowledged, phases).await, (None, 6, 5));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn final_ready_check_read_confirms_even_an_ambiguous_post() {
+        for acknowledged in [true, false] {
+            let mut phases = vec![json!("Lobby"); 6];
+            phases[5] = json!("ReadyCheck");
+            assert_eq!(reconcile(acknowledged, phases).await, (Some(true), 6, 5));
+        }
+    }
+
     #[test]
     fn uncertain_search_never_becomes_negative_ack() {
         for phase in [
@@ -1766,6 +2086,17 @@ mod party_join_identity_tests {
 
 #[cfg(test)]
 mod invitation_revision_tests {
+    #[test]
+    fn invitation_recipients_skip_joined_and_pending_but_allow_expired_and_declined() {
+        let mut lobby = serde_json::json!({"members":[{"summonerId":42}],"invitations":[{"toSummonerId":"43","state":"Pending"}]});
+        assert!(super::lobby_has_recipient(&lobby, "42"));
+        assert!(super::lobby_has_recipient(&lobby, "43"));
+        assert!(!super::lobby_has_recipient(&lobby, "44"));
+        for state in ["Declined", "Expired"] {
+            lobby["invitations"][0]["state"] = serde_json::json!(state);
+            assert!(!super::lobby_has_recipient(&lobby, "43"));
+        }
+    }
     use super::*;
 
     #[test]
@@ -1886,5 +2217,429 @@ mod mode_capacity_tests {
             queue_capacity(&json!({"id":1700,"numPlayersPerTeam":99})),
             Some(3)
         );
+    }
+}
+
+#[cfg(test)]
+mod search_dispatch_tests {
+    use super::*;
+    #[test]
+    fn queued_search_requires_same_identity_lobby_members_phase_leadership_and_roles() {
+        let party = json!({"queueId":400,"members":[{"accepted":true,"gameSummonerId":"1","role":"top","secondaryRole":"jungle"}]});
+        let local =
+            json!({"phase":"Lobby","lobbyId":"old","puuid":"own","server":"RU","summonerId":"1"});
+        let lobby = json!({"localMember":{"summonerId":1,"isLeader":true},"gameConfig":{"queueId":400,"showPositionSelector":true},"canStartActivity":true,"members":[{"summonerId":1,"firstPositionPreference":"TOP","secondPositionPreference":"JUNGLE"}]});
+        assert!(search_dispatch_matches(
+            &local, &local, &party, &lobby, true
+        ));
+        for (field, value) in [
+            ("phase", json!("ReadyCheck")),
+            ("lobbyId", json!("new")),
+            ("server", json!("EUW")),
+            ("puuid", json!("other")),
+            ("summonerId", json!("2")),
+        ] {
+            let mut fresh = local.clone();
+            fresh[field] = value;
+            assert!(
+                !search_dispatch_matches(&local, &fresh, &party, &lobby, true),
+                "{field}"
+            );
+        }
+        for modified in [
+            json!({"localMember":{"summonerId":1,"isLeader":false},"gameConfig":{"queueId":400},"members":[{"summonerId":1}]}),
+            Value::Null,
+        ] {
+            assert!(!search_dispatch_matches(
+                &local, &local, &party, &modified, true
+            ));
+        }
+        let mut changed = lobby.clone();
+        changed["members"][0]["secondPositionPreference"] = json!("MIDDLE");
+        assert!(!search_dispatch_matches(
+            &local, &local, &party, &changed, true
+        ));
+        changed = lobby.clone();
+        changed["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"summonerId":2}));
+        assert!(!search_dispatch_matches(
+            &local, &local, &party, &changed, true
+        ));
+        let mut searching = local.clone();
+        searching["phase"] = json!("Matchmaking");
+        assert!(search_dispatch_matches(
+            &searching, &searching, &party, &lobby, false
+        ));
+        assert!(!search_dispatch_matches(
+            &searching, &local, &party, &lobby, false
+        ));
+        let mut ready = searching.clone();
+        ready["phase"] = json!("ReadyCheck");
+        assert!(!search_dispatch_matches(
+            &searching, &ready, &party, &lobby, false
+        ));
+    }
+}
+
+#[cfg(test)]
+mod acceptance_dispatch_tests {
+    use super::*;
+    fn example() -> (Value, Value, Value, Value) {
+        let party = json!({"id":"a".repeat(32),"revision":7,"state":"forming","leaderId":"leader","queueId":450,"members":[{"id":"leader","accepted":true,"online":true,"gameSummonerId":"2","server":"RU"},{"id":"me","accepted":true,"gameSummonerId":"1","server":"RU"}]});
+        let data = json!({"me":"me","active":party});
+        let local = json!({"phase":"None","summonerId":"1","puuid":"own","server":"RU"});
+        let invitations = json!([{"invitationId":"invite-1","state":"Pending","canAcceptInvitation":true,"fromSummonerId":2,"gameConfig":{"queueId":450}}]);
+        (party, data, local, invitations)
+    }
+    #[test]
+    fn queued_accept_requires_current_party_identity_server_and_pending_invitation() {
+        let (party, data, local, invitations) = example();
+        assert!(acceptance_current(
+            &data,
+            &party,
+            &local,
+            &local,
+            &Value::Null,
+            &invitations,
+            "invite-1"
+        ));
+        for (field, value) in [
+            ("revision", json!(8)),
+            ("state", json!("queued")),
+            ("leaderId", json!("new")),
+            ("queueId", json!(400)),
+        ] {
+            let mut changed = data.clone();
+            changed["active"][field] = value;
+            assert!(
+                !acceptance_current(
+                    &changed,
+                    &party,
+                    &local,
+                    &local,
+                    &Value::Null,
+                    &invitations,
+                    "invite-1"
+                ),
+                "{field}"
+            );
+        }
+        for (field, value) in [
+            ("phase", json!("Lobby")),
+            ("phase", json!("ReadyCheck")),
+            ("server", json!("EUW")),
+            ("summonerId", json!("3")),
+            ("puuid", json!("other")),
+        ] {
+            let mut fresh = local.clone();
+            fresh[field] = value;
+            assert!(
+                !acceptance_current(
+                    &data,
+                    &party,
+                    &local,
+                    &fresh,
+                    &Value::Null,
+                    &invitations,
+                    "invite-1"
+                ),
+                "{field}"
+            );
+        }
+        for field in [
+            "state",
+            "canAcceptInvitation",
+            "fromSummonerId",
+            "invitationId",
+        ] {
+            let mut changed = invitations.clone();
+            changed[0][field] = Value::Null;
+            assert!(
+                !acceptance_current(
+                    &data,
+                    &party,
+                    &local,
+                    &local,
+                    &Value::Null,
+                    &changed,
+                    "invite-1"
+                ),
+                "{field}"
+            );
+        }
+        assert!(!acceptance_current(
+            &data,
+            &party,
+            &local,
+            &local,
+            &json!({"partyId":"other"}),
+            &invitations,
+            "invite-1"
+        ));
+        let mut revoked = data.clone();
+        revoked["active"]["members"][1]["accepted"] = json!(false);
+        assert!(!acceptance_current(
+            &revoked,
+            &party,
+            &local,
+            &local,
+            &Value::Null,
+            &invitations,
+            "invite-1"
+        ));
+        let mut rebound = data.clone();
+        rebound["active"]["members"][1]["gameSummonerId"] = json!("3");
+        assert!(!acceptance_current(
+            &rebound,
+            &party,
+            &local,
+            &local,
+            &Value::Null,
+            &invitations,
+            "invite-1"
+        ));
+        assert!(!acceptance_current(
+            &data,
+            &party,
+            &local,
+            &local,
+            &Value::Null,
+            &json!([]),
+            "invite-1"
+        ));
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_invitation_acceptance_rechecks_revocation_after_queue() {
+        let client = crate::services::riot_client::RiotClientService::new();
+        let control = crate::services::riot_client::RiotClientService::new();
+        let (party, data, local, invitations) = example();
+        let route = "/lol-lobby/v2/received-invitations";
+        control
+            .lcu_post(
+                "/__test/failure",
+                &json!({"route":route,"status":200,"response":invitations}).to_string(),
+            )
+            .await
+            .unwrap();
+        let permits = client.hold_test_writes().await;
+        let request = client.lcu_post_checked(
+            "/lol-lobby/v2/received-invitations/invite-1/accept",
+            "{}",
+            || async {
+                let invitations: Value =
+                    serde_json::from_str(&client.lcu_get(route).await.unwrap()).unwrap();
+                acceptance_current(
+                    &data,
+                    &party,
+                    &local,
+                    &local,
+                    &Value::Null,
+                    &invitations,
+                    "invite-1",
+                )
+            },
+        );
+        tokio::pin!(request);
+        assert!(futures_util::poll!(&mut request).is_pending());
+        let mut expired = invitations.clone();
+        expired[0]["state"] = json!("Expired");
+        control
+            .lcu_post(
+                "/__test/failure",
+                &json!({"route":route,"status":200,"response":expired}).to_string(),
+            )
+            .await
+            .unwrap();
+        let before: Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        drop(permits);
+        assert!(request
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled before dispatch"));
+        let after: Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let key = "POST /lol-lobby/v2/received-invitations/invite-1/accept";
+        assert_eq!(before["requestCounts"][key], after["requestCounts"][key]);
+        assert_eq!(before["actions"], after["actions"]);
+    }
+}
+
+#[cfg(test)]
+mod role_and_leave_dispatch_tests {
+    use super::*;
+    fn example() -> (Value, Value, Value, Value) {
+        (
+            json!({"queueId":400,"members":[{"id":"me","accepted":true,"gameSummonerId":"1","role":"top","secondaryRole":"jungle"}]}),
+            json!({"phase":"Lobby","lobbyId":"old","puuid":"own","summonerId":"1","server":"RU"}),
+            json!({"gameConfig":{"queueId":400,"showPositionSelector":true},"localMember":{"summonerId":1,"isLeader":false},"members":[{"summonerId":1}]}),
+            json!({"firstPreference":"TOP","secondPreference":"JUNGLE"}),
+        )
+    }
+    #[test]
+    fn roles_require_own_membership_current_mode_and_exact_desired_pair_not_leadership() {
+        let (party, local, lobby, preferences) = example();
+        assert!(role_target_matches(
+            &party,
+            &json!("me"),
+            &local,
+            &lobby,
+            &preferences
+        ));
+        for key in ["accepted", "gameSummonerId", "role", "secondaryRole"] {
+            let mut changed = party.clone();
+            changed["members"][0][key] = Value::Null;
+            assert!(
+                !role_target_matches(&changed, &json!("me"), &local, &lobby, &preferences),
+                "{key}"
+            );
+        }
+        for phase in ["None", "Matchmaking", "ReadyCheck", "ChampSelect"] {
+            let mut fresh = local.clone();
+            fresh["phase"] = json!(phase);
+            assert!(!role_target_matches(
+                &party,
+                &json!("me"),
+                &fresh,
+                &lobby,
+                &preferences
+            ));
+            assert!(!local_lobby_unchanged(&local, &fresh, &lobby));
+        }
+        let mut wrong = lobby.clone();
+        wrong["gameConfig"]["queueId"] = json!(450);
+        assert!(!role_target_matches(
+            &party,
+            &json!("me"),
+            &local,
+            &wrong,
+            &preferences
+        ));
+        wrong = lobby.clone();
+        wrong["localMember"]["summonerId"] = json!(2);
+        assert!(!role_target_matches(
+            &party,
+            &json!("me"),
+            &local,
+            &wrong,
+            &preferences
+        ));
+        wrong = lobby;
+        wrong["gameConfig"]["showPositionSelector"] = json!(false);
+        assert!(!role_target_matches(
+            &party,
+            &json!("me"),
+            &local,
+            &wrong,
+            &preferences
+        ));
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_roles_and_leave_recheck_phase_after_write_queue() {
+        let client = crate::services::riot_client::RiotClientService::new();
+        let control = crate::services::riot_client::RiotClientService::new();
+        let (party, local, lobby, preferences) = example();
+        for leaving in [false, true] {
+            control
+                .lcu_post("/__test/scenario", r#"{"name":"idle"}"#)
+                .await
+                .unwrap();
+            let permits = client.hold_test_writes().await;
+            let route = if leaving {
+                "/lol-lobby/v2/lobby"
+            } else {
+                "/lol-lobby/v2/lobby/members/localMember/position-preferences"
+            };
+            let request = async {
+                let check = || async {
+                    let mut fresh = local.clone();
+                    fresh["phase"] = serde_json::from_str(
+                        &client
+                            .lcu_get("/lol-gameflow/v1/gameflow-phase")
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    if leaving {
+                        local_lobby_unchanged(&local, &fresh, &lobby)
+                    } else {
+                        role_target_matches(&party, &json!("me"), &fresh, &lobby, &preferences)
+                    }
+                };
+                if leaving {
+                    client.lcu_delete_checked(route, check).await
+                } else {
+                    client
+                        .lcu_put_checked(route, &preferences.to_string(), check)
+                        .await
+                }
+            };
+            tokio::pin!(request);
+            assert!(futures_util::poll!(&mut request).is_pending());
+            control
+                .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+                .await
+                .unwrap();
+            let before: Value =
+                serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+            drop(permits);
+            assert!(request
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled before dispatch"));
+            let after: Value =
+                serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+            let key = format!("{} {route}", if leaving { "DELETE" } else { "PUT" });
+            assert_eq!(before["requestCounts"][&key], after["requestCounts"][&key]);
+            assert_eq!(before["actions"], after["actions"]);
+        }
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_create_lobby_rejects_new_phase_before_dispatch() {
+        let client = crate::services::riot_client::RiotClientService::new();
+        let control = crate::services::riot_client::RiotClientService::new();
+        let (_, mut local, _, _) = example();
+        local["phase"] = json!("None");
+        let permits = client.hold_test_writes().await;
+        let request =
+            client.lcu_post_checked("/lol-lobby/v2/lobby", r#"{"queueId":400}"#, || async {
+                let mut fresh = local.clone();
+                fresh["phase"] = serde_json::from_str(
+                    &client
+                        .lcu_get("/lol-gameflow/v1/gameflow-phase")
+                        .await
+                        .unwrap(),
+                )
+                .unwrap();
+                empty_lobby_current(&local, &fresh, &Value::Null)
+            });
+        tokio::pin!(request);
+        assert!(futures_util::poll!(&mut request).is_pending());
+        control
+            .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+            .await
+            .unwrap();
+        let before: Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        drop(permits);
+        assert!(request
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled before dispatch"));
+        let after: Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(
+            before["requestCounts"]["POST /lol-lobby/v2/lobby"],
+            after["requestCounts"]["POST /lol-lobby/v2/lobby"]
+        );
+        assert_eq!(before["actions"], after["actions"]);
     }
 }

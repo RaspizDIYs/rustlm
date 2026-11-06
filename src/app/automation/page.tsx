@@ -408,7 +408,7 @@ export default function AutomationPage() {
           ))}
         </div>
       )}
-      <Card className="gap-3 py-3">
+      <Card data-tour="champion-pool" className="gap-3 py-3">
         <CardHeader className="px-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle className="text-sm">Чемпионы</CardTitle>

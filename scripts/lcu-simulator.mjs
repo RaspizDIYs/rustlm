@@ -42,6 +42,7 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
     ui_pid: 200, renderer_count: 1, window_responsive: true, game_running: false,
     scope_verified: true, reloadSucceeds: true };
   const actions = [];
+  const requestCounts = {};
   const subscriptions = new Set();
   const ws = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const authenticated = request => request.headers.authorization ===
@@ -67,7 +68,7 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
     publish(sessionRoute, state.session);
   };
   const server = http.createServer(async (request, response) => {
-    const reply = (status, data) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(data)); };
+    const reply = (status, data, headers = {}) => { response.writeHead(status, { 'Content-Type': 'application/json', ...headers }); response.end(JSON.stringify(data)); };
     if (!authenticated(request)) return reply(401, { errorCode: 'UNAUTHORIZED' });
     try {
       let body = '';
@@ -77,6 +78,8 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
       }
       const data = body ? JSON.parse(body) : {};
       const route = request.url;
+      const requestKey = `${request.method} ${route}`;
+      requestCounts[requestKey] = (requestCounts[requestKey] || 0) + 1;
       if (route === '/__test/unavailable' && request.method === 'POST') {
         if (!Array.isArray(data.routes) || data.routes.length > 20 || !data.routes.every(p => typeof p === 'string' && p.startsWith('/lol-') && p.length < 200)) return reply(400, {});
         unavailable = new Set(data.routes); return reply(200, {});
@@ -85,23 +88,45 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
       if (route === '/__test/scenario' && request.method === 'POST') { changeScenario(data.name); return reply(200, {}); }
       if (route === '/__test/fixture' && request.method === 'POST') { loadFixture(data); return reply(200, {}); }
       if (route === '/__test/next-connection' && request.method === 'GET' && successor) return reply(200, successor);
-      if (route === '/__test/state' && request.method === 'GET') return reply(200, { ...state, ux, actions });
+      if (route === '/__test/state' && request.method === 'GET') return reply(200, { ...state, ux, actions, requestCounts });
       if (route === '/__test/ux-health' && request.method === 'GET') return reply(200, ux);
       if (route === '/__test/ux-health' && request.method === 'POST') {
         ux = { ...ux, ...data }; return reply(200, {});
       }
       if (route === '/__test/failure' && request.method === 'POST') {
-        if (typeof data.route !== 'string' || !Number.isInteger(data.status) || data.status < 400 || data.status > 599) return reply(400, {});
+        if (typeof data.route !== 'string' || !Number.isInteger(data.status) || data.status < 200 || data.status > 599) return reply(400, {});
         failure = data; return reply(200, {});
       }
       if (route === '/__test/disconnect' && request.method === 'POST') {
         for (const socket of subscriptions) socket.terminate();
         return reply(200, {});
       }
-      if (failure?.route === route) {
+      let dropAppliedResponse = false;
+      if (failure?.route === route && (typeof failure.completed !== 'boolean' || Boolean(data.completed) === failure.completed)) {
         const current = failure; failure = null;
-        if (Number.isFinite(current.delayMs)) await new Promise(ok => setTimeout(ok, Math.max(0, Math.min(1000, current.delayMs))));
-        return reply(current.status, { message: 'synthetic private response' });
+        if (current.dropAfterApply && request.method === 'POST' && route.startsWith('/product-launcher/')) {
+          actions.push({method:request.method,route});
+          response.destroy(); return;
+        }
+        if ((current.dropAfterApply || current.transitionPhase) && request.method === 'POST' && route === `${readyRoute}/accept`) {
+          state.ready.playerResponse = 'Accepted';
+          actions.push({method:request.method,route});
+          publish(readyRoute,state.ready);
+          if (current.transitionPhase) {
+            state.flow.phase = current.transitionPhase;
+            if (Number.isSafeInteger(current.nextGameId)) state.flow.gameData.gameId = current.nextGameId;
+            state.ready = {state:'Invalid',playerResponse:'None'};
+          }
+          if (current.dropAfterApply) response.destroy();
+          else reply(current.status,{});
+          return;
+        }
+        if (current.dropAfterApply && request.method === 'PATCH' && /^\/lol-champ-select\/v1\/session\/actions\/\d+$/.test(route)) {
+          dropAppliedResponse = true;
+        } else {
+          if (Number.isFinite(current.delayMs)) await new Promise(ok => setTimeout(ok, Math.max(0, Math.min(1000, current.delayMs))));
+          return reply(current.status, current.response ?? { message: 'synthetic private response' }, current.retryAfter === undefined ? {} : {'Retry-After':String(current.retryAfter)});
+        }
       }
       if (request.method === 'GET') {
         if (route === '/lol-summoner/v1/current-summoner' && state.summoner) return reply(200, state.summoner);
@@ -144,8 +169,16 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
         action.championId = data.championId;
         if (data.completed === true) { action.completed = true; action.isInProgress = false; }
         actions.push({ method: request.method, route, championId: data.championId, completed: action.completed });
-        publish(sessionRoute, state.session); return reply(204);
+        publish(sessionRoute, state.session);
+        if (dropAppliedResponse) { response.destroy(); return; }
+        return reply(204);
       }
+      if (request.method === 'GET' && route === '/lol-game-queues/v1/queues') return reply(200,[{id:1090,gameMode:'TFT',queueAvailability:'Available'}]);
+      if (request.method === 'POST' && route === '/lol-lobby/v2/lobby') {
+        if (data.queueId !== 1090 || !['None','Lobby'].includes(state.flow.phase)) return reply(409,{});
+        state.lobby = {gameConfig:{queueId:1090}}; actions.push({method:request.method,route}); return reply(200,state.lobby);
+      }
+      if (request.method === 'GET' && route === '/lol-lobby/v2/lobby') return reply(state.lobby?200:404,state.lobby);
       // Unknown writes fail closed rather than pretending that all Riot commands work.
       return reply(404, { errorCode: 'NOT_IMPLEMENTED' });
     } catch { reply(400, { errorCode: 'INVALID_TEST_REQUEST' }); }

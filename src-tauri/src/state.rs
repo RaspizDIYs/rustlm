@@ -17,6 +17,7 @@ use crate::services::rune_pages_storage::RunePagesStorage;
 use crate::services::settings::SettingsService;
 
 pub struct AppState {
+    pub lifecycle: crate::services::lifecycle::Lifecycle,
     pub logger: Arc<FileLogger>,
     pub settings: Arc<SettingsService>,
     pub accounts: Arc<AccountsStorage>,
@@ -73,6 +74,7 @@ impl AppState {
         logger.info("RustLM starting up...");
 
         Self {
+            lifecycle: crate::services::lifecycle::Lifecycle::default(),
             logger,
             settings,
             accounts,
@@ -90,5 +92,40 @@ impl AppState {
             login_cancelled,
             post_login_lcu_task: Mutex::new(None),
         }
+    }
+
+    pub fn begin_shutdown(&self) -> bool {
+        if !self.lifecycle.begin_close() {
+            return false;
+        }
+        self.login_cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.unglitch.set_enabled(false);
+        self.auto_accept.begin_shutdown();
+        true
+    }
+
+    pub async fn shutdown(&self) -> (bool, bool) {
+        let refresh = self.post_login_lcu_task.lock().unwrap().take();
+        if let Some(task) = &refresh {
+            task.abort();
+        }
+        let client = self.riot_client.clone();
+        let logger = self.logger.clone();
+        let recorder = tokio::task::spawn_blocking(move || {
+            let saved = client.recorder.stop().is_ok();
+            logger.info(if saved {
+                "[Shutdown] Recorder stopped and synced; guest journal retained."
+            } else {
+                "[Shutdown] Recorder sync failed; guest journal retained."
+            });
+            saved
+        });
+        let listeners = self.auto_accept.shutdown();
+        let (listeners, recorder) = tokio::join!(listeners, recorder);
+        if let Some(task) = refresh {
+            let _ = task.await;
+        }
+        (listeners, recorder.unwrap_or(false))
     }
 }

@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { SocialProvider, SocialPanel } from "@/components/social-panel";
+import { StartupTour } from "@/components/startup-tour";
 import { Sidebar } from "@/components/sidebar";
 import { Titlebar } from "@/components/titlebar";
 import { LolManagerCleanupDialog } from "@/components/lolmanager-cleanup-dialog";
@@ -29,18 +31,22 @@ export default function RootLayout({
       <body className="h-screen bg-transparent">
         <Providers>
         <AutoAcceptProvider>
+        <SocialProvider>
           <div className="window-frame flex flex-col h-full rounded-lg ring-1 ring-inset ring-border/30 bg-background overflow-hidden shadow-2xl">
             <Titlebar />
-            <div className="flex min-h-0 flex-1">
+            <div className="relative flex min-h-0 flex-1">
               <Sidebar />
               <main className="lm-main flex min-h-0 min-w-0 flex-1 flex-col overflow-auto p-6">{children}</main>
+              <SocialPanel />
             </div>
           </div>
           <LolManagerCleanupDialog />
           <TrayEventHandler />
           <UpdateCheckDialog />
           <WindowInit />
+          <StartupTour />
           <Toaster position="bottom-right" richColors />
+        </SocialProvider>
         </AutoAcceptProvider>
         </Providers>
       </body>

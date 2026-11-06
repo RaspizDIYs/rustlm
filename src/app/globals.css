@@ -10,11 +10,11 @@
 .lm-sidebar { --primary: oklch(0.546 0.245 262.881); --primary-foreground: oklch(0.985 0 0); }
 .accounts-header, .friends-toolbar { display: grid; grid-template-columns: 314px 256px; justify-content: space-between; gap: 8px 24px; align-items: center; flex-shrink: 0; }
 .accounts-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.accounts-header-imports { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.accounts-header-imports { grid-column: 1; grid-row: 2; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .accounts-header-left > .relative { flex: 1; width: 0; min-width: 0; }
 .accounts-header-imports > .accounts-import-button { flex: 0 0 120px; width: 120px; }
 .accounts-header-imports > button { height: 30px; font-size: 12px; }
-.accounts-header-controls { display: grid; grid-template-columns: minmax(0,1fr) 108px; gap: 10px; align-items: center; }
+.accounts-header-controls { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: minmax(0,1fr) 108px; gap: 10px; align-items: center; }
 .accounts-header-controls > button { height: 30px; padding-inline: 14px; gap: 6px; white-space: nowrap; }
 .accounts-autoaccept { flex-direction: row-reverse; justify-content: flex-end; white-space: nowrap; }
 .accounts-autoaccept > span { font-size: 11px; }
@@ -241,3 +241,59 @@ html[data-animations="off"] .lm-image-choice::after { animation: none; display: 
 .accounts-header-controls.has-party { grid-template-columns: minmax(0,1fr) 30px 88px; gap: 6px; }
 .accounts-header-controls.has-party > button { padding-inline: 8px; }
 .accounts-header-controls.has-party > .party-trigger { width: 30px; padding: 0; }
+
+
+/* Compact tools and a persistent, collapsible social rail. */
+.lm-social-panel { z-index: 30; min-height: 0; }
+.social-panel-body .friends-toolbar { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.social-panel-body .friends-toolbar-filters { min-width: 0; }
+.social-panel-body .friends-toolbar-controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.social-panel-body [data-slot="select-trigger"] { max-width: 100%; }
+.social-panel-body [data-slot="card-content"] { padding: 10px; }
+.social-panel-body [data-slot="table-cell"] { padding: 8px; }
+.social-panel-body section[aria-label="Приглашения в пати LM"] { max-height: none; overflow: visible; }
+.social-panel-body section[aria-label="Приглашения в пати LM"] [data-slot="select-trigger"] { width: 100%; }
+.social-panel-body section[aria-label="Приглашения в пати LM"] button { max-width: 100%; white-space: normal; height: auto; min-height: 28px; }
+.repairs-workspace [data-slot="tabs-list"] { margin-bottom: 4px; }
+.repairs-workspace [data-slot="tabs-content"] { min-width: 0; }
+.repairs-workspace [data-slot="tabs-content"] > div { gap: 8px; }
+.repairs-workspace [data-slot="tabs-content"] h1 { font-size: 14px; }
+.repairs-workspace [data-slot="card-content"] { padding: 10px; }
+.repairs-workspace [data-slot="card-header"] { padding: 10px; }
+.server-badge { --server-color: var(--color-slate-400); color: var(--server-color); border-color: color-mix(in srgb, var(--server-color) 35%, transparent); background: color-mix(in srgb, var(--server-color) 12%, transparent); padding: 3px 8px; font-size: 12px; font-weight: 600; }
+.server-ru { --server-color: var(--color-sky-400); }
+.server-euw { --server-color: var(--color-violet-400); }
+.server-eune { --server-color: var(--color-teal-400); }
+.server-na { --server-color: var(--color-amber-400); }
+.server-kr { --server-color: var(--color-rose-400); }
+.server-tr { --server-color: var(--color-orange-400); }
+.server-br { --server-color: var(--color-emerald-400); }
+.server-jp { --server-color: var(--color-pink-400); }
+.server-lan { --server-color: var(--color-lime-400); }
+.server-las { --server-color: var(--color-yellow-400); }
+.server-oce { --server-color: var(--color-cyan-400); }
+@media (max-width: 1279px) {
+  .lm-social-panel.is-expanded { position: absolute; inset-block: 0; right: 0; width: min(380px, calc(100% - 64px)); box-shadow: -12px 0 30px color-mix(in srgb, var(--background) 55%, transparent); }
+}
+
+.server-badge { height: 26px; }
+.social-panel-body table { table-layout: fixed; }
+.social-panel-body td:last-child { width: 76px; }
+.repairs-workspace [data-slot="tabs-content"] h2 { font-size: 14px; line-height: 20px; }
+
+[data-tour-active="true"] { outline: 1px solid var(--primary) !important; outline-offset: 2px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 10%, transparent); border-radius: 8px; }
+
+.social-panel-body .friends-toolbar-filters > [data-slot="select-trigger"] { width: 100%; }
+
+.repairs-workspace [data-slot="card"] { padding-block: 0; gap: 0; }
+
+.social-panel-body .friends-toolbar-filters { grid-template-columns: minmax(0, 1fr); }
+
+.social-panel-body [aria-label="Участники группы"] > .flex:last-child > button,
+.social-panel-body [aria-label="Участники группы"] > .flex:last-child > [data-slot="tooltip-trigger"] { min-width: 0; }
+
+/* Match the two navigation rails and their bottom separators. */
+.social-panel-rail > button, .social-panel-rail [data-slot="button"] { width: 44px; height: 34px; }
+.social-panel-rail svg { width: 16px; height: 16px; }
+.lm-main:has(.accounts-page) { padding-bottom: 0; }
+.accounts-client-footer { height: 63px; min-height: 63px; }

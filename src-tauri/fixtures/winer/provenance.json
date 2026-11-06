@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/sunerpy/winer",
+  "commit": "bec83340365810a427a93b122067e2857f47cce2",
+  "upstream_directory": "fixtures/lcu-rest",
+  "origin": "upstream client fixture; not captured or live-verified by RustLM",
+  "transformation": "body only; SessionRecorder allowlist; identity/chat/headers omitted; unknown strings erased",
+  "files": [
+    {
+      "file": "lol-champ-select-v1-session--champ-select-ban-pick.json",
+      "upstream_sha256": "c219618431c1aa8a449c93835b0052817a4a5da51aa523fcc45aed4628697c5f",
+      "sanitized_sha256": "c1ec2ef8334970529887a1ad839f9b6bee2633d7823e755be56125839af52755",
+      "phase": "BAN_PICK"
+    },
+    {
+      "file": "lol-champ-select-v1-session--champ-select-finalization.json",
+      "upstream_sha256": "21b42ae04fab85b0c65a77c945ed9c1dd01611cb939611e0fb31467dbc174a27",
+      "sanitized_sha256": "e6f5982133ac9d5c60c153a51a46ff344dce99863d7a4ac9b935f12cbd51feb1",
+      "phase": "FINALIZATION"
+    },
+    {
+      "file": "lol-champ-select-v1-session--champ-select-planning.json",
+      "upstream_sha256": "ef997d7a5d8a2880b18560494ef733139b383afe17d725f3238dd572b4b6fe55",
+      "sanitized_sha256": "6077bccc8fb47c2aee9d70eae14123de84c68b4b1eabbf7fa53bf89ca5cc3db9",
+      "phase": "PLANNING"
+    }
+  ]
+}

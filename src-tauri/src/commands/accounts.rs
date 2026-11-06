@@ -107,7 +107,6 @@ pub(crate) fn trigger_cloud_sync(state: &AppState) {
 pub async fn refresh_account_profile_from_lcu_inner(
     state: &AppState,
 ) -> Result<LcuProfileRefreshResult, String> {
-    state.riot_client.invalidate_cache();
     let info = state
         .riot_client
         .get_account_info()

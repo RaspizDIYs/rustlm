@@ -14,9 +14,10 @@ test("hidden interface can be restored even if gameflow is unavailable",()=>{
  for(const id of ["reload","force_reload","hide"])assert.equal(actionAvailable(id,hidden),false);
  assert.equal(confirmationRequired("restore","ChampSelect"),false);
 });
-test("force restart remains available for broken LCU but unsupported platforms cannot force",()=>{
- assert.equal(actionAvailable("force_reload",{...live,api_available:false}),true);
- assert.equal(actionAvailable("force_reload",{...live,force_supported:false}),false);
+test("renderer termination is not offered; legacy action requires the supported LCU restart",()=>{
+ assert.equal(UNGLITCH_ACTIONS.some(action=>action.id==="force_reload"),false);
+ assert.equal(actionAvailable("force_reload",{...live,api_available:false}),false);
+ assert.equal(actionAvailable("force_reload",{...live,force_supported:false}),true);
  assert.equal(actionAvailable("hide",{...live,api_available:false}),false);
 });
 test("confirmation covers hiding, force restart, active or unknown phases",()=>{

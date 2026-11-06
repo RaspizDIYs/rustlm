@@ -1,10 +1,11 @@
 // Browser-only fixtures. No real Riot credentials, GoodLuck session or network mutations.
 (() => {
+  window.isTauri = true;
   const recipient = new URLSearchParams(location.search).get("side") === "recipient";
   const a = "a".repeat(78), b = "b".repeat(78);
   const me = recipient ? b : a, peer = recipient ? a : b;
   const names = { [a]: "GL Shpinat#GULAG", [b]: "Mira#RU2" };
-  const account = { Username: recipient ? "mira_fixture" : "shpinat_fixture", EncryptedPassword: "fixture-not-a-password", Note: "Основной", Server: "RU", RiotId: names[me], Puuid: me, AvatarUrl: "", Pinned: false, RankDisplay: recipient ? "GOLD II 40LP" : "EMERALD I 75LP", SummonerLevel: 30 };
+  const account = { Username: recipient ? "mira_fixture" : "shpinat_fixture", EncryptedPassword: "fixture-not-a-password", Note: "Основной", Server: "RU", RiotId: names[me], Puuid: me, AvatarUrl: "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg", Pinned: false, RankDisplay: recipient ? "GOLD II 40LP" : "EMERALD I 75LP", SummonerLevel: 30 };
   const euwAccount = {...account,Username:"euw_fixture",Server:"EUW",RiotId:"Mira#EUW",Puuid:"e".repeat(78),Note:"EUW"};
   const savedAccounts = [account,euwAccount];
   const storageKey = "rustlm-league-sharing-preview-v1";
@@ -98,7 +99,7 @@
     unregisterCallback: (id) => callbacks.delete(id),
     invoke: async (command, args = {}) => {
       window.__previewCalls.push(command);
-      if (command === "plugin:app|version") return "0.5.22";
+      if (command === "plugin:app|version") return "0.5.25";
       if (command === "plugin:event|listen") { const id = ++sequence; listeners.set(id, args); return id; }
       if (command === "plugin:event|unlisten") { listeners.delete(args.eventId); return null; }
       if (command === "load_setting") return args.key === "LeagueFriendsVisible" ? true : settings()[args.key] ?? args.defaultValue;
@@ -138,7 +139,7 @@
         revision(party, request.expectedRevision);
         if (!["join", "decline"].includes(request.action) && !own.accepted) throw Error("HTTP 403: invitation not accepted");
         if (request.action === "join") own.accepted = true;
-        else if (request.action === "decline" || request.action === "leave") { if (request.action === "decline" && own.accepted) throw Error("HTTP 409: already accepted"); party.members = party.members.filter(m => m !== own); }
+        else if (request.action === "decline" || request.action === "leave") { if (request.action === "decline" && own.accepted) throw Error("HTTP 409: already accepted"); if (request.action === "decline") (party.declined ||= []).push({ id: own.id, name: own.name }); party.members = party.members.filter(m => m !== own); }
         else if (request.action === "cancel") { requireLeader(party); if (party.state !== "forming") throw Error("HTTP 409: cancel queue first"); writeParty(null); return null; }
         else if (request.action === "update") {
           if (party.state !== "forming") throw Error("HTTP 409: queue active");
@@ -210,6 +211,7 @@
       if (command === "load_accounts") return savedAccounts;
       if (command === "goodluck_get_user") return null;
       if (command === "goodluck_get_shared_accounts") return { available_to_me: [], shared_by_me: [] };
+      if (command === "probe_connectivity") return {is_riot_client_running:false,is_league_running:false,lcu_http_ok:false};
       if (command === "get_client_state") return { is_running: true, is_connected: true };
       if (command === "load_update_settings") return { AutoUpdateEnabled: false, CheckIntervalMinutes: 60 };
       if (command === "get_automation_settings") return automation();
@@ -242,6 +244,14 @@
       }
       if (command === "league_login" || command === "login_to_account") throw Error("Демонстрация: реальный вход отключён");
       if (command === "goodluck_get_friends" || command === "goodluck_get_friend_requests" || command === "goodluck_get_synced_accounts") return [];
+      if (command === "unglitch_status") return {backend_running:true,ui_running:true,api_available:true,phase:"Lobby",force_supported:true,window_responsive:true,renderer_count:2,response_ms:24,game_running:false};
+      if (command === "unglitch_watch_status") return {enabled:false,state:"disabled",last_result:null};
+      if (command === "unglitch_diagnostics") return {ui:{state:"available",screen:null,elements:24,progress:0,disabled_buttons:0,partial:false,waiting_ms:0},requests:[],events:[]};
+      if (command === "repair_readiness") return {running:false,strategy_matches:false,observed_strategy:null,vpn_signals:[],details_unavailable:false};
+      if (command === "repair_detect_zapret") return null;
+      if (command === "network_history") return [];
+      if (command === "repair_load_journal") return null;
+      if (command === "unglitch_execute" || command === "unglitch_watch_enabled" || command.startsWith("repair_") || command.startsWith("network_")) throw Error("Демонстрация: системные изменения отключены");
       if (command === "cloud_get_status") return { type: "Idle" };
       if (command === "get_ddragon_version") return "16.1.1";
       if (command === "get_champion_search_aliases") return { Ahri: ["Ари", "Ahri"], Ashe: ["Эш", "Ashe"], Lux: ["Люкс", "Lux"], Garen: ["Гарен", "Garen"] };
@@ -256,6 +266,7 @@
     const label = document.createElement("div");
     label.textContent = `Демонстрация · ${recipient ? "Получатель — Mira" : "Отправитель — Shpinat"} · GoodLuck отключён · реальные передачи отключены`;
     label.style.cssText = "position:fixed;bottom:0;left:0;right:0;padding:5px 12px;background:#12213e;color:#b8cdfb;font:11px system-ui;z-index:9999;text-align:center;pointer-events:none";
+    document.body.style.height = "calc(100vh - 24px)";
     document.body.append(label);
   });
 })();

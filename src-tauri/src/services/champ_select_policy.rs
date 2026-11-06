@@ -1,5 +1,45 @@
 use serde_json::Value;
 
+pub fn session_matches_flow(session: &Value, flow: &Value) -> bool {
+    mode(flow).is_some()
+        && match (
+            session["gameId"].as_i64(),
+            flow["gameData"]["gameId"].as_i64(),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => true, // Some client payloads omit gameId; action-level checks still apply.
+        }
+}
+
+pub fn action_is_completed(
+    session: &Value,
+    action_id: i64,
+    champion_id: i32,
+    game_id: i64,
+    is_ban: bool,
+) -> bool {
+    let Some(cell) = session["localPlayerCellId"]
+        .as_i64()
+        .filter(|cell| *cell >= 0)
+    else {
+        return false;
+    };
+    session["gameId"].as_i64() == Some(game_id)
+        && session["actions"].as_array().is_some_and(|groups| {
+            groups
+                .iter()
+                .filter_map(Value::as_array)
+                .flatten()
+                .any(|action| {
+                    action["id"].as_i64() == Some(action_id)
+                        && action["championId"].as_i64() == Some(champion_id as i64)
+                        && action["actorCellId"].as_i64() == Some(cell)
+                        && action["type"].as_str() == Some(if is_ban { "ban" } else { "pick" })
+                        && action["completed"].as_bool() == Some(true)
+                })
+        })
+}
+
 pub fn mode(flow: &Value) -> Option<&'static str> {
     if flow["phase"].as_str() != Some("ChampSelect") {
         return None;
@@ -332,6 +372,34 @@ mod tests {
     use super::*;
     use crate::models::automation::{AutomationProfile, AutomationSettings};
     use serde_json::json;
+    #[test]
+    fn completion_requires_same_game_champion_actor_type_and_action() {
+        let base = json!({"gameId":10,"localPlayerCellId":1,"actions":[[{"id":3,"actorCellId":1,"championId":99,"type":"pick","completed":true}]]});
+        assert!(action_is_completed(&base, 3, 99, 10, false));
+        for (pointer, value) in [
+            ("/gameId", json!(11)),
+            ("/localPlayerCellId", json!(2)),
+            ("/actions/0/0/id", json!(4)),
+            ("/actions/0/0/championId", json!(103)),
+            ("/actions/0/0/actorCellId", json!(2)),
+            ("/actions/0/0/type", json!("ban")),
+            ("/actions/0/0/completed", json!(false)),
+        ] {
+            let mut changed = base.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                !action_is_completed(&changed, 3, 99, 10, false),
+                "{pointer}"
+            );
+        }
+        let flow = json!({"phase":"ChampSelect","gameData":{"gameId":10,"queue":{"gameMode":"CLASSIC","mapId":11}}});
+        assert!(session_matches_flow(&base, &flow));
+        let mut changed = flow.clone();
+        changed["gameData"]["gameId"] = json!(11);
+        assert!(!session_matches_flow(&base, &changed));
+        changed["phase"] = json!("Lobby");
+        assert!(!session_matches_flow(&base, &changed));
+    }
     #[test]
     fn bench_revalidation_rejects_new_games_changed_champions_and_expired_timers() {
         let base = json!({"gameId":10,"localPlayerCellId":1,"myTeam":[{"cellId":1,"championId":3}],"timer":{"phase":"FINALIZATION","adjustedTimeLeftInPhase":4000.5}});

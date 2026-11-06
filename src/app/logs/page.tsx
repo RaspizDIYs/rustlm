@@ -1,4 +1,5 @@
 "use client";
+import { SessionRecorder } from "@/components/session-recorder";
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -101,6 +102,7 @@ export default function LogsPage() {
 
   return (
     <div className="space-y-3">
+      <SessionRecorder onError={setError}/>
       <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-5 gap-y-2">
         <h1 className="text-lg font-semibold">Логи</h1>
         <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">

@@ -17,6 +17,39 @@ const PERSISTED_SETTINGS_FILENAME: &str = "PersistedSettings.json";
 const CONFIG_SUBDIR: &str = "Config";
 const LOLCFG_FORMAT_TAG: &str = "rustlm-lolcfg";
 const LOLCFG_FORMAT_VERSION: u32 = 1;
+const MAX_CONFIG_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+
+fn read_config_limit(path: impl AsRef<Path>, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let too_large = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Файл настроек превышает допустимый размер",
+        )
+    };
+    if file.metadata()?.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+fn read_config(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    read_config_limit(path, MAX_CONFIG_BYTES)
+}
+fn read_config_text(path: impl AsRef<Path>) -> std::io::Result<String> {
+    String::from_utf8(read_config(path)?).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Некорректная кодировка настроек",
+        )
+    })
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigStatus {
@@ -39,6 +72,171 @@ struct PresetsIndex {
     presets: Vec<PresetMeta>,
 }
 
+const PRESET_JOURNAL: &str = "preset-transaction.json";
+const PERSONAL_CHOICE: &str = "personal-choice.json";
+static PRESET_STORE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_preset_directory(dir: &Path) -> Result<std::fs::File, AppError> {
+    safe_path(dir)?;
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(".presets.lock");
+    safe_path(&path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    // Windows denies another opener until this handle is dropped, including another EXE.
+    options.open(path).map_err(|_| {
+        AppError::Custom(
+            "Хранилище пресетов занято другим LM или недоступно. Повторите операцию.".into(),
+        )
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+struct PresetMutation {
+    id: String,
+    meta: Option<PresetMeta>,
+    settings: Option<String>,
+    #[serde(default)]
+    personal_choice: bool,
+}
+
+fn raw_presets_index(dir: &Path) -> Result<PresetsIndex, AppError> {
+    let path = dir.join(METADATA_FILENAME);
+    safe_path(&path)?;
+    let index: PresetsIndex = if path.try_exists()? {
+        serde_json::from_slice(&read_config(path)?)?
+    } else {
+        PresetsIndex::default()
+    };
+    let mut ids = std::collections::HashSet::new();
+    for meta in &index.presets {
+        validate_preset_id(&meta.id)?;
+        if !ids.insert(&meta.id) {
+            return Err(AppError::Custom(
+                "Повторяющийся ID в индексе пресетов".into(),
+            ));
+        }
+    }
+    Ok(index)
+}
+
+fn recover_preset_mutation(dir: &Path) -> Result<(), AppError> {
+    let journal = dir.join(PRESET_JOURNAL);
+    safe_path(&journal)?;
+    if !journal.try_exists()? {
+        return Ok(());
+    }
+    let change: PresetMutation =
+        serde_json::from_slice(&read_config_limit(&journal, MAX_JOURNAL_BYTES)?)?;
+    validate_preset_id(&change.id)?;
+    let target = dir.join(format!("{}.json", change.id));
+    safe_path(&target)?;
+    let mut index = raw_presets_index(dir)?;
+    match (&change.meta, &change.settings) {
+        (Some(meta), Some(raw)) if meta.id == change.id => {
+            parse_settings(raw.as_bytes())?;
+            if change.personal_choice {
+                keyboard_settings(raw.as_bytes(), raw.as_bytes())?;
+            }
+            super::network::atomic_write(&target, raw.as_bytes()).map_err(AppError::Custom)?;
+            index.presets.retain(|m| m.id != change.id);
+            index.presets.insert(0, meta.clone());
+        }
+        (None, None) if change.personal_choice => {
+            let raw = read_config(&target)?;
+            keyboard_settings(&raw, &raw)?;
+            if !index.presets.iter().any(|m| m.id == change.id) {
+                return Err(AppError::Custom(
+                    "Личный пресет отсутствует в индексе".into(),
+                ));
+            }
+        }
+        (None, None) => index.presets.retain(|m| m.id != change.id),
+        _ => {
+            return Err(AppError::Custom(
+                "Повреждён журнал пресетов; файлы сохранены".into(),
+            ))
+        }
+    }
+    super::network::atomic_write(
+        &dir.join(METADATA_FILENAME),
+        &serde_json::to_vec_pretty(&index)?,
+    )
+    .map_err(AppError::Custom)?;
+    let choice = dir.join(PERSONAL_CHOICE);
+    safe_path(&choice)?;
+    if change.personal_choice {
+        let raw = read_config(&target)?;
+        keyboard_settings(&raw, &raw)?;
+        super::network::atomic_write(&choice, &serde_json::to_vec(&Some(&change.id))?)
+            .map_err(AppError::Custom)?;
+    } else if change.meta.is_none() && choice.try_exists()? {
+        let selected: Option<String> = serde_json::from_slice(&read_config(&choice)?)?;
+        if selected.as_deref() == Some(change.id.as_str()) {
+            super::network::atomic_write(&choice, b"null").map_err(AppError::Custom)?;
+        }
+    }
+    // For deletion, remove the payload only after the index is durably replaced.
+    if change.meta.is_none() && !change.personal_choice && target.try_exists()? {
+        std::fs::remove_file(target)?;
+    }
+    std::fs::remove_file(journal)?;
+    Ok(())
+}
+
+fn read_presets_index(dir: &Path) -> Result<PresetsIndex, AppError> {
+    let _guard = PRESET_STORE_LOCK
+        .lock()
+        .map_err(|_| AppError::Custom("Хранилище пресетов недоступно".into()))?;
+    let _file_lock = lock_preset_directory(dir)?;
+    recover_preset_mutation(dir)?;
+    raw_presets_index(dir)
+}
+
+fn commit_preset_mutation(dir: &Path, mut change: PresetMutation) -> Result<(), AppError> {
+    let _guard = PRESET_STORE_LOCK
+        .lock()
+        .map_err(|_| AppError::Custom("Хранилище пресетов недоступно".into()))?;
+    let _file_lock = lock_preset_directory(dir)?;
+    validate_preset_id(&change.id)?;
+    match (&change.meta, &change.settings) {
+        (Some(meta), Some(raw)) if meta.id == change.id => {
+            parse_settings(raw.as_bytes())?;
+            if change.personal_choice {
+                keyboard_settings(raw.as_bytes(), raw.as_bytes())?;
+            }
+        }
+        (None, None) => (),
+        _ => return Err(AppError::Custom("Некорректная операция пресета".into())),
+    }
+    std::fs::create_dir_all(dir)?;
+    recover_preset_mutation(dir)?;
+    if change.personal_choice && change.meta.is_none() {
+        let raw = read_config(dir.join(format!("{}.json", change.id)))?;
+        keyboard_settings(&raw, &raw)?;
+        let meta = raw_presets_index(dir)?
+            .presets
+            .into_iter()
+            .find(|m| m.id == change.id)
+            .ok_or_else(|| AppError::Custom("Личный пресет отсутствует в индексе".into()))?;
+        // Older journal readers must see an upsert, never mistake selection for deletion.
+        change.settings = Some(
+            String::from_utf8(raw)
+                .map_err(|_| AppError::Custom("Некорректная кодировка пресета".into()))?,
+        );
+        change.meta = Some(meta);
+    }
+    let path = dir.join(PRESET_JOURNAL);
+    safe_path(&path)?;
+    super::network::atomic_write(&path, &serde_json::to_vec(&change)?).map_err(AppError::Custom)?;
+    recover_preset_mutation(dir)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct LolCfgFile {
     format: String,
@@ -55,7 +253,7 @@ pub struct LolConfigService {
     riot_client: Arc<RiotClientService>,
     logger: Arc<FileLogger>,
     lock: Mutex<()>,
-    login_in_progress: AtomicBool,
+    login_in_progress: Arc<AtomicBool>,
 }
 
 impl LolConfigService {
@@ -64,8 +262,12 @@ impl LolConfigService {
             riot_client,
             logger,
             lock: Mutex::new(()),
-            login_in_progress: AtomicBool::new(false),
+            login_in_progress: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub(crate) fn login_lifecycle_flag(&self) -> Arc<AtomicBool> {
+        self.login_in_progress.clone()
     }
 
     fn app_version() -> String {
@@ -105,20 +307,7 @@ impl LolConfigService {
     // --- Metadata I/O ---
 
     fn read_index() -> Result<PresetsIndex, AppError> {
-        let path = Self::metadata_path()?;
-        if !path.exists() {
-            return Ok(PresetsIndex::default());
-        }
-        let raw = std::fs::read_to_string(&path)?;
-        let index: PresetsIndex = serde_json::from_str(&raw)?;
-        Ok(index)
-    }
-
-    fn write_index(index: &PresetsIndex) -> Result<(), AppError> {
-        let path = Self::metadata_path()?;
-        let raw = serde_json::to_string_pretty(index)?;
-        super::network::atomic_write(&path, raw.as_bytes()).map_err(AppError::Custom)?;
-        Ok(())
+        read_presets_index(&Self::presets_dir()?)
     }
 
     fn guest_journal_path() -> Result<PathBuf, AppError> {
@@ -136,9 +325,17 @@ impl LolConfigService {
     pub fn set_personal_preset(&self, id: String) -> Result<(), AppError> {
         let _guard = self.lock.lock().unwrap();
         self.ensure_normal_mutation()?;
-        let raw = std::fs::read(Self::preset_file_path(&id)?)?;
+        let raw = read_config(Self::preset_file_path(&id)?)?;
         keyboard_settings(&raw, &raw)?;
-        save_personal_choice(&Self::personal_choice_path()?, &id)
+        commit_preset_mutation(
+            &Self::presets_dir()?,
+            PresetMutation {
+                id,
+                meta: None,
+                settings: None,
+                personal_choice: true,
+            },
+        )
     }
 
     // Called after the old League client has closed and BEFORE foreign credentials are submitted.
@@ -164,7 +361,7 @@ impl LolConfigService {
             .ok_or_else(|| AppError::Custom("Установка League не найдена".into()))?;
         let dir = Self::presets_dir()?;
         let id = ensure_personal_preset(&root, &dir, &Self::personal_choice_path()?)?;
-        let preset = std::fs::read(Self::preset_file_path(&id)?)?;
+        let preset = read_config(Self::preset_file_path(&id)?)?;
         let mut journal = GuestJournal::capture(&root, preset, GuestConfigMode::Keyboard)?;
         journal.automatic = true;
         journal.protect_applied_settings();
@@ -289,6 +486,7 @@ impl LolConfigService {
             return Err(AppError::Custom("Дождитесь завершения входа".into()));
         }
         ensure_no_guest(&Self::guest_journal_path()?)?;
+        read_presets_index(&Self::presets_dir()?)?;
         ensure_game_closed()
     }
 
@@ -300,7 +498,10 @@ impl LolConfigService {
                 active: false,
                 changed: false,
                 pending_restore: false,
-                personal_preset_id: read_personal_choice(&Self::personal_choice_path()?)?,
+                personal_preset_id: read_current_personal_choice(
+                    &Self::presets_dir()?,
+                    &Self::personal_choice_path()?,
+                )?,
             });
         }
         let journal = GuestJournal::load(&path)?;
@@ -309,15 +510,18 @@ impl LolConfigService {
             active: true,
             changed,
             pending_restore: !journal.shared_session_active,
-            personal_preset_id: read_personal_choice(&Self::personal_choice_path()?)?,
+            personal_preset_id: read_current_personal_choice(
+                &Self::presets_dir()?,
+                &Self::personal_choice_path()?,
+            )?,
         })
     }
 
     pub fn guest_start(&self, id: String, mode: GuestConfigMode) -> Result<(), AppError> {
         let _guard = self.lock.lock().unwrap();
         self.ensure_normal_mutation()?;
-        let preset = std::fs::read(Self::preset_file_path(&id)?)?;
-        let _: serde_json::Value = serde_json::from_slice(&preset)?;
+        let preset = read_config(Self::preset_file_path(&id)?)?;
+        parse_settings(&preset)?;
         let root = RiotClientService::find_lol_install_dir()
             .ok_or_else(|| AppError::Custom("Установка League не найдена".into()))?;
         let path = Self::guest_journal_path()?;
@@ -370,24 +574,32 @@ impl LolConfigService {
             if name.is_empty() {
                 return Err(AppError::Custom("Введите имя пресета".into()));
             }
-            let raw = std::fs::read(
+            let raw = read_config(
                 journal
                     .root
                     .join(CONFIG_SUBDIR)
                     .join(PERSISTED_SETTINGS_FILENAME),
             )?;
-            let _: serde_json::Value = serde_json::from_slice(&raw)?;
+            parse_settings(&raw)?;
             let meta = PresetMeta {
                 id: generate_preset_id(),
                 name: name.into(),
                 created_at: Utc::now().to_rfc3339(),
                 source_app_version: Self::app_version(),
             };
-            super::network::atomic_write(&Self::preset_file_path(&meta.id)?, &raw)
-                .map_err(AppError::Custom)?;
-            let mut index = Self::read_index()?;
-            index.presets.insert(0, meta);
-            Self::write_index(&index)?;
+            commit_preset_mutation(
+                &Self::presets_dir()?,
+                PresetMutation {
+                    personal_choice: false,
+                    id: meta.id.clone(),
+                    meta: Some(meta),
+                    settings: Some(
+                        String::from_utf8(raw).map_err(|_| {
+                            AppError::Custom("Некорректная кодировка пресета".into())
+                        })?,
+                    ),
+                },
+            )?;
         }
         // Persist the explicit decision and current fingerprints before a partial restore.
         for file in &mut journal.files {
@@ -437,21 +649,8 @@ impl LolConfigService {
 
     pub fn list_presets(&self) -> Result<Vec<PresetMeta>, AppError> {
         let _guard = self.lock.lock().unwrap();
-        let mut index = Self::read_index()?;
-        // Drop orphans (preset metadata without backing file on disk).
-        let dir = Self::presets_dir()?;
-        let before = index.presets.len();
-        index
-            .presets
-            .retain(|p| dir.join(format!("{}.json", p.id)).exists());
-        if index.presets.len() != before {
-            Self::write_index(&index)?;
-            self.logger.info(&format!(
-                "lol_config: cleaned {} orphan preset entries",
-                before - index.presets.len()
-            ));
-        }
-        Ok(index.presets)
+        // Missing or inaccessible files must not silently erase metadata.
+        Ok(Self::read_index()?.presets)
     }
 
     pub fn create_preset(&self, name: String) -> Result<PresetMeta, AppError> {
@@ -470,24 +669,26 @@ impl LolConfigService {
                     .into(),
             ));
         }
-        let raw = std::fs::read_to_string(&src)?;
+        let raw = read_config_text(&src)?;
         // Validate JSON before storing — corrupted files should not silently propagate.
-        let _: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| AppError::Custom(format!("PersistedSettings.json повреждён: {}", e)))?;
+        parse_settings(raw.as_bytes())?;
 
         let id = generate_preset_id();
-        let dst = Self::preset_file_path(&id)?;
-        super::network::atomic_write(&dst, raw.as_bytes()).map_err(AppError::Custom)?;
-
         let meta = PresetMeta {
             id: id.clone(),
             name: trimmed,
             created_at: Utc::now().to_rfc3339(),
             source_app_version: Self::app_version(),
         };
-        let mut index = Self::read_index()?;
-        index.presets.insert(0, meta.clone());
-        Self::write_index(&index)?;
+        commit_preset_mutation(
+            &Self::presets_dir()?,
+            PresetMutation {
+                personal_choice: false,
+                id: id.clone(),
+                meta: Some(meta.clone()),
+                settings: Some(raw),
+            },
+        )?;
         self.logger.info(&format!(
             "lol_config: created preset {} ({})",
             meta.name, id
@@ -509,8 +710,8 @@ impl LolConfigService {
             std::fs::create_dir_all(parent)?;
         }
 
-        let raw = std::fs::read_to_string(&src)?;
-        let _: serde_json::Value = serde_json::from_str(&raw)?;
+        let raw = read_config_text(&src)?;
+        parse_settings(raw.as_bytes())?;
         with_writable_swap(&dst, |target| {
             super::network::atomic_write(target, raw.as_bytes()).map_err(AppError::Custom)?;
             Ok(())
@@ -527,13 +728,19 @@ impl LolConfigService {
     pub fn delete_preset(&self, id: String) -> Result<(), AppError> {
         let _guard = self.lock.lock().unwrap();
         self.ensure_normal_mutation()?;
-        let path = Self::preset_file_path(&id)?;
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        let legacy = Self::personal_choice_path()?;
+        if read_personal_choice(&legacy).ok().flatten().as_deref() == Some(id.as_str()) {
+            read_current_personal_choice(&Self::presets_dir()?, &legacy)?;
         }
-        let mut index = Self::read_index()?;
-        index.presets.retain(|p| p.id != id);
-        Self::write_index(&index)?;
+        commit_preset_mutation(
+            &Self::presets_dir()?,
+            PresetMutation {
+                personal_choice: false,
+                id: id.clone(),
+                meta: None,
+                settings: None,
+            },
+        )?;
         self.logger
             .info(&format!("lol_config: deleted preset {}", id));
         Ok(())
@@ -553,9 +760,8 @@ impl LolConfigService {
             .find(|p| p.id == id)
             .ok_or_else(|| AppError::Custom("Метаданные пресета не найдены".into()))?;
 
-        let raw = std::fs::read_to_string(&preset_path)?;
-        let settings: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| AppError::Custom(format!("Пресет повреждён: {}", e)))?;
+        let raw = read_config_text(&preset_path)?;
+        let settings = parse_settings(raw.as_bytes())?;
 
         let payload = LolCfgFile {
             format: LOLCFG_FORMAT_TAG.into(),
@@ -567,7 +773,8 @@ impl LolConfigService {
             settings,
         };
         let serialized = serde_json::to_string_pretty(&payload)?;
-        std::fs::write(&dst_path, serialized)?;
+        super::network::atomic_write(Path::new(&dst_path), serialized.as_bytes())
+            .map_err(AppError::Custom)?;
         self.logger.info(&format!(
             "lol_config: exported preset {} → {}",
             id, dst_path
@@ -578,7 +785,7 @@ impl LolConfigService {
     pub fn import_preset(&self, src_path: String) -> Result<PresetMeta, AppError> {
         let _guard = self.lock.lock().unwrap();
         self.ensure_normal_mutation()?;
-        let raw = std::fs::read_to_string(&src_path)?;
+        let raw = read_config_text(&src_path)?;
         let payload: LolCfgFile = serde_json::from_str(&raw)
             .map_err(|e| AppError::Custom(format!("Файл не является валидным .lolcfg: {}", e)))?;
         if payload.format != LOLCFG_FORMAT_TAG {
@@ -594,9 +801,8 @@ impl LolConfigService {
         }
 
         let id = generate_preset_id();
-        let dst = Self::preset_file_path(&id)?;
         let settings_raw = serde_json::to_string_pretty(&payload.settings)?;
-        super::network::atomic_write(&dst, settings_raw.as_bytes()).map_err(AppError::Custom)?;
+        parse_settings(settings_raw.as_bytes())?;
 
         let meta = PresetMeta {
             id: id.clone(),
@@ -604,9 +810,15 @@ impl LolConfigService {
             created_at: Utc::now().to_rfc3339(),
             source_app_version: payload.source_app_version,
         };
-        let mut index = Self::read_index()?;
-        index.presets.insert(0, meta.clone());
-        Self::write_index(&index)?;
+        commit_preset_mutation(
+            &Self::presets_dir()?,
+            PresetMutation {
+                personal_choice: false,
+                id: id.clone(),
+                meta: Some(meta.clone()),
+                settings: Some(settings_raw),
+            },
+        )?;
         self.logger.info(&format!(
             "lol_config: imported preset {} ({})",
             meta.name, id
@@ -624,6 +836,37 @@ pub enum GuestConfigMode {
 }
 
 /// PersistedSettings stores virtual INI files in `files`, not top-level input settings.
+fn parse_settings(raw: &[u8]) -> Result<serde_json::Value, AppError> {
+    if raw.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(AppError::Custom(
+            "Настройки превышают допустимый размер (16 МиБ)".into(),
+        ));
+    }
+    let settings: serde_json::Value = serde_json::from_slice(raw)?;
+    let files = settings
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            AppError::Custom("Некорректный PersistedSettings: нужен объект с массивом files".into())
+        })?;
+    let mut names = std::collections::HashSet::new();
+    for file in files {
+        let name = file
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Custom("Некорректный PersistedSettings: отсутствует files/name".into())
+            })?;
+        if !names.insert(name.to_ascii_lowercase()) {
+            return Err(AppError::Custom(
+                "Некорректный PersistedSettings: повторяющееся имя файла".into(),
+            ));
+        }
+    }
+    Ok(settings)
+}
+
 fn keyboard_settings(current: &[u8], preset: &[u8]) -> Result<Vec<u8>, AppError> {
     use serde_json::Value;
     fn invalid() -> AppError {
@@ -685,14 +928,14 @@ fn keyboard_settings(current: &[u8], preset: &[u8]) -> Result<Vec<u8>, AppError>
         }
         Ok(sections)
     }
-    let source: Value = serde_json::from_slice(preset)?;
+    let source: Value = parse_settings(preset)?;
     let source_files = source
         .get("files")
         .and_then(Value::as_array)
         .ok_or_else(invalid)?;
     let source_input = &source_files[input_index(source_files)?.ok_or_else(invalid)?];
     let sections = input_sections(source_input)?;
-    let mut target: Value = serde_json::from_slice(current)?;
+    let mut target: Value = parse_settings(current)?;
     let target_files = target
         .get_mut("files")
         .and_then(Value::as_array_mut)
@@ -756,22 +999,43 @@ fn read_personal_choice(path: &Path) -> Result<Option<String>, AppError> {
     if !path.try_exists()? {
         return Ok(None);
     }
-    let id: String = serde_json::from_slice(&std::fs::read(path)?)?;
+    let id: String = serde_json::from_slice(&read_config(path)?)?;
     validate_preset_id(&id)?;
     Ok(Some(id))
 }
 
-fn save_personal_choice(path: &Path, id: &str) -> Result<(), AppError> {
-    validate_preset_id(id)?;
-    safe_path(path)?;
-    super::network::atomic_write(path, &serde_json::to_vec(id)?).map_err(AppError::Custom)
+fn read_current_personal_choice(dir: &Path, legacy: &Path) -> Result<Option<String>, AppError> {
+    read_presets_index(dir)?;
+    let path = dir.join(PERSONAL_CHOICE);
+    safe_path(&path)?;
+    if path.try_exists()? {
+        let id: Option<String> = serde_json::from_slice(&read_config(path)?)?;
+        if let Some(id) = &id {
+            validate_preset_id(id)?;
+        }
+        Ok(id)
+    } else {
+        let id = read_personal_choice(legacy)?;
+        if let Some(id) = &id {
+            commit_preset_mutation(
+                dir,
+                PresetMutation {
+                    personal_choice: true,
+                    id: id.clone(),
+                    meta: None,
+                    settings: None,
+                },
+            )?;
+        }
+        Ok(id)
+    }
 }
 
 fn ensure_personal_preset(root: &Path, dir: &Path, choice: &Path) -> Result<String, AppError> {
-    if let Some(id) = read_personal_choice(choice)? {
+    if let Some(id) = read_current_personal_choice(dir, choice)? {
         let path = dir.join(format!("{id}.json"));
         safe_path(&path)?;
-        let raw = std::fs::read(path)?;
+        let raw = read_config(path)?;
         keyboard_settings(&raw, &raw)?;
         return Ok(id);
     }
@@ -782,26 +1046,24 @@ fn ensure_personal_preset(root: &Path, dir: &Path, choice: &Path) -> Result<Stri
     })?;
     keyboard_settings(&raw, &raw)?;
     let id = generate_preset_id();
-    super::network::atomic_write(&dir.join(format!("{id}.json")), &raw)
-        .map_err(AppError::Custom)?;
-    let index_path = dir.join(METADATA_FILENAME);
-    let mut index: PresetsIndex = if index_path.try_exists()? {
-        serde_json::from_slice(&std::fs::read(&index_path)?)?
-    } else {
-        PresetsIndex::default()
+    let meta = PresetMeta {
+        id: id.clone(),
+        name: "Мои клавиши на этом ПК".into(),
+        created_at: Utc::now().to_rfc3339(),
+        source_app_version: LolConfigService::app_version(),
     };
-    index.presets.insert(
-        0,
-        PresetMeta {
+    commit_preset_mutation(
+        dir,
+        PresetMutation {
+            personal_choice: true,
             id: id.clone(),
-            name: "Мои клавиши на этом ПК".into(),
-            created_at: Utc::now().to_rfc3339(),
-            source_app_version: LolConfigService::app_version(),
+            meta: Some(meta),
+            settings: Some(
+                String::from_utf8(raw)
+                    .map_err(|_| AppError::Custom("Некорректная кодировка пресета".into()))?,
+            ),
         },
-    );
-    super::network::atomic_write(&index_path, &serde_json::to_vec_pretty(&index)?)
-        .map_err(AppError::Custom)?;
-    save_personal_choice(choice, &id)?;
+    )?;
     Ok(id)
 }
 
@@ -882,7 +1144,7 @@ fn snapshot(path: &Path) -> Result<FileSnapshot, AppError> {
     safe_path(path)?;
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => Ok(FileSnapshot {
-            bytes: Some(std::fs::read(path)?),
+            bytes: Some(read_config(path)?),
             readonly: meta.permissions().readonly(),
             #[cfg(windows)]
             attributes: {
@@ -948,6 +1210,7 @@ fn write_snapshot(path: &Path, value: &FileSnapshot) -> Result<(), AppError> {
 
 impl GuestJournal {
     fn capture(root: &Path, preset: Vec<u8>, mode: GuestConfigMode) -> Result<Self, AppError> {
+        parse_settings(&preset)?;
         safe_path(root)?;
         let root = std::fs::canonicalize(root)?;
         let identity = root_identity(&root)?;
@@ -1049,11 +1312,17 @@ impl GuestJournal {
 
     fn save(&self, path: &Path) -> Result<(), AppError> {
         safe_path(path)?;
-        super::network::atomic_write(path, &serde_json::to_vec(self)?).map_err(AppError::Custom)
+        let data = serde_json::to_vec(self)?;
+        if data.len() as u64 > MAX_JOURNAL_BYTES {
+            return Err(AppError::Custom(
+                "Журнал восстановления превышает допустимый размер (64 МиБ)".into(),
+            ));
+        }
+        super::network::atomic_write(path, &data).map_err(AppError::Custom)
     }
     fn load(path: &Path) -> Result<Self, AppError> {
         safe_path(path)?;
-        let journal: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        let journal: Self = serde_json::from_slice(&read_config_limit(path, MAX_JOURNAL_BYTES)?)?;
         if journal.files.len() != 3
             || journal
                 .files
@@ -1217,6 +1486,293 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configuration_reads_reject_oversized_files_without_changing_them() {
+        let f = GuestFixture::new();
+        let path = f.dir.join("large.lolcfg");
+        std::fs::write(&path, b"12345678").unwrap();
+        assert_eq!(read_config_limit(&path, 8).unwrap(), b"12345678");
+        assert_eq!(
+            read_config_limit(&path, 7).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"12345678");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_CONFIG_BYTES + 1)
+            .unwrap();
+        assert_eq!(
+            read_config(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            MAX_CONFIG_BYTES + 1
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn preset_lock_child_probe() {
+        let Some(path) = std::env::var_os("RUSTLM_PRESET_LOCK_CHILD") else {
+            return;
+        };
+        let blocked = std::env::var_os("RUSTLM_PRESET_LOCK_EXPECT_BLOCKED").is_some();
+        assert_eq!(lock_preset_directory(Path::new(&path)).is_err(), blocked);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn preset_lock_excludes_another_process_and_releases_after_owner_exits() {
+        use std::{
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+        let f = GuestFixture::new();
+        let directory = f.dir.join("process-presets");
+        let check = |blocked: bool| {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "services::lol_config::tests::preset_lock_child_probe",
+                ])
+                .env("RUSTLM_PRESET_LOCK_CHILD", &directory)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit());
+            if blocked {
+                command.env("RUSTLM_PRESET_LOCK_EXPECT_BLOCKED", "1");
+            } else {
+                command.env_remove("RUSTLM_PRESET_LOCK_EXPECT_BLOCKED");
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("preset lock child timed out");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let owner = lock_preset_directory(&directory).unwrap();
+        check(true);
+        drop(owner);
+        check(false);
+    }
+    fn preset_change(id: &str) -> PresetMutation {
+        PresetMutation {
+            personal_choice: false,
+            id: id.into(),
+            meta: Some(PresetMeta {
+                id: id.into(),
+                name: "test".into(),
+                created_at: "test".into(),
+                source_app_version: "test".into(),
+            }),
+            settings: Some(r#"{"files":[],"unknown":{"keep":true}}"#.into()),
+        }
+    }
+    #[test]
+    fn preset_journal_recovers_interrupted_upsert_and_delete_idempotently() {
+        let f = GuestFixture::new();
+        let dir = f.dir.join("presets");
+        std::fs::create_dir_all(&dir).unwrap();
+        let change = preset_change("p_first");
+        std::fs::write(dir.join("p_first.json"), change.settings.as_ref().unwrap()).unwrap();
+        std::fs::write(
+            dir.join(PRESET_JOURNAL),
+            serde_json::to_vec(&change).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_presets_index(&dir).unwrap().presets.len(), 1);
+        assert_eq!(read_presets_index(&dir).unwrap().presets.len(), 1);
+        assert!(!dir.join(PRESET_JOURNAL).exists());
+        let deletion = PresetMutation {
+            personal_choice: false,
+            id: "p_first".into(),
+            meta: None,
+            settings: None,
+        };
+        std::fs::write(
+            dir.join(PRESET_JOURNAL),
+            serde_json::to_vec(&deletion).unwrap(),
+        )
+        .unwrap();
+        assert!(read_presets_index(&dir).unwrap().presets.is_empty());
+        assert!(!dir.join("p_first.json").exists());
+        assert!(read_presets_index(&dir).unwrap().presets.is_empty());
+    }
+    #[test]
+    fn failed_preset_recovery_preserves_payload_and_retries_after_io_failure() {
+        let f = GuestFixture::new();
+        let dir = f.dir.join("presets");
+        commit_preset_mutation(&dir, preset_change("p_first")).unwrap();
+        let change = preset_change("p_second");
+        std::fs::write(dir.join("p_second.json"), change.settings.as_ref().unwrap()).unwrap();
+        std::fs::write(
+            dir.join(PRESET_JOURNAL),
+            serde_json::to_vec(&change).unwrap(),
+        )
+        .unwrap();
+        std::fs::rename(dir.join(METADATA_FILENAME), dir.join("saved-index")).unwrap();
+        std::fs::create_dir(dir.join(METADATA_FILENAME)).unwrap();
+        assert!(read_presets_index(&dir).is_err());
+        assert!(dir.join(PRESET_JOURNAL).exists());
+        assert!(dir.join("p_second.json").exists());
+        std::fs::remove_dir(dir.join(METADATA_FILENAME)).unwrap();
+        std::fs::rename(dir.join("saved-index"), dir.join(METADATA_FILENAME)).unwrap();
+        assert_eq!(read_presets_index(&dir).unwrap().presets.len(), 2);
+    }
+    #[test]
+    fn corrupt_preset_journal_never_overwrites_existing_data() {
+        let f = GuestFixture::new();
+        let dir = f.dir.join("presets");
+        commit_preset_mutation(&dir, preset_change("p_first")).unwrap();
+        let before = std::fs::read(dir.join(METADATA_FILENAME)).unwrap();
+        std::fs::write(dir.join(PRESET_JOURNAL), b"{broken").unwrap();
+        assert!(read_presets_index(&dir).is_err());
+        assert_eq!(std::fs::read(dir.join(METADATA_FILENAME)).unwrap(), before);
+        assert!(dir.join("p_first.json").exists());
+    }
+    #[test]
+    fn concurrent_preset_commits_keep_both_entries() {
+        let f = GuestFixture::new();
+        let dir = f.dir.join("presets");
+        let gate = Arc::new(std::sync::Barrier::new(3));
+        let tasks: Vec<_> = ["p_first", "p_second"]
+            .into_iter()
+            .map(|id| {
+                let dir = dir.clone();
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    commit_preset_mutation(&dir, preset_change(id)).unwrap();
+                })
+            })
+            .collect();
+        gate.wait();
+        for task in tasks {
+            task.join().unwrap();
+        }
+        assert_eq!(read_presets_index(&dir).unwrap().presets.len(), 2);
+    }
+    #[test]
+    fn personal_choice_recovers_after_failure_without_creating_another_preset() {
+        let f = GuestFixture::new();
+        let dir = f.dir.join("presets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir(dir.join(PERSONAL_CHOICE)).unwrap();
+        let mut change = preset_change("p_own");
+        change.personal_choice = true;
+        change.settings = Some(settings_fixture("[q]", "1920").to_string());
+        assert!(commit_preset_mutation(&dir, change).is_err());
+        assert!(dir.join(PRESET_JOURNAL).exists());
+        assert!(dir.join("p_own.json").exists());
+        std::fs::remove_dir(dir.join(PERSONAL_CHOICE)).unwrap();
+        let legacy = f.dir.join("legacy-choice.json");
+        assert_eq!(
+            ensure_personal_preset(&f.root, &dir, &legacy).unwrap(),
+            "p_own"
+        );
+        assert_eq!(read_presets_index(&dir).unwrap().presets.len(), 1);
+        assert!(!dir.join(PRESET_JOURNAL).exists());
+        commit_preset_mutation(
+            &dir,
+            PresetMutation {
+                personal_choice: false,
+                id: "p_own".into(),
+                meta: None,
+                settings: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(&legacy, br#""p_old""#).unwrap();
+        assert_eq!(
+            read_current_personal_choice(&dir, &legacy).unwrap(),
+            None,
+            "explicit clear must not resurrect a legacy choice"
+        );
+    }
+    #[test]
+    fn legacy_personal_choice_migrates_without_cloning_the_preset() {
+        let f = GuestFixture::new();
+        let dir = f.dir.join("presets");
+        let mut change = preset_change("p_existing");
+        change.settings = Some(settings_fixture("[a]", "1920").to_string());
+        commit_preset_mutation(&dir, change).unwrap();
+        let legacy = f.dir.join("legacy.json");
+        std::fs::write(&legacy, br#""p_existing""#).unwrap();
+        std::fs::create_dir(dir.join(PERSONAL_CHOICE)).unwrap();
+        assert!(commit_preset_mutation(
+            &dir,
+            PresetMutation {
+                personal_choice: true,
+                id: "p_existing".into(),
+                meta: None,
+                settings: None
+            }
+        )
+        .is_err());
+        let pending: PresetMutation =
+            serde_json::from_slice(&std::fs::read(dir.join(PRESET_JOURNAL)).unwrap()).unwrap();
+        assert!(pending.meta.is_some());
+        assert!(pending.settings.is_some());
+        std::fs::remove_dir(dir.join(PERSONAL_CHOICE)).unwrap();
+        assert_eq!(
+            read_current_personal_choice(&dir, &legacy).unwrap(),
+            Some("p_existing".into())
+        );
+        assert!(dir.join(PERSONAL_CHOICE).exists());
+        assert_eq!(read_presets_index(&dir).unwrap().presets.len(), 1);
+        assert_eq!(std::fs::read(legacy).unwrap(), br#""p_existing""#);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_preset_lock_blocks_second_opener_and_releases_without_deleting_evidence() {
+        let f = GuestFixture::new();
+        let dir = f.dir.join("presets");
+        commit_preset_mutation(&dir, preset_change("p_first")).unwrap();
+        let held = lock_preset_directory(&dir).unwrap();
+        assert!(read_presets_index(&dir)
+            .unwrap_err()
+            .to_string()
+            .contains("занято"));
+        assert!(commit_preset_mutation(&dir, preset_change("p_second")).is_err());
+        assert!(dir.join("p_first.json").exists());
+        assert!(!dir.join("p_second.json").exists());
+        drop(held);
+        commit_preset_mutation(&dir, preset_change("p_second")).unwrap();
+        assert_eq!(read_presets_index(&dir).unwrap().presets.len(), 2);
+    }
+    #[test]
+    fn persisted_settings_boundary_rejects_wrong_shape_and_preserves_unknown_fields() {
+        for raw in [
+            "null",
+            "[]",
+            "{}",
+            r#"{"files":null}"#,
+            r#"{"files":[{}]}"#,
+            r#"{"files":[{"name":"Input.ini"},{"name":"input.INI"}]}"#,
+        ] {
+            assert!(parse_settings(raw.as_bytes()).is_err(), "{raw}");
+        }
+        let value = settings_fixture("[q]", "1920");
+        let raw = serde_json::to_vec(&value).unwrap();
+        assert_eq!(parse_settings(&raw).unwrap(), value);
+        let f = GuestFixture::new();
+        let target = f.file(PERSISTED_SETTINGS_FILENAME);
+        std::fs::write(&target, &raw).unwrap();
+        assert!(GuestJournal::capture(&f.root, b"null".to_vec(), GuestConfigMode::Full).is_err());
+        assert_eq!(std::fs::read(target).unwrap(), raw);
+        assert!(!f.journal.exists());
+    }
     struct GuestFixture {
         dir: PathBuf,
         root: PathBuf,
@@ -1282,7 +1838,10 @@ mod tests {
         let own = serde_json::to_vec(&settings_fixture("[q]", "2560")).unwrap();
         std::fs::write(f.file(PERSISTED_SETTINGS_FILENAME), &own).unwrap();
         let id = ensure_personal_preset(&f.root, &presets, &choice).unwrap();
-        assert_eq!(read_personal_choice(&choice).unwrap(), Some(id.clone()));
+        assert_eq!(
+            read_current_personal_choice(&presets, &choice).unwrap(),
+            Some(id.clone())
+        );
         assert_eq!(
             std::fs::read(presets.join(format!("{id}.json"))).unwrap(),
             own
@@ -1317,7 +1876,13 @@ mod tests {
         std::fs::write(f.file(PERSISTED_SETTINGS_FILENAME), br#"{"files":[]}"#).unwrap();
         assert!(ensure_personal_preset(&f.root, &presets, &choice).is_err());
         assert!(!choice.exists());
-        assert_eq!(std::fs::read_dir(&presets).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(&presets)
+                .unwrap()
+                .filter(|entry| entry.as_ref().unwrap().file_name() != ".presets.lock")
+                .count(),
+            0
+        );
         std::fs::write(&choice, br#""../foreign""#).unwrap();
         assert!(read_personal_choice(&choice).is_err());
     }
@@ -1401,6 +1966,68 @@ mod tests {
         journal.shared_session_active = true;
         journal.league_seen = false;
         assert!(journal.observe(false, None, None, 1120)); // launch never materialized
+    }
+
+    #[test]
+    fn abandoned_login_keeps_journal_and_resumes_recovery_after_delayed_worker_exits() {
+        use crate::services::ClientActionGuard;
+
+        let f = GuestFixture::new();
+        let original = serde_json::to_vec(&settings_fixture("[q]", "2560")).unwrap();
+        std::fs::write(f.file(PERSISTED_SETTINGS_FILENAME), &original).unwrap();
+        let mut journal = GuestJournal::capture(
+            &f.root,
+            serde_json::to_vec(&settings_fixture("[a]", "1024")).unwrap(),
+            GuestConfigMode::Keyboard,
+        )
+        .unwrap();
+        journal.automatic = true;
+        journal.protect_applied_settings();
+        journal.save(&f.journal).unwrap();
+        journal.apply_prepared(&f.root).unwrap();
+        let durable = std::fs::read(&f.journal).unwrap();
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let action = Arc::new(ClientActionGuard::new(
+            lock.clone().try_lock_owned().unwrap(),
+        ));
+        action.retain_config_login(flag.clone());
+        let worker_action = action.clone();
+        let worker_flag = flag.clone();
+        let (prepare_tx, prepare_rx) = std::sync::mpsc::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _action = worker_action;
+            prepare_rx.recv().unwrap();
+            worker_flag.store(true, Ordering::SeqCst);
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        // Simulate abort before a queued prepare worker sets login_in_progress.
+        drop(action);
+        prepare_tx.send(()).unwrap();
+        started_rx.recv().unwrap();
+        let still_in_progress = flag.load(Ordering::SeqCst);
+        let still_locked = lock.try_lock().is_err();
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(still_in_progress);
+        assert!(still_locked);
+        assert!(!flag.load(Ordering::SeqCst));
+        assert!(lock.try_lock().is_ok());
+        assert_eq!(std::fs::read(&f.journal).unwrap(), durable);
+
+        // Drop only unblocks the observer; the durable journal still drives restoration.
+        let mut pending = GuestJournal::load(&f.journal).unwrap();
+        assert!(pending.observe(false, None, None, 1000));
+        pending.restore(&f.root, &f.journal).unwrap();
+        assert_eq!(
+            std::fs::read(f.file(PERSISTED_SETTINGS_FILENAME)).unwrap(),
+            original
+        );
+        assert!(!f.journal.exists());
     }
 
     #[test]

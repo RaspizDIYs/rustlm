@@ -12,6 +12,9 @@ pub enum AppError {
     Http(#[from] reqwest::Error),
 
     #[error("{0}")]
+    LcuNotDispatched(String),
+
+    #[error("{0}")]
     Custom(String),
 }
 

@@ -74,12 +74,6 @@ export const UNGLITCH_ACTIONS = [
     button: "Перезагрузить",
   },
   {
-    id: "force_reload",
-    title: "Перезапуск рендера",
-    description: "Для случаев, когда обычная перезагрузка не помогла.",
-    button: "Перезапустить",
-  },
-  {
     id: "hide",
     title: "Фоновый режим",
     description: "Закрывает интерфейс, оставляя клиент League в фоне.",
@@ -107,7 +101,7 @@ export function actionAvailable(
   if (!status?.backend_running) return false;
   if (action === "restore") return !status.ui_running;
   if (!status.ui_running) return false;
-  if (action === "force_reload") return status.force_supported;
+  if (action === "force_reload") return status.api_available;
   if (action === "hide") return status.api_available;
   return true;
 }

@@ -183,7 +183,7 @@ export function LmFriends({
                   <TableRow key={friend.id}>
                     <TableCell>
                       <div className="flex items-center gap-2.5">
-                        <Avatar className="size-8">
+                        <Avatar className="size-10">
                           <AvatarImage
                             src={friend.avatar_url || undefined}
                             alt={friend.display_name}

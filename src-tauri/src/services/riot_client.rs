@@ -4,6 +4,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -19,9 +20,95 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use crate::error::AppError;
 use crate::models::league_client::{ClientConnectivityStatus, LockfileInfo};
 
+fn identity_login(value: &serde_json::Value) -> Result<Option<String>, String> {
+    let decoded = match value.get("userInfo").or_else(|| value.get("userinfo")) {
+        Some(serde_json::Value::String(raw)) => Some(
+            serde_json::from_str::<serde_json::Value>(raw)
+                .map_err(|_| "Malformed identity response")?,
+        ),
+        Some(v) if v.is_object() => Some(v.clone()),
+        _ => None,
+    };
+    let mut found: Option<String> = None;
+    for root in std::iter::once(value).chain(decoded.as_ref()) {
+        for node in std::iter::once(root).chain(
+            [
+                "authorization",
+                "session",
+                "sessionCredentials",
+                "credentials",
+                "account",
+                "user",
+                "login",
+            ]
+            .iter()
+            .filter_map(|key| root.get(*key)),
+        ) {
+            for key in ["username", "loginUsername", "accountName", "userName"] {
+                if let Some(raw) = node.get(key).and_then(serde_json::Value::as_str) {
+                    let login = raw.trim();
+                    if login.is_empty() {
+                        continue;
+                    }
+                    if login.len() > 320
+                        || found
+                            .as_ref()
+                            .is_some_and(|old| !old.eq_ignore_ascii_case(login))
+                    {
+                        return Err("Identity responses disagree or are invalid".into());
+                    }
+                    found = Some(login.to_owned());
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn authorization_state(value: &serde_json::Value) -> Option<bool> {
+    let object = value.as_object()?;
+    if ["errorCode", "error"].iter().any(|key| {
+        object
+            .get(*key)
+            .is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| s.trim().is_empty()))
+    }) {
+        return None;
+    }
+    let mut signals = Vec::new();
+    for key in ["isAuthorized", "authorized"] {
+        if let Some(b) = value[key].as_bool() {
+            signals.push(b);
+        }
+    }
+    if value["subject"].as_str().is_some_and(|s| !s.is_empty())
+        || value["currentAccountId"].as_u64().is_some_and(|n| n > 0)
+        || value["accessToken"].as_str().is_some_and(|s| !s.is_empty())
+        || value["authorization"]["accessToken"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    {
+        signals.push(true);
+    }
+    match value["type"].as_str() {
+        Some("authenticated") => signals.push(true),
+        Some("needs_credentials" | "needs_password" | "needs_multifactor_verification") => {
+            signals.push(false)
+        }
+        _ => {}
+    }
+    let first = *signals.first()?;
+    signals.iter().all(|s| *s == first).then_some(first)
+}
+
 pub struct RiotClientService {
     cached_lcu_auth: Mutex<Option<(u16, String)>>,
+    connection_epoch: AtomicU64,
+    request_policy: super::lcu_request_policy::RequestPolicy,
     http_client: reqwest::Client,
+    read_slots: tokio::sync::Semaphore,
+    critical_read_slots: tokio::sync::Semaphore,
+    write_slots: tokio::sync::Semaphore,
+    pub recorder: super::session_recording::SessionRecorder,
     pub diagnostics: std::sync::Arc<super::client_diagnostics::ClientDiagnostics>,
 }
 
@@ -39,7 +126,13 @@ impl RiotClientService {
 
         Self {
             cached_lcu_auth: Mutex::new(None),
+            connection_epoch: AtomicU64::new(0),
+            request_policy: super::lcu_request_policy::RequestPolicy::default(),
             http_client,
+            read_slots: tokio::sync::Semaphore::new(8),
+            critical_read_slots: tokio::sync::Semaphore::new(2),
+            write_slots: tokio::sync::Semaphore::new(2),
+            recorder: super::session_recording::SessionRecorder::default(),
             diagnostics: std::sync::Arc::new(
                 super::client_diagnostics::ClientDiagnostics::default(),
             ),
@@ -450,89 +543,6 @@ impl RiotClientService {
         }
     }
 
-    pub fn restart_ux_renderers() -> Result<(Vec<u32>, PathBuf), String> {
-        #[cfg(not(windows))]
-        return Err("Принудительный перезапуск доступен только в Windows.".into());
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStringExt;
-            use windows::core::PWSTR;
-            use windows::Win32::Foundation::CloseHandle;
-            use windows::Win32::System::Threading::{
-                OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-            };
-            let session = Self::find_lcu_lockfile().ok_or("Сессия League не найдена.")?;
-            let core = Self::process_path(session.pid)
-                .ok_or("Не удалось определить папку работающего клиента League.")?;
-            if !core.file_name().is_some_and(|name| {
-                name.to_string_lossy()
-                    .eq_ignore_ascii_case("LeagueClient.exe")
-                    || name
-                        .to_string_lossy()
-                        .eq_ignore_ascii_case("LeagueClientUx.exe")
-            }) {
-                return Err("Не удалось подтвердить процесс клиента League.".into());
-            }
-            let root = core.parent().ok_or("Папка клиента League не найдена.")?;
-            let ui = Self::find_process_pids("LeagueClientUx.exe")
-                .into_iter()
-                .filter(|pid| {
-                    Self::process_path(*pid).is_some_and(|path| {
-                        path.parent().is_some_and(|parent| {
-                            parent
-                                .to_string_lossy()
-                                .eq_ignore_ascii_case(&root.to_string_lossy())
-                        })
-                    })
-                })
-                .count();
-            if ui != 1 {
-                return Err("Не удалось однозначно определить интерфейс League. Используйте обычную перезагрузку.".into());
-            }
-            let mut stopped = Vec::new();
-            for pid in Self::find_process_pids("LeagueClientUxRender.exe") {
-                if !Self::unglitch_renderer_matches(pid, root) {
-                    continue;
-                }
-                unsafe {
-                    let handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,false,pid)
-                        .map_err(|_|"Windows не разрешила перезапустить рендер. Используйте обычную перезагрузку.")?;
-                    let mut buffer = vec![0u16; 32768];
-                    let mut length = buffer.len() as u32;
-                    let read = QueryFullProcessImageNameW(
-                        handle,
-                        PROCESS_NAME_WIN32,
-                        PWSTR(buffer.as_mut_ptr()),
-                        &mut length,
-                    );
-                    let matches = read.is_ok()
-                        && crate::models::unglitch::renderer_in_install(
-                            &PathBuf::from(std::ffi::OsString::from_wide(
-                                &buffer[..length as usize],
-                            )),
-                            root,
-                        );
-                    // Query and terminate through the same handle to avoid PID-reuse races.
-                    let result = if matches {
-                        TerminateProcess(handle, 0)
-                    } else {
-                        Ok(())
-                    };
-                    let _ = CloseHandle(handle);
-                    result.map_err(|_|"Не удалось завершить один из процессов рендера. Обновите состояние перед повтором.")?;
-                    if matches {
-                        stopped.push(pid);
-                    }
-                }
-            }
-            if stopped.is_empty() {
-                return Err("Процессы рендера выбранного клиента не найдены.".into());
-            }
-            Ok((stopped, root.to_path_buf()))
-        }
-    }
-
     /// Return path to the League of Legends install directory (the folder that
     /// contains `lockfile`, `Config\`, etc.). Reuses the same candidate list as
     /// LCU lockfile detection — first hit wins.
@@ -548,6 +558,10 @@ impl RiotClientService {
     }
 
     pub fn kill_league(include_riot_client: bool) {
+        #[cfg(debug_assertions)]
+        if env::var_os("RUSTLM_TEST_LCU").is_some() {
+            return;
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -578,6 +592,12 @@ impl RiotClientService {
     }
 
     pub fn start_riot_client() -> Result<(), AppError> {
+        #[cfg(debug_assertions)]
+        if env::var_os("RUSTLM_TEST_LCU").is_some() {
+            return Err(AppError::Custom(
+                "Реальные процессы отключены в тестовом LCU".into(),
+            ));
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -643,6 +663,7 @@ impl RiotClientService {
             let password = config["password"].as_str()?.to_owned();
             return (!password.is_empty()).then_some((port, password));
         }
+        let generation = self.connection_generation();
         // Check cache first
         {
             let cache = self.cached_lcu_auth.lock().unwrap();
@@ -654,17 +675,50 @@ impl RiotClientService {
         // Try to find from lockfile
         if let Some(info) = Self::find_lcu_lockfile() {
             let auth = (info.port, info.password.clone());
-            let mut cache = self.cached_lcu_auth.lock().unwrap();
-            *cache = Some(auth.clone());
-            return Some(auth);
+            return self.cache_discovered_auth(generation, auth);
         }
 
         None
     }
 
+    fn cache_discovered_auth(&self, generation: u64, auth: (u16, String)) -> Option<(u16, String)> {
+        let mut cache = self.cached_lcu_auth.lock().unwrap();
+        if self.connection_generation() == generation && cache.is_none() {
+            *cache = Some(auth);
+        }
+        cache.clone()
+    }
+
     pub fn invalidate_cache(&self) {
         let mut cache = self.cached_lcu_auth.lock().unwrap();
         *cache = None;
+        self.connection_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn connection_generation(&self) -> u64 {
+        self.connection_epoch.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn invalidate_if_generation(&self, epoch: u64) -> bool {
+        let mut cache = self.cached_lcu_auth.lock().unwrap();
+        if self.connection_epoch.load(Ordering::SeqCst) != epoch {
+            return false;
+        }
+        *cache = None;
+        self.connection_epoch.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    fn invalidate_auth_if_current(&self, port: u16, password: &str, epoch: u64) {
+        let mut cache = self.cached_lcu_auth.lock().unwrap();
+        if self.connection_epoch.load(Ordering::SeqCst) == epoch
+            && cache
+                .as_ref()
+                .is_some_and(|(p, token)| *p == port && token == password)
+        {
+            *cache = None;
+            self.connection_epoch.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     fn make_auth_header(password: &str) -> String {
@@ -688,12 +742,50 @@ impl RiotClientService {
         endpoint: &str,
         body: Option<&str>,
     ) -> Result<String, AppError> {
+        self.lcu_request_if(method, endpoint, body, || true).await
+    }
+
+    async fn lcu_request_if(
+        &self,
+        method: reqwest::Method,
+        endpoint: &str,
+        body: Option<&str>,
+        is_current: impl Fn() -> bool + Send + Sync,
+    ) -> Result<String, AppError> {
+        self.lcu_request_checked(method, endpoint, body, || std::future::ready(is_current()))
+            .await
+    }
+
+    async fn lcu_request_checked<F: std::future::Future<Output = bool> + Send>(
+        &self,
+        method: reqwest::Method,
+        endpoint: &str,
+        body: Option<&str>,
+        is_current: impl FnOnce() -> F + Send,
+    ) -> Result<String, AppError> {
         if !endpoint.starts_with('/') || endpoint.starts_with("//") {
             return Err(AppError::Custom("Invalid LCU endpoint".into()));
         }
+        let epoch = self.connection_epoch.load(Ordering::SeqCst);
+        self.check_cooldown(epoch, &method, endpoint)
+            .map_err(|e| AppError::LcuNotDispatched(e.to_string()))?;
+        // Writes have their own capacity: match history must not starve ready-check or picks.
+        let slots = if method != reqwest::Method::GET {
+            &self.write_slots
+        } else if super::session_recording::allowed_route(endpoint) {
+            &self.critical_read_slots
+        } else {
+            &self.read_slots
+        };
+        let _permit = tokio::time::timeout(Duration::from_secs(3), slots.acquire())
+            .await
+            .map_err(|_| AppError::LcuNotDispatched("LCU request queue timed out".into()))?
+            .map_err(|_| AppError::LcuNotDispatched("LCU request queue closed".into()))?;
+        self.check_cooldown(epoch, &method, endpoint)
+            .map_err(|e| AppError::LcuNotDispatched(e.to_string()))?;
         let (port, password) = self
             .get_lcu_auth()
-            .ok_or_else(|| AppError::Custom("LCU not connected".into()))?;
+            .ok_or_else(|| AppError::LcuNotDispatched("LCU not connected".into()))?;
         let scheme = "https";
         #[cfg(debug_assertions)]
         let scheme = if env::var_os("RUSTLM_TEST_LCU").is_some() {
@@ -711,10 +803,29 @@ impl RiotClientService {
             request = request.body(body.to_owned());
         }
         let started = std::time::Instant::now();
+        if self.connection_epoch.load(Ordering::SeqCst) != epoch
+            || !is_current().await
+            || self.connection_epoch.load(Ordering::SeqCst) != epoch
+        {
+            return Err(AppError::LcuNotDispatched(
+                "LCU operation cancelled before dispatch".into(),
+            ));
+        }
+        // A concurrent response may establish a cooldown while the async guard is reading state.
+        self.check_cooldown(epoch, &method, endpoint)
+            .map_err(|e| AppError::LcuNotDispatched(e.to_string()))?;
         let response = request.send().await.map_err(|_| {
             self.diagnostics
                 .request(method.as_str(), endpoint, None, started.elapsed());
-            self.invalidate_cache();
+            self.invalidate_auth_if_current(port, &password, epoch);
+            self.recorder.record(
+                "http",
+                method.as_str(),
+                endpoint,
+                Some(599),
+                body,
+                &serde_json::Value::Null,
+            );
             AppError::Custom(format!(
                 "LCU {} {}: connection failed or timed out",
                 method, endpoint
@@ -722,6 +833,30 @@ impl RiotClientService {
         })?;
         let status = response.status();
         if !status.is_success() {
+            if status.as_u16() == 429 {
+                let delay = super::lcu_request_policy::retry_after(
+                    response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok()),
+                    chrono::Utc::now(),
+                );
+                self.request_policy.rate_limited(
+                    epoch,
+                    &method,
+                    endpoint,
+                    delay,
+                    std::time::Instant::now(),
+                );
+            }
+            self.recorder.record(
+                "http",
+                method.as_str(),
+                endpoint,
+                Some(status.as_u16()),
+                body,
+                &serde_json::Value::Null,
+            );
             self.diagnostics.request(
                 method.as_str(),
                 endpoint,
@@ -729,7 +864,7 @@ impl RiotClientService {
                 started.elapsed(),
             );
             if matches!(status.as_u16(), 401 | 403) {
-                self.invalidate_cache();
+                self.invalidate_auth_if_current(port, &password, epoch);
             }
             // Server response bodies can contain account data; log only method, route and status.
             return Err(AppError::Custom(format!(
@@ -737,39 +872,194 @@ impl RiotClientService {
                 method, endpoint, status
             )));
         }
-        let text = response.text().await.map_err(|_| {
+        let text = Self::read_lcu_response(response, 16 * 1024 * 1024)
+            .await
+            .map_err(|error| {
+                self.diagnostics
+                    .request(method.as_str(), endpoint, None, started.elapsed());
+                error
+            })?;
+        if self.connection_epoch.load(Ordering::SeqCst) != epoch {
             self.diagnostics
                 .request(method.as_str(), endpoint, None, started.elapsed());
-            AppError::Custom("LCU response read failed".into())
-        })?;
+            // An in-flight write may have completed; its caller must reconcile, not blindly retry.
+            return Err(AppError::Custom(
+                "LCU connection changed during request; result is unknown".into(),
+            ));
+        }
         self.diagnostics.request(
             method.as_str(),
             endpoint,
             Some(status.as_u16()),
             started.elapsed(),
         );
+        if self.recorder.active() && super::session_recording::allowed_route(endpoint) {
+            self.recorder.record(
+                "http",
+                method.as_str(),
+                endpoint,
+                Some(status.as_u16()),
+                body,
+                &serde_json::from_str(&text).unwrap_or(serde_json::Value::Null),
+            );
+        }
         Ok(text)
     }
 
+    async fn read_lcu_response(
+        mut response: reqwest::Response,
+        limit: usize,
+    ) -> Result<String, AppError> {
+        if response
+            .content_length()
+            .is_some_and(|size| size > limit as u64)
+        {
+            return Err(AppError::Custom("LCU response exceeds size limit".into()));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| AppError::Custom("LCU response read failed".into()))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > limit {
+                return Err(AppError::Custom("LCU response exceeds size limit".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        String::from_utf8(bytes)
+            .map_err(|_| AppError::Custom("LCU response is not valid UTF-8".into()))
+    }
+
+    fn check_cooldown(
+        &self,
+        epoch: u64,
+        method: &reqwest::Method,
+        endpoint: &str,
+    ) -> Result<(), AppError> {
+        if let Some(remaining) =
+            self.request_policy
+                .cooldown(epoch, method, endpoint, std::time::Instant::now())
+        {
+            return Err(AppError::Custom(format!(
+                "LCU {} {} returned 429 Too Many Requests; retry after {} ms",
+                method,
+                endpoint,
+                remaining.as_millis()
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn lcu_get(&self, endpoint: &str) -> Result<String, AppError> {
-        self.lcu_request(reqwest::Method::GET, endpoint, None).await
+        use super::lcu_request_policy::Read;
+        let epoch = self.connection_epoch.load(Ordering::SeqCst);
+        let current = || self.connection_epoch.load(Ordering::SeqCst) == epoch;
+        let result = match self
+            .request_policy
+            .begin_read(epoch, endpoint)
+            .map_err(AppError::Custom)?
+        {
+            Read::Lead(leader) => {
+                let result = self
+                    .lcu_request_if(reqwest::Method::GET, endpoint, None, current)
+                    .await;
+                leader.complete(
+                    result
+                        .as_ref()
+                        .map(Clone::clone)
+                        .map_err(ToString::to_string),
+                );
+                result
+            }
+            Read::Wait(flight) => flight.wait().await.map_err(AppError::Custom),
+            Read::Unshared => {
+                self.lcu_request_if(reqwest::Method::GET, endpoint, None, current)
+                    .await
+            }
+        };
+        if !current() {
+            return Err(AppError::Custom(
+                "LCU connection changed during shared read".into(),
+            ));
+        }
+        result
     }
     pub async fn lcu_post(&self, endpoint: &str, body: &str) -> Result<String, AppError> {
         self.lcu_request(reqwest::Method::POST, endpoint, Some(body))
             .await
     }
-    pub async fn lcu_put(&self, endpoint: &str, body: &str) -> Result<String, AppError> {
-        self.lcu_request(reqwest::Method::PUT, endpoint, Some(body))
+
+    pub async fn lcu_post_if(
+        &self,
+        endpoint: &str,
+        body: &str,
+        is_current: impl Fn() -> bool + Send + Sync,
+    ) -> Result<String, AppError> {
+        self.lcu_request_if(reqwest::Method::POST, endpoint, Some(body), is_current)
             .await
+    }
+    pub(crate) async fn lcu_post_checked<F: std::future::Future<Output = bool> + Send>(
+        &self,
+        endpoint: &str,
+        body: &str,
+        check: impl FnOnce() -> F + Send,
+    ) -> Result<String, AppError> {
+        self.lcu_request_checked(reqwest::Method::POST, endpoint, Some(body), check)
+            .await
+    }
+    pub async fn lcu_put(&self, endpoint: &str, body: &str) -> Result<String, AppError> {
+        self.lcu_put_if(endpoint, body, || true).await
+    }
+    pub async fn lcu_put_if(
+        &self,
+        endpoint: &str,
+        body: &str,
+        is_current: impl Fn() -> bool + Send + Sync,
+    ) -> Result<String, AppError> {
+        self.lcu_request_if(reqwest::Method::PUT, endpoint, Some(body), is_current)
+            .await
+    }
+
+    pub(crate) async fn lcu_put_checked<F: std::future::Future<Output = bool> + Send>(
+        &self,
+        endpoint: &str,
+        body: &str,
+        check: impl FnOnce() -> F + Send,
+    ) -> Result<String, AppError> {
+        self.lcu_request_checked(reqwest::Method::PUT, endpoint, Some(body), check)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_test_writes(&self) -> tokio::sync::SemaphorePermit<'_> {
+        self.write_slots.acquire_many(2).await.unwrap()
     }
     pub async fn lcu_delete(&self, endpoint: &str) -> Result<String, AppError> {
         self.lcu_request(reqwest::Method::DELETE, endpoint, None)
             .await
     }
+    pub(crate) async fn lcu_delete_checked<F: std::future::Future<Output = bool> + Send>(
+        &self,
+        endpoint: &str,
+        check: impl FnOnce() -> F + Send,
+    ) -> Result<String, AppError> {
+        self.lcu_request_checked(reqwest::Method::DELETE, endpoint, None, check)
+            .await
+    }
     pub async fn lcu_patch(&self, endpoint: &str, body: &str) -> Result<String, AppError> {
+        self.lcu_patch_if(endpoint, body, || true).await
+    }
+
+    pub async fn lcu_patch_if(
+        &self,
+        endpoint: &str,
+        body: &str,
+        is_current: impl Fn() -> bool + Send + Sync,
+    ) -> Result<String, AppError> {
         serde_json::from_str::<serde_json::Value>(body)
             .map_err(|_| AppError::Custom("Invalid JSON body".into()))?;
-        self.lcu_request(reqwest::Method::PATCH, endpoint, Some(body))
+        self.lcu_request_if(reqwest::Method::PATCH, endpoint, Some(body), is_current)
             .await
     }
 
@@ -917,63 +1207,81 @@ impl RiotClientService {
 
     /// Riot login username for the current RC/LCU session (email / login name), if exposed by APIs.
     pub async fn get_authorized_riot_login_username(&self) -> Result<String, AppError> {
-        fn pick_username_fields(
-            obj: &serde_json::Map<String, serde_json::Value>,
-        ) -> Option<String> {
-            for key in ["username", "loginUsername", "accountName", "userName"] {
-                if let Some(s) = obj.get(key).and_then(|x| x.as_str()) {
-                    let t = s.trim();
-                    if !t.is_empty() {
-                        return Some(t.to_string());
-                    }
-                }
-            }
-            None
-        }
-
-        fn parse_from_auth_json(v: &serde_json::Value) -> Option<String> {
-            use serde_json::Value;
-            let obj = v.as_object()?;
-            pick_username_fields(obj).or_else(|| {
-                for child in [
-                    "authorization",
-                    "session",
-                    "sessionCredentials",
-                    "credentials",
-                    "account",
-                    "user",
-                    "login",
-                ] {
-                    if let Some(Value::Object(sub)) = obj.get(child) {
-                        if let Some(u) = pick_username_fields(sub) {
-                            return Some(u);
-                        }
-                    }
-                }
-                None
-            })
-        }
-
-        if let Ok(resp) = self
-            .rc_request_silent(reqwest::Method::GET, "/rso-auth/v1/authorization", None)
+        let generation = self.connection_generation();
+        let read = |route| async move {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                self.rc_request_silent(reqwest::Method::GET, route, None),
+            )
             .await
-        {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp) {
-                if let Some(u) = parse_from_auth_json(&v) {
-                    return Ok(u);
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        };
+        if let Some(value) = read("/rso-auth/v1/authorization").await {
+            if let Some(login) = identity_login(&value).map_err(AppError::Custom)? {
+                if self.connection_generation() != generation {
+                    return Err(AppError::Custom("Identity connection changed".into()));
+                }
+                return Ok(login);
+            }
+        }
+        let replies = futures_util::future::join_all(
+            [
+                "/riot-client-auth/v1/userinfo",
+                "/rso-auth/v1/authorization/userinfo",
+                "/rso-auth/v1/session",
+            ]
+            .into_iter()
+            .map(read),
+        )
+        .await;
+        let mut found: Option<String> = None;
+        for value in replies.into_iter().flatten() {
+            if let Some(login) = identity_login(&value).map_err(AppError::Custom)? {
+                if found
+                    .as_ref()
+                    .is_some_and(|old| !old.eq_ignore_ascii_case(&login))
+                {
+                    return Err(AppError::Custom("Identity responses disagree".into()));
+                }
+                found = Some(login);
+            }
+        }
+        if found.is_none() {
+            if let Ok(Ok(raw)) = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.lcu_get("/lol-login/v1/session"),
+            )
+            .await
+            {
+                if let Ok(value) = serde_json::from_str(&raw) {
+                    found = identity_login(&value).map_err(AppError::Custom)?;
                 }
             }
         }
-
-        if let Ok(text) = self.lcu_get("/lol-login/v1/session").await {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(u) = parse_from_auth_json(&v) {
-                    return Ok(u);
-                }
-            }
+        if self.connection_generation() != generation {
+            return Err(AppError::Custom("Identity connection changed".into()));
         }
+        Ok(found.unwrap_or_default())
+    }
 
-        Ok(String::new())
+    pub(crate) async fn verify_authorized_login(&self, expected: &str) -> Result<(), String> {
+        let actual = self
+            .get_authorized_riot_login_username()
+            .await
+            .map_err(|_| "Не удалось проверить аккаунт Riot")?;
+        if expected.trim().is_empty() || actual.trim().is_empty() {
+            return Err(
+                "Riot не подтвердил выбранный аккаунт. Проверьте вход в Riot Client".into(),
+            );
+        }
+        if !actual.trim().eq_ignore_ascii_case(expected.trim()) {
+            return Err(
+                "В Riot Client открыт другой аккаунт. Проверьте выбранную учётную запись".into(),
+            );
+        }
+        Ok(())
     }
 
     fn riot_id_from_summoner_json(summoner: &serde_json::Value) -> String {
@@ -1072,10 +1380,9 @@ impl RiotClientService {
             .map_err(|e| AppError::Custom(format!("RC request failed: {}", e)))?;
 
         let status = response.status();
-        let text = response
-            .text()
+        let text = Self::read_lcu_response(response, 16 * 1024 * 1024)
             .await
-            .map_err(|e| AppError::Custom(format!("RC response read failed: {}", e)))?;
+            .map_err(|_| AppError::Custom("RC response could not be read safely".into()))?;
 
         if !status.is_success() {
             // RC error bodies may contain account or authorization data.
@@ -1123,50 +1430,29 @@ impl RiotClientService {
     }
 
     pub async fn rso_authorization_state(&self) -> Option<bool> {
-        let mut observed = false;
-        for ep in ["/rso-auth/v2/authorizations", "/rso-auth/v1/authorization"] {
-            let resp = match self.rc_request_silent(reqwest::Method::GET, ep, None).await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
-                if !json.is_object() || json.get("errorCode").is_some() {
-                    continue;
-                }
-                observed = true;
-                if json.get("isAuthorized").and_then(|v| v.as_bool()) == Some(true) {
-                    return Some(true);
-                }
-                if let Some(auth) = json.get("authorization") {
-                    if auth
-                        .get("accessToken")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|token| !token.is_empty())
-                    {
-                        return Some(true);
+        let mut observed = None;
+        for route in [
+            "/rso-auth/v1/authorization",
+            "/riot-client-auth/v1/authorization",
+            "/rso-auth/v1/session",
+        ] {
+            if let Ok(Ok(raw)) = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.rc_request_silent(reqwest::Method::GET, route, None),
+            )
+            .await
+            {
+                if let Ok(value) = serde_json::from_str(&raw) {
+                    if let Some(state) = authorization_state(&value) {
+                        if state {
+                            return Some(true);
+                        }
+                        observed = Some(false);
                     }
-                }
-                if json.get("authorized").and_then(|v| v.as_bool()) == Some(true) {
-                    return Some(true);
-                }
-                if json
-                    .get("subject")
-                    .and_then(|v| v.as_str())
-                    .map(|s| !s.is_empty())
-                    == Some(true)
-                {
-                    return Some(true);
-                }
-                if json
-                    .get("currentAccountId")
-                    .and_then(|v| v.as_u64())
-                    .is_some_and(|id| id > 0)
-                {
-                    return Some(true);
                 }
             }
         }
-        observed.then_some(false)
+        observed
     }
 
     /// Initialize RSO session — required before login_via_rc can work.
@@ -1271,14 +1557,40 @@ impl RiotClientService {
                 .rc_request(reqwest::Method::POST, endpoint, Some(body))
                 .await
             {
-                Ok(r) if !r.contains("errorCode") => return Ok(()),
-                Ok(r) if r.contains("eula_not_accepted") => {
-                    // EULA not accepted — RC will show prompt, League cannot launch yet.
-                    // This is not a routing error, stop trying other endpoints.
-                    return Err(AppError::Custom("eula_not_accepted".to_string()));
+                Ok(raw) => {
+                    let body = serde_json::from_str::<serde_json::Value>(&raw).ok();
+                    if body
+                        .as_ref()
+                        .is_some_and(|b| b.get("errorCode").is_some() || b.get("error").is_some())
+                    {
+                        return Err(AppError::Custom(
+                            "Riot отклонил запуск League. Проверьте Riot Client перед повтором"
+                                .into(),
+                        ));
+                    }
+                    return Ok(());
                 }
-                Err(e) if e.to_string().contains("eula_not_accepted") => return Err(e),
-                _ => continue,
+                Err(e)
+                    if e.to_string().ends_with("HTTP 404")
+                        || e.to_string().ends_with("HTTP 405") =>
+                {
+                    continue
+                }
+                Err(e)
+                    if e.to_string().starts_with("RC request failed:")
+                        || e.to_string().contains("response could not be read safely") =>
+                {
+                    // A lost launch response may already have started League; never launch twice.
+                    if self
+                        .lcu_get("/lol-summoner/v1/current-summoner")
+                        .await
+                        .is_ok()
+                    {
+                        return Ok(());
+                    }
+                    return Err(e);
+                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -1288,43 +1600,89 @@ impl RiotClientService {
 
     /// Start League Client directly via RiotClientServices.exe with launch args.
     fn start_league_directly() -> Result<(), AppError> {
+        Self::launch_product(super::riot_game::RiotGame::League)
+    }
+
+    pub async fn open_tft_lobby(&self) -> Result<(), String> {
+        let queues: serde_json::Value = serde_json::from_str(
+            &self
+                .lcu_get("/lol-game-queues/v1/queues")
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|_| "Не удалось проверить режимы TFT")?;
+        if !queues.as_array().is_some_and(|q| {
+            q.iter().any(|q| {
+                q["id"] == 1090 && q["gameMode"] == "TFT" && q["queueAvailability"] == "Available"
+            })
+        }) {
+            return Err("Обычный режим TFT сейчас недоступен. League открыт — выберите доступный режим вручную".into());
+        }
+        let phase: String = serde_json::from_str(
+            &self
+                .lcu_get("/lol-gameflow/v1/gameflow-phase")
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|_| "Не удалось проверить состояние League")?;
+        if !matches!(phase.as_str(), "None" | "Lobby") {
+            return Err("Нельзя открыть TFT во время поиска, выбора чемпионов или игры".into());
+        }
+        self.lcu_post("/lol-lobby/v2/lobby", r#"{"queueId":1090}"#)
+            .await
+            .map_err(|e| e.to_string())?;
+        let lobby: serde_json::Value = serde_json::from_str(
+            &self
+                .lcu_get("/lol-lobby/v2/lobby")
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|_| "Не удалось подтвердить лобби TFT")?;
+        if lobby["gameConfig"]["queueId"] != 1090 {
+            return Err("Клиент не подтвердил лобби TFT".into());
+        }
+        Ok(())
+    }
+
+    pub fn is_valorant_running() -> bool {
+        Self::is_process_running("VALORANT.exe")
+            || Self::is_process_running("VALORANT-Win64-Shipping.exe")
+    }
+
+    pub fn launch_product(game: super::riot_game::RiotGame) -> Result<(), AppError> {
+        #[cfg(debug_assertions)]
+        if env::var_os("RUSTLM_TEST_LCU").is_some() {
+            return Err(AppError::Custom(
+                "Реальные процессы отключены в тестовом LCU".into(),
+            ));
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-
-            if let Some(installs_json) = Self::find_installs_json() {
-                let content = fs::read_to_string(&installs_json)?;
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(rc_path) = parsed
-                        .get("rc_default")
-                        .or_else(|| parsed.get("rc_live"))
-                        .and_then(|v| v.as_str())
-                    {
-                        let path = PathBuf::from(rc_path);
-                        if path.exists() {
-                            Command::new(&path)
-                                .args([
-                                    "--launch-product=league_of_legends",
-                                    "--launch-patchline=live",
-                                ])
-                                .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-                                .spawn()
-                                .map_err(|e| {
-                                    AppError::Custom(format!("Failed to launch League: {}", e))
-                                })?;
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            Err(AppError::Custom(
-                "Could not launch League of Legends".to_string(),
-            ))
+            let installs = Self::find_installs_json()
+                .ok_or_else(|| AppError::Custom("Riot Client не найден".into()))?;
+            let parsed: serde_json::Value = serde_json::from_str(&fs::read_to_string(installs)?)
+                .map_err(|_| {
+                    AppError::Custom("Не удалось прочитать установку Riot Client".into())
+                })?;
+            let executable = parsed["rc_default"]
+                .as_str()
+                .or_else(|| parsed["rc_live"].as_str())
+                .map(PathBuf::from)
+                .filter(|p| p.is_file())
+                .ok_or_else(|| AppError::Custom("RiotClientServices.exe не найден".into()))?;
+            Command::new(executable)
+                .args(game.launch_args())
+                .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+                .spawn()
+                .map_err(|_| AppError::Custom(format!("Не удалось запустить {}", game.name())))?;
+            Ok(())
         }
         #[cfg(not(windows))]
-        Err(AppError::Custom(
-            "Not supported on this platform".to_string(),
-        ))
+        {
+            let _ = game;
+            Err(AppError::Custom("Запуск поддерживается в Windows".into()))
+        }
     }
 
     // --- Wait Helpers ---
@@ -1356,32 +1714,36 @@ impl RiotClientService {
 
     /// Wait for RC API to be responsive.
     pub async fn wait_for_rc_api_ready(&self, timeout: Duration) -> bool {
-        let start = std::time::Instant::now();
-        while start.elapsed() < timeout {
-            match self
-                .rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None)
-                .await
-            {
-                Ok(resp) if !resp.contains("RESOURCE_NOT_FOUND") && !resp.is_empty() => {
-                    return true
+        tokio::time::timeout(timeout, async {
+            loop {
+                match self
+                    .rc_request_silent(reqwest::Method::GET, "/riotclient/app-name", None)
+                    .await
+                {
+                    Ok(resp) if !resp.contains("RESOURCE_NOT_FOUND") && !resp.is_empty() => {
+                        return true
+                    }
+                    _ => {}
                 }
-                _ => {}
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        false
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Wait for RSO authorization state to match target (polling every 300ms).
     pub async fn wait_for_rso_state(&self, authorized: bool, timeout: Duration) -> bool {
-        let start = std::time::Instant::now();
-        while start.elapsed() < timeout {
-            if self.rso_authorization_state().await == Some(authorized) {
-                return true;
+        tokio::time::timeout(timeout, async {
+            loop {
+                if self.rso_authorization_state().await == Some(authorized) {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-        }
-        false
+        })
+        .await
+        .unwrap_or(false)
     }
 
     // --- Login Phase Detection ---
@@ -1524,7 +1886,681 @@ mod native_process_tests {
 
 #[cfg(all(test, debug_assertions))]
 mod rc_simulator_tests {
+    #[test]
+    fn identity_and_rso_parsers_reject_unknown_conflicting_or_private_lookalike_fields() {
+        use serde_json::json;
+        assert_eq!(
+            identity_login(&json!({"userInfo":json!({"username":" AccountA "}).to_string()}))
+                .unwrap(),
+            Some("AccountA".into())
+        );
+        assert_eq!(
+            identity_login(&json!({"username":"AccountA","session":{"loginUsername":"accounta"}}))
+                .unwrap(),
+            Some("accounta".into())
+        );
+        assert!(
+            identity_login(&json!({"username":"AccountA","user":{"username":"AccountB"}})).is_err()
+        );
+        assert!(identity_login(&json!({"userInfo":"not JSON"})).is_err());
+        assert_eq!(
+            identity_login(&json!({"displayName":"AccountA","hint":{"username":"AccountA"}}))
+                .unwrap(),
+            None
+        );
+        for value in [
+            json!({}),
+            json!([]),
+            json!({"errorCode":"UNKNOWN"}),
+            json!({"authorized":false,"subject":"subject"}),
+            json!({"type":"unknown"}),
+        ] {
+            assert_eq!(authorization_state(&value), None);
+        }
+        assert_eq!(
+            authorization_state(&json!({"type":"authenticated"})),
+            Some(true)
+        );
+        assert_eq!(
+            authorization_state(&json!({"type":"authenticated","error":"","errorCode":null})),
+            Some(true)
+        );
+        assert_eq!(
+            authorization_state(&json!({"type":"needs_credentials"})),
+            Some(false)
+        );
+        assert_eq!(
+            authorization_state(&json!({"authorized":false})),
+            Some(false)
+        );
+        assert_eq!(
+            authorization_state(&json!({"authorization":{"accessToken":"synthetic"}})),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_userinfo_fallback_and_rso_deadline_are_bounded() {
+        let client = RiotClientService::new();
+        let route = "/riot-client-auth/v1/userinfo";
+        for login in ["AccountA", "AccountB"] {
+            client.lcu_post("/__test/failure", &serde_json::json!({"route":route,"status":200,"response":{"userInfo":serde_json::json!({"username":login}).to_string()}}).to_string()).await.unwrap();
+            assert_eq!(
+                client.verify_authorized_login("AccountA").await.is_ok(),
+                login == "AccountA"
+            );
+        }
+        client
+            .lcu_post(
+                "/__test/failure",
+                r#"{"route":"/rso-auth/v1/authorization","status":200,"delayMs":1000}"#,
+            )
+            .await
+            .unwrap();
+        assert!(!tokio::time::timeout(
+            Duration::from_millis(500),
+            client.wait_for_rso_state(false, Duration::from_millis(10))
+        )
+        .await
+        .unwrap());
+        client
+            .lcu_post(
+                "/__test/failure",
+                r#"{"route":"/riotclient/app-name","status":200,"delayMs":1000}"#,
+            )
+            .await
+            .unwrap();
+        assert!(!tokio::time::timeout(
+            Duration::from_millis(500),
+            client.wait_for_rc_api_ready(Duration::from_millis(10))
+        )
+        .await
+        .unwrap());
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_search_writes_are_cancelled_when_phase_changes_in_queue() {
+        let client = RiotClientService::new();
+        let control = RiotClientService::new();
+        let route = "/lol-lobby/v2/lobby/matchmaking/search";
+        for deleting in [false, true] {
+            control
+                .lcu_post("/__test/scenario", r#"{"name":"idle"}"#)
+                .await
+                .unwrap();
+            let permits = client.hold_test_writes().await;
+            let request = async {
+                let check = || async {
+                    client
+                        .lcu_get("/lol-gameflow/v1/gameflow-phase")
+                        .await
+                        .is_ok_and(|v| v == "\"Lobby\"")
+                };
+                if deleting {
+                    client.lcu_delete_checked(route, check).await
+                } else {
+                    client.lcu_post_checked(route, "{}", check).await
+                }
+            };
+            tokio::pin!(request);
+            assert!(futures_util::poll!(&mut request).is_pending());
+            control
+                .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+                .await
+                .unwrap();
+            let before: serde_json::Value =
+                serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+            drop(permits);
+            assert!(request
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled before dispatch"));
+            let after: serde_json::Value =
+                serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+            let key = format!("{} {route}", if deleting { "DELETE" } else { "POST" });
+            assert_eq!(before["requestCounts"][&key], after["requestCounts"][&key]);
+            assert_eq!(before["actions"], after["actions"]);
+        }
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_guarded_reload_rechecks_phase_after_write_queue() {
+        let client = RiotClientService::new();
+        let control = RiotClientService::new();
+        control
+            .lcu_post("/__test/scenario", r#"{"name":"idle"}"#)
+            .await
+            .unwrap();
+        control
+            .lcu_post("/__test/ux-health", r#"{"window_responsive":false}"#)
+            .await
+            .unwrap();
+        let permits = client.hold_test_writes().await;
+        let request = client.lcu_post_checked("/riotclient/kill-and-restart-ux", "", || async {
+            super::super::unglitch::status(&client)
+                .await
+                .is_ok_and(|sample| crate::models::unglitch::automatic_reload_allowed(&sample))
+        });
+        tokio::pin!(request);
+        assert!(futures_util::poll!(&mut request).is_pending());
+        control
+            .lcu_post("/__test/scenario", r#"{"name":"classic"}"#)
+            .await
+            .unwrap();
+        let before: serde_json::Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        drop(permits);
+        assert!(request
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled before dispatch"));
+        let after: serde_json::Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(after["actions"], before["actions"]);
+        assert_eq!(
+            after["requestCounts"]["POST /riotclient/kill-and-restart-ux"],
+            before["requestCounts"]["POST /riotclient/kill-and-restart-ux"]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_identity_checks_and_lost_launch_response_never_launch_twice() {
+        let client = RiotClientService::new();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"idle"}"#)
+            .await
+            .unwrap();
+        assert!(client.verify_authorized_login("AccountA").await.is_err());
+        for (actual, valid) in [("AccountB", false), (" accounta ", true), ("", false)] {
+            let fault = serde_json::json!({"route":"/rso-auth/v1/authorization","status":200,"response":{"username":actual}});
+            client
+                .lcu_post("/__test/failure", &fault.to_string())
+                .await
+                .unwrap();
+            assert_eq!(
+                client.verify_authorized_login("AccountA").await.is_ok(),
+                valid
+            );
+        }
+        let route = "/product-launcher/v1/products/league_of_legends/patchlines/live";
+        let before: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        client
+            .lcu_post(
+                "/__test/failure",
+                &serde_json::json!({"route":route,"status":204,"dropAfterApply":true}).to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(client.launch_league_via_rc().await.is_err());
+        let after: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let key = format!("POST {route}");
+        assert_eq!(
+            after["requestCounts"][&key].as_u64().unwrap(),
+            before["requestCounts"][&key].as_u64().unwrap_or(0) + 1
+        );
+        assert_eq!(
+            after["requestCounts"][format!("POST {route}/launch")],
+            before["requestCounts"][format!("POST {route}/launch")]
+        );
+        assert_eq!(
+            after["requestCounts"]["POST /product-launcher/v1/launch"],
+            before["requestCounts"]["POST /product-launcher/v1/launch"]
+        );
+        for status in [401, 403, 429, 503] {
+            client
+                .lcu_post(
+                    "/__test/failure",
+                    &serde_json::json!({"route":route,"status":status}).to_string(),
+                )
+                .await
+                .unwrap();
+            assert!(client.launch_league_via_rc().await.is_err());
+        }
+        assert!(RiotClientService::start_riot_client()
+            .unwrap_err()
+            .to_string()
+            .contains("отключены"));
+        assert!(
+            RiotClientService::launch_product(crate::services::riot_game::RiotGame::League)
+                .unwrap_err()
+                .to_string()
+                .contains("отключены")
+        );
+
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_shared_reads_use_one_request_and_cancelled_leader_releases_followers() {
+        let client = RiotClientService::new();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+            .await
+            .unwrap();
+        let before: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let route = "/lol-gameflow/v1/session";
+        client
+            .lcu_post(
+                "/__test/failure",
+                r#"{"route":"/lol-gameflow/v1/session","status":200,"delayMs":100}"#,
+            )
+            .await
+            .unwrap();
+        let (a, b) = tokio::join!(client.lcu_get(route), client.lcu_get(route));
+        assert_eq!(a.unwrap(), b.unwrap());
+        let after: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let count = |value: &serde_json::Value| {
+            value["requestCounts"]["GET /lol-gameflow/v1/session"]
+                .as_u64()
+                .unwrap_or(0)
+        };
+        assert_eq!(count(&after), count(&before) + 1);
+        let fresh: serde_json::Value =
+            serde_json::from_str(&client.lcu_get(route).await.unwrap()).unwrap();
+        assert_eq!(
+            fresh["phase"], "ReadyCheck",
+            "completed response must not become a cache"
+        );
+        let permits = client.critical_read_slots.acquire_many(2).await.unwrap();
+        let mut leader = Box::pin(client.lcu_get(route));
+        assert!(futures_util::poll!(&mut leader).is_pending());
+        let mut follower = Box::pin(client.lcu_get(route));
+        assert!(futures_util::poll!(&mut follower).is_pending());
+        drop(leader);
+        assert!(follower
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled"));
+        drop(permits);
+        assert!(client.lcu_get(route).await.is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_rate_limit_is_rechecked_after_async_guard() {
+        let client = RiotClientService::new();
+        let control = RiotClientService::new();
+        let route = "/__test/guard-rate-limit";
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let request = client.lcu_post_checked(route, "{}", || async { wait.await.is_ok() });
+        tokio::pin!(request);
+        assert!(futures_util::poll!(&mut request).is_pending());
+        control
+            .lcu_post(
+                "/__test/failure",
+                &serde_json::json!({"route":route,"status":429,"retryAfter":60}).to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(client
+            .lcu_post(route, "{}")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("429"));
+        let before: serde_json::Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        release.send(()).unwrap();
+        let not_sent = request.await.unwrap_err();
+        assert!(matches!(&not_sent, AppError::LcuNotDispatched(_)));
+        assert!(not_sent.to_string().contains("429"));
+        let after: serde_json::Value =
+            serde_json::from_str(&control.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(
+            before["requestCounts"]["POST /__test/guard-rate-limit"],
+            after["requestCounts"]["POST /__test/guard-rate-limit"]
+        );
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_rate_limit_suppresses_retries_but_not_other_routes_or_new_connection() {
+        let client = RiotClientService::new();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+            .await
+            .unwrap();
+        client
+            .lcu_post(
+                "/__test/failure",
+                r#"{"route":"/lol-gameflow/v1/session","status":429,"retryAfter":"2"}"#,
+            )
+            .await
+            .unwrap();
+        let before: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert!(client
+            .lcu_get("/lol-gameflow/v1/session")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("429"));
+        assert!(client
+            .lcu_get("/lol-gameflow/v1/session")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("retry after"));
+        assert!(client
+            .lcu_get("/lol-matchmaking/v1/ready-check")
+            .await
+            .is_ok());
+        let after: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let count = |value: &serde_json::Value| {
+            value["requestCounts"]["GET /lol-gameflow/v1/session"]
+                .as_u64()
+                .unwrap_or(0)
+        };
+        assert_eq!(count(&after), count(&before) + 1);
+        client.invalidate_cache();
+        assert!(client.lcu_get("/lol-gameflow/v1/session").await.is_ok());
+        client.lcu_post("/__test/failure",r#"{"route":"/lol-matchmaking/v1/ready-check/accept","status":429,"retryAfter":"2"}"#).await.unwrap();
+        assert!(client
+            .lcu_post("/lol-matchmaking/v1/ready-check/accept", "{}")
+            .await
+            .is_err());
+        assert!(client
+            .lcu_post("/lol-matchmaking/v1/ready-check/accept", "{}")
+            .await
+            .is_err());
+        let ready: serde_json::Value = serde_json::from_str(
+            &client
+                .lcu_get("/lol-matchmaking/v1/ready-check")
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ready["playerResponse"], "None");
+        let final_state: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let writes = |value: &serde_json::Value| {
+            value["requestCounts"]["POST /lol-matchmaking/v1/ready-check/accept"]
+                .as_u64()
+                .unwrap_or(0)
+        };
+        assert_eq!(
+            writes(&final_state),
+            writes(&after) + 1,
+            "a rejected write is never silently retried"
+        );
+    }
+    #[tokio::test]
+    async fn response_reader_bounds_declared_and_chunked_bodies_and_checks_utf8() {
+        use std::io::{Read, Write};
+        let body = "x".repeat(32);
+        let declared =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\n{body}")
+                .into_bytes();
+        let chunked=format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n20\r\n{body}\r\n0\r\n\r\n").into_bytes();
+        let mut invalid =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n".to_vec();
+        invalid.push(255);
+        for (wire, limit, error) in [
+            (declared.clone(), 8, Some("size limit")),
+            (chunked, 8, Some("size limit")),
+            (declared, 32, None),
+            (invalid, 32, Some("UTF-8")),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let server = tokio::task::spawn_blocking(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(1))
+                        }
+                        Err(e) => panic!("loopback accept failed: {e}"),
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+                    let count = socket.read(&mut buffer).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let _ = socket.write_all(&wire);
+            });
+            let client = RiotClientService::new();
+            let response = client
+                .http_client
+                .get(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            let result = RiotClientService::read_lcu_response(response, limit).await;
+            if let Some(error) = error {
+                assert!(result.unwrap_err().to_string().contains(error));
+            } else {
+                assert_eq!(result.unwrap(), body);
+            }
+            server.await.unwrap();
+        }
+    }
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_tft_requires_available_queue_idle_phase_and_confirmed_lobby() {
+        let client = RiotClientService::new();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+            .await
+            .unwrap();
+        assert!(client.open_tft_lobby().await.is_err());
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"idle"}"#)
+            .await
+            .unwrap();
+        client.open_tft_lobby().await.unwrap();
+        client
+            .lcu_post(
+                "/__test/failure",
+                r#"{"route":"/lol-game-queues/v1/queues","status":503}"#,
+            )
+            .await
+            .unwrap();
+        assert!(client.open_tft_lobby().await.is_err());
+        client
+            .lcu_post(
+                "/__test/failure",
+                r#"{"route":"/lol-lobby/v2/lobby","status":503}"#,
+            )
+            .await
+            .unwrap();
+        assert!(client.open_tft_lobby().await.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit recorded-session replay config"]
+    async fn replay_ready_check_uses_native_transport_and_matches_recorded_write() {
+        assert!(std::env::var_os("RUSTLM_REPLAY_SMOKE").is_some());
+        let client = RiotClientService::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Ok(body) = client.lcu_get("/lol-matchmaking/v1/ready-check").await {
+                let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(value["state"], "InProgress");
+                assert_eq!(value["playerResponse"], "None");
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        client
+            .lcu_post("/lol-matchmaking/v1/ready-check/accept", "{}")
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn stale_lockfile_lookup_cannot_repopulate_or_replace_new_generation_auth() {
+        let client = RiotClientService::new();
+        let old = client.connection_generation();
+        client.invalidate_cache();
+        assert!(client
+            .cache_discovered_auth(old, (1111, "old".into()))
+            .is_none());
+        let generation = client.connection_generation();
+        assert_eq!(
+            client.cache_discovered_auth(generation, (2222, "new".into())),
+            Some((2222, "new".into()))
+        );
+        assert_eq!(
+            client.cache_discovered_auth(old, (1111, "old".into())),
+            Some((2222, "new".into()))
+        );
+        assert_eq!(
+            client.cache_discovered_auth(generation, (3333, "late".into())),
+            Some((2222, "new".into()))
+        );
+    }
+    #[test]
+    fn delayed_old_request_cannot_clear_new_connection_credentials() {
+        let client = RiotClientService::new();
+        *client.cached_lcu_auth.lock().unwrap() = Some((1234, "new".into()));
+        client.invalidate_auth_if_current(1234, "old", 0);
+        assert_eq!(
+            client.cached_lcu_auth.lock().unwrap().as_ref().unwrap().1,
+            "new"
+        );
+        client.invalidate_auth_if_current(1234, "new", 0);
+        assert!(client.cached_lcu_auth.lock().unwrap().is_none());
+        *client.cached_lcu_auth.lock().unwrap() = Some((1234, "new".into()));
+        client.invalidate_auth_if_current(1234, "new", 0);
+        assert!(
+            client.cached_lcu_auth.lock().unwrap().is_some(),
+            "old epoch cannot clear a reconnected identical credential"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_old_success_is_rejected_after_connection_invalidation() {
+        let client = RiotClientService::new();
+        client
+            .lcu_post(
+                "/__test/failure",
+                r#"{"route":"/lol-gameflow/v1/session","status":200,"delayMs":200}"#,
+            )
+            .await
+            .unwrap();
+        let request = client.lcu_get("/lol-gameflow/v1/session");
+        let invalidate = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            client.invalidate_cache();
+        };
+        let (response, ()) = tokio::join!(request, invalidate);
+        assert!(response
+            .unwrap_err()
+            .to_string()
+            .contains("connection changed"));
+        assert!(client.lcu_get("/lol-gameflow/v1/session").await.is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_readonly_health_probe_preserves_connection_generation() {
+        let client = RiotClientService::new();
+        let epoch = client.connection_epoch.load(Ordering::SeqCst);
+        let health = super::super::unglitch::status(&client).await.unwrap();
+        assert!(health.api_available);
+        assert_eq!(client.connection_epoch.load(Ordering::SeqCst), epoch);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_cancelled_write_is_not_dispatched_after_queue_wait() {
+        let client = RiotClientService::new();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"ready"}"#)
+            .await
+            .unwrap();
+        let permit = client.write_slots.acquire_many(2).await.unwrap();
+        let allowed = std::sync::atomic::AtomicBool::new(true);
+        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        let request = client.lcu_post_if("/lol-matchmaking/v1/ready-check/accept", "{}", || {
+            dispatched.store(true, Ordering::SeqCst);
+            allowed.load(Ordering::SeqCst)
+        });
+        tokio::pin!(request);
+        // Poll the actual future until pending behind the occupied write queue.
+        assert!(futures_util::poll!(&mut request).is_pending());
+        assert!(!dispatched.load(Ordering::SeqCst));
+        allowed.store(false, Ordering::SeqCst);
+        drop(permit);
+        assert!(request
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled before dispatch"));
+        let state: serde_json::Value =
+            serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(state["ready"]["playerResponse"], "None");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_write_capacity_is_independent_of_busy_readers() {
+        let client = RiotClientService::new();
+        let readers = client.read_slots.acquire_many(8).await.unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.lcu_post("/__test/scenario", r#"{"name":"ready"}"#),
+        )
+        .await;
+        assert!(result.unwrap().is_ok());
+        assert!(tokio::time::timeout(
+            Duration::from_secs(1),
+            client.lcu_get("/lol-matchmaking/v1/ready-check")
+        )
+        .await
+        .unwrap()
+        .is_ok());
+        drop(readers);
+        let folder = std::env::temp_dir().join(format!("rustlm-record-{}", rand::random::<u128>()));
+        let path = client.recorder.start(folder.clone()).unwrap().path.unwrap();
+        client
+            .lcu_get("/lol-matchmaking/v1/ready-check")
+            .await
+            .unwrap();
+        client
+            .lcu_post("/lol-matchmaking/v1/ready-check/accept", "{}")
+            .await
+            .unwrap();
+        assert_eq!(client.recorder.stop().unwrap().entries, 2);
+        let trace = std::fs::read_to_string(&path).unwrap();
+        if let Some(output) = std::env::var_os("RUSTLM_RECORD_OUTPUT") {
+            std::fs::write(output, &trace).unwrap();
+        }
+        assert!(trace.contains("rustlm-lcu-session"));
+        assert!(!trace.contains(&client.get_lcu_auth().unwrap().1));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
     async fn simulator_rc_rejects_http_errors_and_does_not_confirm_unknown_logout() {
@@ -1534,7 +2570,7 @@ mod rc_simulator_tests {
             client
                 .lcu_post(
                     "/__test/failure",
-                    &format!(r#"{{"route":"/lol-gameflow/v1/session","status":{status}}}"#),
+                    &format!(r#"{{"route":"/lol-gameflow/v1/session","status":{status},"retryAfter":"0"}}"#),
                 )
                 .await
                 .unwrap();

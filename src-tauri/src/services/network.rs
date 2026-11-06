@@ -837,29 +837,30 @@ pub fn preview_variant(
 
 pub fn snapshot(path: &str, strategy: &str, store: &Path) -> Result<String, String> {
     let _guard = PATCH_LOCK.lock().map_err(|e| e.to_string())?;
-    let patch = preview(path, strategy)?;
-    let root = Path::new(&patch.root);
-    let name = format!("lists/{}", list_name(strategy));
-    let list = child(root, &name)?;
-    let list_bytes = if list.exists() {
-        Some(read_small(&list)?)
-    } else {
-        None
-    };
-    let files = vec![
-        SavedFile {
-            name: strategy.into(),
-            before: Some(patch.before.into_bytes()),
-            after_hash: patch.before_hash,
-            after: None,
-        },
-        SavedFile {
+    let info = installation(path)?;
+    if !info.strategies.iter().any(|s| s == strategy) {
+        return Err("Стратегия не найдена".into());
+    }
+    let root = Path::new(&info.root);
+    let mut files = Vec::new();
+    for name in [
+        strategy.to_owned(),
+        format!("lists/{}", list_name(strategy)),
+        format!("lists/{}", legacy_list_name(strategy)),
+    ] {
+        let target = child(root, &name)?;
+        let before = if target.exists() {
+            Some(read_small(&target)?)
+        } else {
+            None
+        };
+        files.push(SavedFile {
             name,
-            after_hash: list_bytes.as_ref().map(|v| hash(v)).unwrap_or_default(),
-            before: list_bytes,
+            after_hash: before.as_ref().map(|v| hash(v)).unwrap_or_default(),
+            before,
             after: None,
-        },
-    ];
+        });
+    }
     let base = backup_directory(root, store);
     fs::create_dir_all(&base).map_err(|e| e.to_string())?;
     let id = chrono::Utc::now().format("%Y%m%dT%H%M%S%9f").to_string();
@@ -886,6 +887,15 @@ struct Backup {
     files: Vec<SavedFile>,
 }
 pub fn apply(patch: Patch, report: Option<&Report>, store: &Path) -> Result<String, String> {
+    apply_with_writer(patch, report, store, atomic_write)
+}
+
+fn apply_with_writer(
+    patch: Patch,
+    report: Option<&Report>,
+    store: &Path,
+    mut write: impl FnMut(&Path, &[u8]) -> Result<(), String>,
+) -> Result<String, String> {
     let _guard = PATCH_LOCK.lock().map_err(|e| e.to_string())?;
     // Recompute the entire plan: the UI cannot supply arbitrary file contents or paths.
     let expected = preview_variant(&patch.root, &patch.strategy, patch.variant, report)?;
@@ -941,23 +951,28 @@ pub fn apply(patch: Patch, report: Option<&Report>, store: &Path) -> Result<Stri
     .map_err(|e| e.to_string())?;
     let profile_dir = backup_root.join("profiles");
     fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
-    atomic_write(
-        &profile_dir.join(format!("{}.json", hash(expected.strategy.as_bytes()))),
-        &serde_json::to_vec_pretty(&ProfileData {
-            strategy: expected.strategy.clone(),
-            variant: expected.variant,
-            files,
-        })
-        .map_err(|e| e.to_string())?,
-    )?;
+    let profile_path = profile_dir.join(format!("{}.json", hash(expected.strategy.as_bytes())));
+    let profile_bytes = serde_json::to_vec_pretty(&ProfileData {
+        strategy: expected.strategy.clone(),
+        variant: expected.variant,
+        files,
+    })
+    .map_err(|e| e.to_string())?;
     // Write the list first so a failed list write cannot leave a launcher with a missing dependency.
     for (name, data) in writes.iter().rev() {
-        if let Err(error) = atomic_write(&child(root, name)?, data) {
-            let rollback = restore_inner(&expected.root, &id, false, store);
+        if let Err(error) = child(root, name).and_then(|target| write(&target, data)) {
+            let rollback = restore_inner(&expected.root, &id, true, store);
             return Err(format!(
                 "Запись не завершена: {error}. Откат: {rollback:?}. Резервная копия: {id}"
             ));
         }
+    }
+    // Keep the previous profile until all user files have been written successfully.
+    if let Err(error) = write(&profile_path, &profile_bytes) {
+        let rollback = restore_inner(&expected.root, &id, true, store);
+        return Err(format!(
+            "Профиль не сохранён: {error}. Откат: {rollback:?}. Резервная копия: {id}"
+        ));
     }
     Ok(id)
 }
@@ -1210,6 +1225,158 @@ pub fn history(root: &Path) -> Result<Vec<Report>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_apply_keeps_previous_profile_and_rolls_back_written_files() {
+        for fail_at in 1..=3 {
+            let dir = fixture();
+            let root = dir.to_str().unwrap();
+            let store = dir.join("test-store");
+            let strategy = "general (ALT11).bat";
+            let original = fs::read(dir.join(strategy)).unwrap();
+            let first = apply(preview(root, strategy).unwrap(), None, &store).unwrap();
+            restore(root, &first, true, &store).unwrap();
+            let profile = backup_directory(&fs::canonicalize(&dir).unwrap(), &store)
+                .join("profiles")
+                .join(format!("{}.json", hash(strategy.as_bytes())));
+            let previous = fs::read(&profile).unwrap();
+            let mut calls = 0;
+            let error = apply_with_writer(
+                preview_variant(root, strategy, 1, None).unwrap(),
+                None,
+                &store,
+                |path, bytes| {
+                    calls += 1;
+                    if calls == fail_at {
+                        return Err("injected write failure".into());
+                    }
+                    atomic_write(path, bytes)
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("injected write failure"), "{error}");
+            assert_eq!(calls, fail_at);
+            assert_eq!(fs::read(&profile).unwrap(), previous);
+            assert_eq!(fs::read(dir.join(strategy)).unwrap(), original);
+            assert!(!dir.join("lists").join(list_name(strategy)).exists());
+            select_profile(root, strategy, true, &store).unwrap();
+            assert!(fs::read_to_string(dir.join(strategy))
+                .unwrap()
+                .contains(MARKER));
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_profile_publication_preserves_concurrent_user_edits() {
+        let dir = fixture();
+        let root = dir.to_str().unwrap();
+        let store = dir.join("test-store");
+        let strategy = "general (ALT11).bat";
+        let error = apply_with_writer(
+            preview(root, strategy).unwrap(),
+            None,
+            &store,
+            |path, bytes| {
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    fs::write(dir.join(strategy), b"user changes").unwrap();
+                    return Err("injected profile failure".into());
+                }
+                atomic_write(path, bytes)
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("injected profile failure"));
+        assert!(error.contains("изменён после настройки"));
+        assert_eq!(fs::read(dir.join(strategy)).unwrap(), b"user changes");
+        let base = backup_directory(&fs::canonicalize(&dir).unwrap(), &store);
+        assert!(!base
+            .join("profiles")
+            .join(format!("{}.json", hash(strategy.as_bytes())))
+            .exists());
+        assert!(fs::read_dir(&base)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().join("backup.json").is_file()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_accepts_configured_strategy_and_captures_both_managed_lists() {
+        let dir = fixture();
+        let root = dir.to_str().unwrap();
+        let store = dir.join("test-store");
+        let strategy = "general (ALT11).bat";
+        apply(preview(root, strategy).unwrap(), None, &store).unwrap();
+        fs::write(
+            dir.join("lists").join(legacy_list_name(strategy)),
+            b"172.65.252.238\r\n",
+        )
+        .unwrap();
+        let id = snapshot(root, strategy, &store).unwrap();
+        let base = backup_directory(&fs::canonicalize(&dir).unwrap(), &store);
+        let backup: Backup =
+            serde_json::from_slice(&fs::read(base.join(&id).join("backup.json")).unwrap()).unwrap();
+        assert_eq!(backup.files.len(), 3);
+        assert_eq!(backup.files[0].name, strategy);
+        assert_eq!(
+            backup.files[1].name,
+            format!("lists/{}", list_name(strategy))
+        );
+        assert_eq!(
+            backup.files[2].name,
+            format!("lists/{}", legacy_list_name(strategy))
+        );
+        for file in &backup.files {
+            assert_eq!(
+                file.before.as_ref().unwrap(),
+                &fs::read(dir.join(&file.name)).unwrap()
+            );
+            fs::write(dir.join(&file.name), b"changed").unwrap();
+        }
+        assert!(restore(root, &id, true, &store).is_err());
+        assert_eq!(fs::read(dir.join(strategy)).unwrap(), b"changed");
+        restore(root, &id, false, &store).unwrap();
+        restore(root, &id, true, &store).unwrap();
+        for file in &backup.files {
+            assert_eq!(
+                fs::read(dir.join(&file.name)).unwrap(),
+                *file.before.as_ref().unwrap()
+            );
+        }
+        assert!(snapshot(root, "../general.bat", &store).is_err());
+        assert!(snapshot(root, "general missing.bat", &store).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_records_absent_lists_and_legacy_two_file_backup_still_restores() {
+        let dir = fixture();
+        let root = dir.to_str().unwrap();
+        let store = dir.join("test-store");
+        let strategy = "general (ALT11).bat";
+        let original = fs::read(dir.join(strategy)).unwrap();
+        let id = snapshot(root, strategy, &store).unwrap();
+        let base = backup_directory(&fs::canonicalize(&dir).unwrap(), &store);
+        let manifest = base.join(&id).join("backup.json");
+        let mut backup: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        let files = backup["files"].as_array_mut().unwrap();
+        assert_eq!(files.len(), 3);
+        assert!(files[1]["before"].is_null());
+        assert!(files[2]["before"].is_null());
+        restore(root, &id, true, &store).unwrap();
+        files.pop();
+        for file in files {
+            file.as_object_mut().unwrap().remove("after");
+        }
+        fs::write(&manifest, serde_json::to_vec(&backup).unwrap()).unwrap();
+        restore(root, &id, true, &store).unwrap();
+        assert_eq!(fs::read(dir.join(strategy)).unwrap(), original);
+        assert!(!dir.join("lists").join(list_name(strategy)).exists());
+        assert!(!dir.join("lists").join(legacy_list_name(strategy)).exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn routing_aliases_are_dns_evidence_not_standalone_https_services() {
         assert!(super::infrastructure_domain("opaque.pacloudflare.com"));

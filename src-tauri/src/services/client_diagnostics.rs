@@ -100,6 +100,25 @@ pub struct Report {
     pub events: Vec<DiagnosticEvent>,
 }
 
+impl Report {
+    pub fn export(&self, folder: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        std::fs::create_dir_all(folder).map_err(|_| "Не удалось открыть папку журналов.")?;
+        let path = folder.join(format!(
+            "client-diagnostics-{}-{:016x}.json",
+            chrono::Utc::now().format("%Y%m%dT%H%M%S%3f"),
+            rand::random::<u64>()
+        ));
+        let data = serde_json::to_vec_pretty(&serde_json::json!({
+            "format": "rustlm-client-diagnostics", "version": 1,
+            "app_version": env!("CARGO_PKG_VERSION"), "created_at": chrono::Utc::now().to_rfc3339(),
+            "diagnostics": self,
+        }))
+        .map_err(|_| "Не удалось подготовить отчёт.")?;
+        super::network::atomic_write(&path, &data).map_err(|_| "Не удалось сохранить отчёт.")?;
+        Ok(path)
+    }
+}
+
 #[derive(Default)]
 struct Data {
     stats: BTreeMap<Area, RequestStats>,
@@ -303,6 +322,25 @@ impl ClientDiagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn export_is_versioned_unique_and_does_not_destroy_reports_when_folder_is_unavailable() {
+        let folder = std::env::temp_dir().join(format!("rustlm-diag-{}", rand::random::<u128>()));
+        let report = ClientDiagnostics::default().snapshot();
+        let first = report.export(&folder).unwrap();
+        let second = report.export(&folder).unwrap();
+        assert_ne!(first, second);
+        let data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        assert_eq!(data["format"], "rustlm-client-diagnostics");
+        assert_eq!(data["version"], 1);
+        assert_eq!(data["app_version"], env!("CARGO_PKG_VERSION"));
+        assert!(chrono::DateTime::parse_from_rfc3339(data["created_at"].as_str().unwrap()).is_ok());
+        assert_eq!(data["diagnostics"]["ui"]["state"], "not_checked");
+        assert!(report.export(&first).unwrap_err().contains("папку"));
+        assert!(first.is_file() && second.is_file());
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
     #[tokio::test]
     #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
     async fn simulator_transport_records_metrics_without_raw_payloads_or_real_ui() {

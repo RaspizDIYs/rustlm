@@ -415,9 +415,61 @@ struct Cache {
     snapshot: Option<(Value, Instant, Duration)>,
     confirmation: Option<Value>,
 }
+impl Cache {
+    fn invalidate(&mut self) {
+        self.snapshot = None;
+        self.confirmation = None;
+    }
+    fn observe(&mut self, snapshot: &Value, elapsed: Duration) -> bool {
+        if self.snapshot.as_ref().is_some_and(|(previous, _, _)| {
+            previous["me"] == snapshot["me"]
+                && previous["active"]["id"] == snapshot["active"]["id"]
+                && previous["active"]["revision"]
+                    .as_u64()
+                    .zip(snapshot["active"]["revision"].as_u64())
+                    .is_some_and(|(old, new)| new < old)
+        }) {
+            return false;
+        }
+        if self
+            .confirmation
+            .as_ref()
+            .is_some_and(|proof| !confirmation_matches(snapshot, proof))
+        {
+            self.confirmation = None;
+        }
+        self.snapshot = Some((snapshot.clone(), Instant::now(), elapsed));
+        true
+    }
+}
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 fn cache() -> &'static Mutex<Cache> {
     CACHE.get_or_init(|| Mutex::new(Cache::default()))
+}
+
+pub(crate) struct SnapshotAttempt<'a> {
+    cache: &'a Mutex<Cache>,
+    completed: bool,
+}
+impl SnapshotAttempt<'_> {
+    pub(crate) fn complete(mut self) {
+        self.completed = true;
+    }
+}
+impl Drop for SnapshotAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.invalidate();
+            }
+        }
+    }
+}
+pub(crate) fn snapshot_attempt() -> SnapshotAttempt<'static> {
+    SnapshotAttempt {
+        cache: cache(),
+        completed: false,
+    }
 }
 
 pub fn set_enabled(_enabled: bool) {
@@ -427,20 +479,14 @@ pub fn set_enabled(_enabled: bool) {
 }
 pub fn unavailable() {
     if let Ok(mut c) = cache().lock() {
-        c.snapshot = None;
+        c.invalidate();
     }
 }
 
 /// Pass total request RTT; never renew freshness with a cached HTTP response.
 pub fn observe_party(snapshot: &Value, elapsed: Duration) {
     let Ok(mut c) = cache().lock() else { return };
-    if c.confirmation
-        .as_ref()
-        .is_some_and(|proof| !confirmation_matches(snapshot, proof))
-    {
-        c.confirmation = None;
-    }
-    c.snapshot = Some((snapshot.clone(), Instant::now(), elapsed));
+    c.observe(snapshot, elapsed);
 }
 
 /// Call only after real group validation and a successful draftConfirm reservation (returned Party).
@@ -449,14 +495,22 @@ pub fn confirmed(party: &Value) {
     let Some((snapshot, _, _)) = &c.snapshot else {
         return;
     };
+    if party["id"] != snapshot["active"]["id"]
+        || party["revision"] != snapshot["active"]["revision"]
+    {
+        return;
+    }
     let Some(own) = party["members"]
         .as_array()
         .and_then(|ms| ms.iter().find(|m| m["id"] == snapshot["me"]))
     else {
         return;
     };
-    c.confirmation =
-        Some(serde_json::json!({"partyId":party["id"],"revision":party["revision"],"member":own}));
+    let proof =
+        serde_json::json!({"partyId":party["id"],"revision":party["revision"],"member":own});
+    if confirmation_matches(snapshot, &proof) {
+        c.confirmation = Some(proof);
+    }
 }
 
 fn group_active() -> &'static AtomicBool {
@@ -561,17 +615,34 @@ pub fn choice(session: &Value, mode: &str) -> Option<i32> {
 }
 
 fn confirmation_matches(s: &Value, proof: &Value) -> bool {
-    let member = s["active"]["members"]
-        .as_array()
-        .and_then(|ms| ms.iter().find(|m| m["id"] == s["me"]));
-    proof["partyId"] == s["active"]["id"]
+    let Some(party_id) = s["active"]["id"].as_str().filter(|id| !id.is_empty()) else {
+        return false;
+    };
+    let Some(actor) = s["me"].as_str().filter(|id| !id.is_empty()) else {
+        return false;
+    };
+    let Some(members) = s["active"]["members"].as_array() else {
+        return false;
+    };
+    let mut own = members.iter().filter(|m| m["id"].as_str() == Some(actor));
+    let member = own.next();
+    if own.next().is_some() {
+        return false;
+    }
+    proof["partyId"].as_str() == Some(party_id)
         && proof["revision"]
             .as_u64()
             .zip(s["active"]["revision"].as_u64())
             .is_some_and(|(a, b)| b >= a)
         && member.is_some_and(|m| {
-            m["id"] == proof["member"]["id"]
+            m["accepted"] == true
+                && m["online"] == true
+                && m["id"] == proof["member"]["id"]
+                && m["gameSummonerId"] == proof["member"]["gameSummonerId"]
+                && m["server"] == proof["member"]["server"]
                 && m["gamePuuid"] == proof["member"]["gamePuuid"]
+                && m["role"] == proof["member"]["role"]
+                && m["secondaryRole"] == proof["member"]["secondaryRole"]
                 && m["draft"] == proof["member"]["draft"]
                 && m["draftChoice"] == proof["member"]["draftChoice"]
         })
@@ -748,6 +819,149 @@ fn ban_allowed(snapshot: &Value, session: &Value, mode: &str, id: i32, age: Dura
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn generated_group_plans_are_order_independent_and_never_assign_forbidden_or_duplicate_champions(
+    ) {
+        let mut seed = 913u32;
+        for _ in 0..256 {
+            let mut members = Vec::new();
+            let mut allowed = BTreeMap::new();
+            for index in 0..5 {
+                let mut pool = Vec::new();
+                let mut available = Vec::new();
+                for champion in 1..=6 {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let state = ["must", "yield", "exclude"][(seed % 3) as usize];
+                    pool.push(json!({"championId":champion,"state":state}));
+                    if seed & 8 != 0 {
+                        available.push(champion);
+                    }
+                }
+                let online = seed & 32 != 0;
+                let id = format!("player{index}");
+                let green: Vec<_> = pool
+                    .iter()
+                    .filter(|p| {
+                        p["state"] == "must"
+                            && available.contains(&(p["championId"].as_i64().unwrap() as i32))
+                    })
+                    .map(|p| p["championId"].as_i64().unwrap() as i32)
+                    .collect();
+                let permitted: Vec<_> = if !online {
+                    vec![]
+                } else if !green.is_empty() {
+                    green
+                } else {
+                    pool.iter()
+                        .filter(|p| {
+                            p["state"] == "yield"
+                                && available.contains(&(p["championId"].as_i64().unwrap() as i32))
+                        })
+                        .map(|p| p["championId"].as_i64().unwrap() as i32)
+                        .collect()
+                };
+                allowed.insert(id.clone(), permitted);
+                members.push(json!({"id":id,"accepted":true,"online":online,"draftChoice":null,
+                    "draft":{"sessionKey":"123","mode":"aram","candidates":available,"preferences":{"pick":pool}}}));
+            }
+            let plan = coordinate(&json!(members), "123", "aram");
+            assert_eq!(plan.values().collect::<BTreeSet<_>>().len(), plan.len());
+            for (player, champion) in &plan {
+                assert!(allowed[player].contains(champion));
+            }
+            members.reverse();
+            assert_eq!(coordinate(&json!(members), "123", "aram"), plan);
+            assert!(coordinate(&json!(members), "124", "aram").is_empty());
+            assert!(coordinate(&json!(members), "123", "mayhem").is_empty());
+        }
+    }
+    #[tokio::test]
+    async fn cancelled_snapshot_revokes_proof_but_success_preserves_it() {
+        let cache = Mutex::new(Cache {
+            snapshot: Some((json!({"active":{}}), Instant::now(), Duration::ZERO)),
+            confirmation: Some(json!({"proof":true})),
+        });
+        let attempt = async {
+            let _attempt = SnapshotAttempt {
+                cache: &cache,
+                completed: false,
+            };
+            std::future::pending::<()>().await;
+        };
+        let mut attempt = Box::pin(attempt);
+        assert!(futures_util::poll!(&mut attempt).is_pending());
+        assert!(cache.lock().unwrap().confirmation.is_some());
+        drop(attempt);
+        assert!(cache.lock().unwrap().snapshot.is_none());
+        assert!(cache.lock().unwrap().confirmation.is_none());
+        cache.lock().unwrap().confirmation = Some(json!({"new":true}));
+        SnapshotAttempt {
+            cache: &cache,
+            completed: false,
+        }
+        .complete();
+        assert_eq!(
+            cache.lock().unwrap().confirmation,
+            Some(json!({"new":true}))
+        );
+        {
+            let _failed = SnapshotAttempt {
+                cache: &cache,
+                completed: false,
+            };
+        }
+        assert!(cache.lock().unwrap().confirmation.is_none());
+    }
+
+    #[test]
+    fn recovery_after_unavailability_requires_a_new_confirmation() {
+        let (mut snapshot, _) = fixture();
+        snapshot["active"]["id"] = json!("party");
+        snapshot["active"]["revision"] = json!(7);
+        let proof =
+            json!({"partyId":"party","revision":7,"member":snapshot["active"]["members"][0]});
+        assert!(confirmation_matches(&snapshot, &proof));
+        let mut c = Cache::default();
+        assert!(c.observe(&snapshot, Duration::ZERO));
+        c.confirmation = Some(proof);
+        c.invalidate();
+        assert!(c.snapshot.is_none() && c.confirmation.is_none());
+        c.invalidate();
+        assert!(c.observe(&snapshot, Duration::ZERO));
+        assert!(
+            c.confirmation.is_none(),
+            "fresh reads do not resurrect a revoked proof"
+        );
+    }
+
+    #[test]
+    fn stale_party_reply_cannot_replace_new_revision_or_renew_its_freshness() {
+        let mut c = Cache::default();
+        let newest =
+            json!({"me":"me","active":{"id":"party","revision":10,"members":[{"id":"me"}]}});
+        assert!(c.observe(&newest, Duration::from_millis(100)));
+        let at = c.snapshot.as_ref().unwrap().1;
+        let proof = json!({"partyId":"party","revision":10,"member":{"id":"me"}});
+        c.confirmation = Some(proof.clone());
+        let mut old = newest.clone();
+        old["active"]["revision"] = json!(9);
+        assert!(!c.observe(&old, Duration::ZERO));
+        assert_eq!(c.snapshot.as_ref().unwrap().0, newest);
+        assert_eq!(c.snapshot.as_ref().unwrap().1, at);
+        assert_eq!(c.confirmation, Some(proof));
+        let mut changed = newest.clone();
+        changed["active"]["revision"] = json!(11);
+        changed["active"]["members"][0]["role"] = json!("middle");
+        assert!(c.observe(&changed, Duration::ZERO));
+        assert!(c.confirmation.is_none());
+        let mut another = newest;
+        another["active"]["id"] = json!("other");
+        another["active"]["revision"] = json!(1);
+        assert!(
+            c.observe(&another, Duration::ZERO),
+            "new party has an independent revision sequence"
+        );
+    }
     fn planner_member(id: &str, preferences: Value, candidates: Value) -> Value {
         json!({"id":id,"accepted":true,"online":true,"draftChoice":null,
             "draft":{"sessionKey":"123","mode":"aram","candidates":candidates,
@@ -1135,8 +1349,27 @@ mod tests {
         assert!(confirmation_matches(&s, &proof));
         s["active"]["revision"] = json!(9);
         assert!(confirmation_matches(&s, &proof));
+        let mut duplicate = s.clone();
+        duplicate["active"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(s["active"]["members"][0].clone());
+        assert!(!confirmation_matches(&duplicate, &proof));
+        for invalid in [Value::Null, json!(""), json!(7)] {
+            let mut malformed = s.clone();
+            malformed["active"]["id"] = invalid.clone();
+            let mut bad_proof = proof.clone();
+            bad_proof["partyId"] = invalid;
+            assert!(!confirmation_matches(&malformed, &bad_proof));
+        }
         for (field, value) in [
+            ("accepted", json!(false)),
+            ("online", json!(false)),
+            ("server", json!("EUW")),
+            ("gameSummonerId", json!("99")),
             ("gamePuuid", json!("b".repeat(78))),
+            ("role", json!("middle")),
+            ("secondaryRole", json!("utility")),
             ("draftChoice", Value::Null),
             (
                 "draft",

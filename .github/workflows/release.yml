@@ -2,6 +2,10 @@
 # Тестовый сервер test.gltournament.ru — локально: npm run tauri:dev:test / tauri:build:test.
 name: Release
 
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 on:
   push:
     tags:
@@ -19,6 +23,7 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-latest
+    timeout-minutes: 90
     env:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
@@ -29,10 +34,19 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate release tag and application versions
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node scripts/check-release-version.mjs
+
+      - name: Configure Windows SDK
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -58,16 +72,16 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Extract version from tag
-        id: version
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            T="${{ github.event.inputs.tag }}"
-          else
-            T="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "version=${T#v}" >> $GITHUB_OUTPUT
+      - name: JavaScript behavior tests
+        run: node --test scripts/*.test.mjs
+
+      - name: Rust behavior tests
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: node ../scripts/run-rust-test.cjs
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Native LCU integration and replay
+        run: node scripts/test-lcu-integration.mjs
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6.1
@@ -77,7 +91,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: src-tauri
-          args: --config tauri.ci-updater.json
+          args: --config tauri.ci-updater.json -- --locked
           tagName: v__VERSION__
           releaseName: 'RustLM v__VERSION__'
           releaseBody: |

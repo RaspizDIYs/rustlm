@@ -84,7 +84,12 @@ pub fn run() {
         }))
         .manage(app_state)
         .manage(services::network::NetworkJobs::default())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(|invoke| {
+            if invoke.message.webview().state::<AppState>().lifecycle.is_closing() {
+                invoke.resolver.reject("Application is shutting down");
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             commands::network::network_inspect,
             commands::network::network_run,
             commands::network::network_select_profile,
@@ -108,6 +113,9 @@ pub fn run() {
             commands::network::network_hosts_preview,
             commands::network::network_hosts_apply,
             commands::network::network_hosts_restore,
+            commands::session_recording::session_recording_start,
+            commands::session_recording::session_recording_stop,
+            commands::session_recording::session_recording_status,
             commands::greet,
             commands::settings::load_setting,
             commands::settings::save_setting,
@@ -168,6 +176,7 @@ pub fn run() {
             commands::auto_accept::set_automation_settings,
             commands::auto_accept::get_automation_settings,
             commands::login::login_to_account,
+            commands::login::launch_riot_account,
             commands::login::login_to_shared_account,
             commands::login::cancel_login,
             commands::customization::set_profile_status,
@@ -264,7 +273,9 @@ pub fn run() {
             commands::webview::repair_webview_cache,
             commands::webview::webview_ready,
             commands::refresh_tray,
-        ])
+            ];
+            handler(invoke)
+        })
         .setup(move |app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
@@ -402,6 +413,28 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let state = app.state::<AppState>();
+                if state.begin_shutdown() {
+                    // Restart cannot be prevented; finish bounded cleanup before returning its event.
+                    let result = tauri::async_runtime::block_on(async {
+                        tokio::time::timeout(
+                            services::lifecycle::SHUTDOWN_TIMEOUT,
+                            state.shutdown(),
+                        ).await
+                    });
+                    match result {
+                        Ok((listeners, recorder)) => log::info!(
+                            "[Shutdown] listeners_stopped={listeners}, recorder_synced={recorder}; guest journal retained"
+                        ),
+                        Err(_) => log::warn!(
+                            "[Shutdown] Three-second deadline reached; cleanup unconfirmed, guest journal retained"
+                        ),
+                    }
+                }
+            }
+        });
 }

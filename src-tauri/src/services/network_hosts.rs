@@ -203,6 +203,12 @@ pub fn apply(report: &Report, supplied: HostsPlan, backups: &Path) -> Result<Str
 }
 pub fn restore(id: &str, backups: &Path) -> Result<(), String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    restore_at(id, backups, &hosts_path()?)?;
+    flush_dns();
+    Ok(())
+}
+
+fn restore_at(id: &str, backups: &Path, target: &Path) -> Result<(), String> {
     if id.len() != 18 || !id.bytes().all(|c| c.is_ascii_digit() || c == b'T') {
         return Err("Некорректный ID".into());
     }
@@ -210,17 +216,17 @@ pub fn restore(id: &str, backups: &Path) -> Result<(), String> {
         &fs::read(backups.join(format!("{id}.json"))).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let target = hosts_path()?;
-    let current = fs::read(&target).map_err(|e| e.to_string())?;
+    let current = fs::read(target).map_err(|e| e.to_string())?;
+    if current == backup.before {
+        return Ok(());
+    }
     if hash(&current) != backup.after_hash {
         return Err(
             "hosts изменён после настройки. Автооткат остановлен для сохранения ваших изменений."
                 .into(),
         );
     }
-    write_hosts(&target, &backup.after_hash, &backup.before)?;
-    flush_dns();
-    Ok(())
+    write_hosts(target, &backup.after_hash, &backup.before)
 }
 fn flush_dns() {
     #[cfg(windows)]
@@ -236,6 +242,35 @@ fn flush_dns() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restore_is_repeatable_and_preserves_conflicting_hosts() {
+        let dir = std::env::temp_dir().join(format!("rustlm-hosts-{}", rand::random::<u64>()));
+        fs::create_dir(&dir).unwrap();
+        let target = dir.join("hosts");
+        let before = b"127.0.0.1 localhost\r\n";
+        let after = b"127.0.0.1 localhost\r\n104.18.156.37 clientconfig.rpg.riotgames.com\r\n";
+        let id = "20261106T120000000";
+        fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::to_vec(&HostsBackup {
+                before: before.to_vec(),
+                after_hash: hash(after),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(&target, after).unwrap();
+        restore_at(id, &dir, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), before);
+        restore_at(id, &dir, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), before);
+        fs::write(&target, b"user changes").unwrap();
+        assert!(restore_at(id, &dir, &target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"user changes");
+        assert!(restore_at("../invalid", &dir, &target).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn report() -> Report {
         serde_json::from_value(serde_json::json!({"id":"test","created_at":"now","context":{"connection":"direct","provider":"home","region":"EUW","strategy":null,"strategy_hash":null},"dns":[],"probes":[{"domain":"clientconfig.rpg.riotgames.com","ip":"104.18.156.37","port":443,"tcp":true,"tls":true,"http":200,"classification":"http_success","server":null,"ray":null,"title":null,"error":null,"elapsed_ms":1,"request_path":"/"}],"cancelled":false,"path":"test.json","discovery_limited":false})).unwrap()
     }

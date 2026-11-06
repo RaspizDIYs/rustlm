@@ -125,7 +125,7 @@ export function DraftCoordination({ mode, role }: { mode: string; role: string }
     return () => { disposed = true; clearTimeout(timer); };
   }, [mode, role, enabled]);
   const rows = enabled !== false && state ? coordinationRows(state.local, state.snapshot) : [];
-  return <section aria-label="Согласование чемпионов" className="space-y-2 rounded-lg border bg-card p-3 text-sm">
+  return <section data-tour="coordination" aria-label="Согласование чемпионов" className="space-y-2 rounded-lg border bg-card p-3 text-sm">
     <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-1.5"><span className="font-medium">Согласование с друзьями</span>
       <Dialog>
         <WithTooltip label="Как решаются спорные пики"><DialogTrigger render={<Button size="icon-sm" variant="ghost" aria-label="Как работает согласование" />}><Info className="size-3.5" /></DialogTrigger></WithTooltip>

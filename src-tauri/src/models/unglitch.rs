@@ -12,10 +12,9 @@ pub enum UnglitchAction {
 impl UnglitchAction {
     pub fn endpoint(self) -> Option<&'static str> {
         match self {
-            Self::Reload => Some("/riotclient/kill-and-restart-ux"),
+            Self::Reload | Self::ForceReload => Some("/riotclient/kill-and-restart-ux"),
             Self::Hide => Some("/riotclient/kill-ux"),
             Self::Restore => Some("/riotclient/launch-ux"),
-            Self::ForceReload => None,
         }
     }
     pub fn needs_confirmation(self, phase: Option<&str>) -> bool {
@@ -349,7 +348,7 @@ mod tests {
             UnglitchAction::Restore.endpoint(),
             Some("/riotclient/launch-ux")
         );
-        assert_eq!(UnglitchAction::ForceReload.endpoint(), None);
+        assert_eq!(UnglitchAction::ForceReload.endpoint(), UnglitchAction::Reload.endpoint());
         assert!(serde_json::from_str::<UnglitchAction>("\"kill_league\"").is_err());
     }
     #[test]

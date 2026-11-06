@@ -56,8 +56,13 @@ pub fn unglitch_watch_enabled(
 }
 
 #[tauri::command]
-pub async fn unglitch_diagnostics(state: State<'_, AppState>, capture: bool) -> Result<crate::services::client_diagnostics::Report, String> {
-    if capture { state.riot_client.diagnostics.probe().await; }
+pub async fn unglitch_diagnostics(
+    state: State<'_, AppState>,
+    capture: bool,
+) -> Result<crate::services::client_diagnostics::Report, String> {
+    if capture {
+        state.riot_client.diagnostics.probe().await;
+    }
     Ok(state.riot_client.diagnostics.snapshot())
 }
 
@@ -66,10 +71,9 @@ pub async fn unglitch_export_diagnostics(state: State<'_, AppState>) -> Result<S
     let report = state.riot_client.diagnostics.snapshot();
     tokio::task::spawn_blocking(move || {
         let folder = crate::services::repair_paths::root()?.join("logs");
-        std::fs::create_dir_all(&folder).map_err(|_| "Не удалось открыть папку журналов.")?;
-        let path = folder.join(format!("client-diagnostics-{}.json", chrono::Utc::now().format("%Y%m%dT%H%M%S%3f")));
-        let data = serde_json::to_vec_pretty(&report).map_err(|_| "Не удалось подготовить отчёт.")?;
-        std::fs::write(&path, data).map_err(|_| "Не удалось сохранить отчёт.")?;
+        let path = report.export(&folder)?;
         Ok::<_, String>(path.to_string_lossy().into_owned())
-    }).await.map_err(|_| "Не удалось сохранить отчёт.")?
+    })
+    .await
+    .map_err(|_| "Не удалось сохранить отчёт.")?
 }

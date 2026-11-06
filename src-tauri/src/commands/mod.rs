@@ -32,3 +32,5 @@ pub mod league_sharing;
 
 pub mod party;
 pub mod draft_coordination;
+
+pub mod session_recording;

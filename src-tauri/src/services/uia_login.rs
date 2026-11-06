@@ -18,48 +18,95 @@ pub fn inspect_client_ui(pid: u32) -> super::client_diagnostics::UiSample {
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
             struct Com;
-            impl Drop for Com { fn drop(&mut self) { unsafe { CoUninitialize(); } } }
+            impl Drop for Com {
+                fn drop(&mut self) {
+                    unsafe {
+                        CoUninitialize();
+                    }
+                }
+            }
             let _com = Com;
-            let automation: IUIAutomation2 = CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
+            let automation: IUIAutomation2 =
+                CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
             automation.SetConnectionTimeout(200)?;
             automation.SetTransactionTimeout(150)?;
             let root = automation.ElementFromHandle(hwnd)?;
-            if root.CurrentProcessId()? != pid as i32 { return Err(Error::from_win32()); }
-            let mut sample = UiSample::empty("available"); sample.pid = Some(pid);
-            if root.CurrentIsOffscreen()?.as_bool() { sample.state = "hidden"; return Ok(sample); }
+            if root.CurrentProcessId()? != pid as i32 {
+                return Err(Error::from_win32());
+            }
+            let mut sample = UiSample::empty("available");
+            sample.pid = Some(pid);
+            if root.CurrentIsOffscreen()?.as_bool() {
+                sample.state = "hidden";
+                return Ok(sample);
+            }
             let walker = automation.ControlViewWalker()?;
             let deadline = std::time::Instant::now() + Duration::from_millis(750);
             let mut queue = std::collections::VecDeque::from([(root, 0usize)]);
             let mut discovered = 1;
             while let Some((element, depth)) = queue.pop_front() {
-                if sample.elements >= 120 || std::time::Instant::now() >= deadline { sample.partial = true; break; }
-                if element.CurrentProcessId().ok() != Some(pid as i32) { continue; }
+                if sample.elements >= 120 || std::time::Instant::now() >= deadline {
+                    sample.partial = true;
+                    break;
+                }
+                if element.CurrentProcessId().ok() != Some(pid as i32) {
+                    continue;
+                }
                 sample.elements += 1;
-                let visible = element.CurrentIsOffscreen().map(|v| !v.as_bool()).unwrap_or(false);
+                let visible = element
+                    .CurrentIsOffscreen()
+                    .map(|v| !v.as_bool())
+                    .unwrap_or(false);
                 if visible {
                     if let Ok(control) = element.CurrentControlType() {
-                        if control == UIA_ProgressBarControlTypeId { sample.progress += 1; }
-                        if control == UIA_ButtonControlTypeId && element.CurrentIsEnabled().map(|v| !v.as_bool()).unwrap_or(false) {
+                        if control == UIA_ProgressBarControlTypeId {
+                            sample.progress += 1;
+                        }
+                        if control == UIA_ButtonControlTypeId
+                            && element
+                                .CurrentIsEnabled()
+                                .map(|v| !v.as_bool())
+                                .unwrap_or(false)
+                        {
                             sample.disabled_buttons += 1;
                         }
                         if control == UIA_TabItemControlTypeId {
-                            if let Ok(selected) = element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId) {
-                                if selected.CurrentIsSelected().map(|v| v.as_bool()).unwrap_or(false) {
-                                    if let Ok(name) = element.CurrentName() { sample.screen = selected_screen(&name.to_string()); }
+                            if let Ok(selected) = element
+                                .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                                    UIA_SelectionItemPatternId,
+                                )
+                            {
+                                if selected
+                                    .CurrentIsSelected()
+                                    .map(|v| v.as_bool())
+                                    .unwrap_or(false)
+                                {
+                                    if let Ok(name) = element.CurrentName() {
+                                        sample.screen = selected_screen(&name.to_string());
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                if depth >= 8 { sample.partial = true; continue; }
+                if depth >= 8 {
+                    sample.partial = true;
+                    continue;
+                }
                 let mut child = walker.GetFirstChildElement(&element).ok();
                 while let Some(element) = child {
-                    if discovered >= 120 || std::time::Instant::now() >= deadline { sample.partial = true; break; }
+                    if discovered >= 120 || std::time::Instant::now() >= deadline {
+                        sample.partial = true;
+                        break;
+                    }
                     child = walker.GetNextSiblingElement(&element).ok();
-                    queue.push_back((element, depth + 1)); discovered += 1;
+                    queue.push_back((element, depth + 1));
+                    discovered += 1;
                 }
             }
-            if sample.elements <= 1 { sample.state = "limited"; }
+            if sample.elements <= 1 {
+                sample.state = "limited";
+            }
             Ok(sample)
         }
     }
@@ -90,6 +137,20 @@ pub fn login_to_riot_client(
 
 fn is_cancelled(cancel: Option<&Arc<AtomicBool>>) -> bool {
     cancel.map_or(false, |c| c.load(Ordering::Relaxed))
+}
+
+fn login_step(
+    cancel: Option<&Arc<AtomicBool>>,
+    username_verified: bool,
+    action: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if is_cancelled(cancel) {
+        return Err(Error::new(E_ABORT, "Login cancelled"));
+    }
+    if !username_verified {
+        return Err(Error::new(E_FAIL, "Login username was not verified"));
+    }
+    action()
 }
 
 unsafe fn do_login(
@@ -139,7 +200,7 @@ unsafe fn do_login(
         // RC sometimes shows a landing page with a "Sign in" button before the actual form
         if !clicked_sign_in_landing && scan_cycles >= 5 {
             if let Some(btn) = find_landing_sign_in_button(&automation, &root) {
-                invoke_button(&btn);
+                invoke_button(&btn, cancel)?;
                 clicked_sign_in_landing = true;
                 std::thread::sleep(Duration::from_millis(300));
                 if let Ok(new_root) = automation.ElementFromHandle(hwnd) {
@@ -158,26 +219,30 @@ unsafe fn do_login(
 
     // Step 2: Fill username (retry until value sticks)
     activate_window(hwnd);
+    let mut username_verified = false;
     for _ in 0..10 {
         if is_cancelled(cancel) {
             return Err(Error::new(E_ABORT, "Login cancelled"));
         }
         if std::time::Instant::now() > deadline {
-            break; // proceed anyway
+            break;
         }
 
         let _ = set_element_value(&username_el, username);
         std::thread::sleep(Duration::from_millis(50));
 
         if check_value(&username_el, username) {
+            username_verified = true;
             break;
         }
 
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    // Step 3: Fill password (once — username was confirmed or we proceed anyway)
-    let _ = set_element_value(&password_el, password);
+    // Step 3: Never enter a password into an unverified or cancelled login.
+    login_step(cancel, username_verified, || {
+        set_element_value(&password_el, password)
+    })?;
     std::thread::sleep(Duration::from_millis(20));
 
     // Step 4: Remember me
@@ -186,13 +251,16 @@ unsafe fn do_login(
     // Step 5: Submit
     std::thread::sleep(Duration::from_millis(30));
     if let Some(btn) = find_sign_in_button(&automation, &root) {
-        invoke_button(&btn);
+        login_step(cancel, username_verified, || invoke_button(&btn, cancel))?;
     } else {
         let fg = GetForegroundWindow();
         if fg == hwnd {
             focus_element(&password_el);
             std::thread::sleep(Duration::from_millis(30));
-            send_virtual_key(VK_RETURN);
+            login_step(cancel, username_verified, || {
+                send_virtual_key(VK_RETURN);
+                Ok(())
+            })?;
         }
     }
 
@@ -508,12 +576,15 @@ unsafe fn try_check_remember_me(
     Ok(())
 }
 
-unsafe fn invoke_button(element: &IUIAutomationElement) {
+unsafe fn invoke_button(
+    element: &IUIAutomationElement,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    login_step(cancel, true, || Ok(()))?;
     let pattern_obj = element.GetCurrentPattern(UIA_InvokePatternId);
     if let Ok(pattern_obj) = pattern_obj {
         if let Ok(invoke_pattern) = pattern_obj.cast::<IUIAutomationInvokePattern>() {
-            let _ = invoke_pattern.Invoke();
-            return;
+            return login_step(cancel, true, || invoke_pattern.Invoke());
         }
     }
 
@@ -521,7 +592,10 @@ unsafe fn invoke_button(element: &IUIAutomationElement) {
     if let Ok(rect) = element.CurrentBoundingRectangle() {
         let x = rect.left + (rect.right - rect.left) / 2;
         let y = rect.top + (rect.bottom - rect.top) / 2;
-        let _ = SetCursorPos(x as i32, y as i32);
+        login_step(cancel, true, || {
+            let _ = SetCursorPos(x as i32, y as i32);
+            Ok(())
+        })?;
         std::thread::sleep(Duration::from_millis(30));
 
         let mut inputs = [
@@ -544,8 +618,12 @@ unsafe fn invoke_button(element: &IUIAutomationElement) {
                 },
             },
         ];
-        SendInput(&mut inputs, std::mem::size_of::<INPUT>() as i32);
+        login_step(cancel, true, || {
+            SendInput(&mut inputs, std::mem::size_of::<INPUT>() as i32);
+            Ok(())
+        })?;
     }
+    Ok(())
 }
 
 unsafe fn focus_element(element: &IUIAutomationElement) {
@@ -650,14 +728,20 @@ unsafe fn send_char(ch: char) {
 }
 
 /// Invoke only a named, enabled button inside the League client process; never move the mouse.
-pub fn accept_league_match() -> Result<()> {
+pub fn accept_league_match(is_current: impl Fn() -> bool) -> Result<()> {
+    if !is_current() {
+        return Err(Error::new(E_FAIL, "Принятие отменено"));
+    }
     unsafe {
         CoInitializeEx(Some(std::ptr::null()), COINIT_APARTMENTTHREADED).ok()?;
     }
     let result = unsafe {
         (|| {
-            let automation: IUIAutomation =
+            let automation: IUIAutomation2 =
                 CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)?;
+            automation.SetConnectionTimeout(500)?;
+            automation.SetTransactionTimeout(500)?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
             let hwnd = find_process_main_window("LeagueClientUx").ok_or_else(|| {
                 Error::new(
                     E_FAIL,
@@ -671,12 +755,21 @@ pub fn accept_league_match() -> Result<()> {
             )?;
             let buttons = root.FindAll(TreeScope_Descendants, &condition)?;
             for i in 0..buttons.Length()? {
+                if !is_current() || std::time::Instant::now() >= deadline {
+                    return Err(Error::new(
+                        E_FAIL,
+                        "Принятие отменено или клиент не отвечает",
+                    ));
+                }
                 let button = buttons.GetElement(i)?;
                 let name = button.CurrentName()?.to_string();
                 if is_accept_button(&name) && button.CurrentIsEnabled()?.as_bool() {
                     let invoke: IUIAutomationInvokePattern =
                         button.GetCurrentPattern(UIA_InvokePatternId)?.cast()?;
-                    return invoke.Invoke();
+                    return invoke_accept_if_current(
+                        || is_current() && std::time::Instant::now() < deadline,
+                        || invoke.Invoke(),
+                    );
                 }
             }
             Err(Error::new(
@@ -690,6 +783,15 @@ pub fn accept_league_match() -> Result<()> {
     }
     result
 }
+fn invoke_accept_if_current(
+    is_current: impl Fn() -> bool,
+    invoke: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if !is_current() {
+        return Err(Error::new(E_FAIL, "Принятие отменено"));
+    }
+    invoke()
+}
 fn is_accept_button(name: &str) -> bool {
     matches!(
         name.trim().to_lowercase().as_str(),
@@ -698,6 +800,73 @@ fn is_accept_button(name: &str) -> bool {
 }
 #[cfg(test)]
 mod accept_tests {
+    #[test]
+    fn login_never_writes_password_or_submits_an_unverified_username() {
+        let actions = std::cell::Cell::new(0);
+        assert!(super::login_step(None, false, || {
+            actions.set(actions.get() + 1);
+            Ok(())
+        })
+        .is_err());
+        assert_eq!(actions.get(), 0);
+    }
+
+    #[test]
+    fn login_cancellation_blocks_password_and_both_submit_paths() {
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let actions = std::cell::Cell::new(0);
+        // A successful password write does not authorize a later submission.
+        super::login_step(Some(&cancelled), true, || {
+            actions.set(actions.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        for _ in ["password", "invoke", "enter"] {
+            let error = super::login_step(Some(&cancelled), true, || {
+                actions.set(actions.get() + 1);
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(error.code(), windows::Win32::Foundation::E_ABORT);
+        }
+        assert_eq!(actions.get(), 1);
+    }
+
+    #[test]
+    fn login_password_write_failure_remains_a_failure() {
+        assert!(super::login_step(None, true, || {
+            Err(windows::core::Error::new(
+                windows::Win32::Foundation::E_FAIL,
+                "write failed",
+            ))
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn cancelled_accept_does_not_touch_com_or_invoke_button() {
+        assert!(super::accept_league_match(|| false).is_err());
+        let invoked = std::cell::Cell::new(false);
+        assert!(super::invoke_accept_if_current(
+            || false,
+            || {
+                invoked.set(true);
+                Ok(())
+            }
+        )
+        .is_err());
+        assert!(!invoked.get());
+        assert!(super::invoke_accept_if_current(
+            || true,
+            || {
+                invoked.set(true);
+                Ok(())
+            }
+        )
+        .is_ok());
+        assert!(invoked.get());
+    }
     #[test]
     fn only_exact_accept_buttons_are_invoked() {
         assert!(super::is_accept_button("ПРИНЯТЬ"));

@@ -26,3 +26,8 @@ test("ARAM counts preserve hidden priorities and jungle spells retain the select
  assert.deepEqual(jungleSpells({Spell1Id:4,Spell2Id:14}),{Spell1Id:11,Spell2Id:14});
  assert.deepEqual(jungleSpells({Spell1Id:4,Spell2Id:11}),{Spell1Id:4,Spell2Id:11});
 });
+
+test("server chips and invitation eligibility normalize the same platform aliases",async()=>{
+ const {serverCode}=await load("../src/lib/lol-servers.ts");
+ for(const [raw,canonical] of [["euw1","EUW"],[" RU ","RU"],["NA1","NA"],["LA2","LAS"],["OC1","OCE"],["EUN1","EUNE"],["",""],["PBE","PBE"]]) assert.equal(serverCode(raw),canonical);
+});

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
+  CircleHelp,
   Users,
   UserRoundPlus,
   Zap,
@@ -39,6 +40,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { TotpVerifyDialog } from "@/components/totp-verify-dialog";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { WithTooltip } from "@/components/ui/with-tooltip";
@@ -49,11 +51,9 @@ import { needsCloudTotpVerification } from "@/lib/cloud-totp";
 
 const navItems = [
   { href: "/accounts", label: "Аккаунты", icon: Users },
-  { href: "/party", label: "Пати", icon: UserRoundPlus },
   { href: "/automation", label: "Автоматизация", icon: Zap },
   { href: "/configs", label: "Конфиги", icon: SlidersHorizontal },
-  { href: "/repair-tools", label: "Repair Tools", icon: Network },
-  { href: "/unglitch", label: "Unglitch", icon: WandSparkles },
+  { href: "/repairs", label: "Инструменты", icon: WandSparkles },
   { href: "/spy", label: "Разведка", icon: Search },
   { href: "/info", label: "Информация", icon: Info },
   { href: "/settings", label: "Настройки", icon: Settings },
@@ -218,6 +218,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              data-tour={item.href.slice(1)}
               aria-label={item.label}
               aria-current={isActive?"page":undefined}
               className={cn(
@@ -254,7 +255,7 @@ export function Sidebar() {
         {glUser ? (
           <div className={cn("flex items-center gap-2", collapsed && "justify-center")}>
             <div className="relative shrink-0">
-              <Avatar className="size-7"><AvatarImage src={goodluckAvatarSrc(glUser)||undefined} alt={glUser.display_name}/><AvatarFallback className="text-xs">{Array.from(glUser.display_name.trim()).slice(0,2).join('').toUpperCase()||'?'}</AvatarFallback></Avatar>
+              <Avatar className="size-9"><AvatarImage src={goodluckAvatarSrc(glUser)||undefined} alt={glUser.display_name}/><AvatarFallback className="text-xs">{Array.from(glUser.display_name.trim()).slice(0,2).join('').toUpperCase()||'?'}</AvatarFallback></Avatar>
               <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-green-500 border-2 border-sidebar" />
             </div>
             {!collapsed && (
@@ -360,7 +361,7 @@ export function Sidebar() {
         )}
       </div>
 
-      <div className="shrink-0 border-t border-border p-3">
+      <div className={cn("lm-sidebar-footer flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border px-3 py-2", collapsed && "flex-col justify-center gap-1 px-1.5")}>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -381,6 +382,7 @@ export function Sidebar() {
           />
           <TooltipContent side="right">История изменений · {appVersion}</TooltipContent>
         </Tooltip>
+        <WithTooltip label="Обзор возможностей"><Button size="icon-xs" variant="ghost" aria-label="Обзор возможностей" onClick={() => window.dispatchEvent(new Event("rustlm-start-tour"))}><CircleHelp/></Button></WithTooltip>
       </div>
 
       <Dialog open={versionHistoryOpen} onOpenChange={setVersionHistoryOpen}>

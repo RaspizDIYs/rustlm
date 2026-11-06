@@ -3,12 +3,45 @@ use crate::models::unglitch::{UnglitchAction, UnglitchResult, UnglitchStatus};
 use crate::models::unglitch::{WatchPolicy, WatchStatus};
 use std::sync::Arc;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Mutex,
 };
 use std::time::Duration;
 
-pub(crate) static ACTION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) use super::client_action as action_lock;
+
+#[derive(Clone, Copy)]
+struct Automatic<'a> {
+    pid: u32,
+    monitor: &'a UnglitchMonitor,
+    revision: u64,
+}
+impl Automatic<'_> {
+    fn current(self) -> bool {
+        self.monitor.enabled.load(Ordering::SeqCst)
+            && self.monitor.revision.load(Ordering::SeqCst) == self.revision
+    }
+    fn allows(self, sample: &UnglitchStatus) -> bool {
+        self.current()
+            && sample.backend_pid == Some(self.pid)
+            && crate::models::unglitch::automatic_reload_allowed(sample)
+            && (sample.window_responsive == Some(false)
+                || (sample.renderer_count == 0 && sample.window_responsive.is_some()))
+    }
+}
+
+fn manual_dispatch_allowed(
+    before: &UnglitchStatus,
+    fresh: &UnglitchStatus,
+    action: UnglitchAction,
+    confirmed: bool,
+) -> bool {
+    fresh.backend_running
+        && before.backend_pid.is_some()
+        && before.backend_pid == fresh.backend_pid
+        && (!action.needs_confirmation(fresh.phase.as_deref()) || confirmed)
+        && (action != UnglitchAction::Hide || fresh.api_available)
+}
 
 pub async fn status(client: &RiotClientService) -> Result<UnglitchStatus, String> {
     #[cfg(debug_assertions)]
@@ -31,7 +64,6 @@ pub async fn status(client: &RiotClientService) -> Result<UnglitchStatus, String
     let mut api_available = false;
     let mut response_ms = None;
     if probe.backend_running {
-        client.invalidate_cache();
         let started = std::time::Instant::now();
         if let Ok(Ok(text)) = tokio::time::timeout(
             Duration::from_secs(2),
@@ -63,7 +95,7 @@ pub async fn status(client: &RiotClientService) -> Result<UnglitchStatus, String
         ui_running: probe.ui_running,
         api_available,
         phase,
-        force_supported: cfg!(windows) && !simulated,
+        force_supported: false,
         window_responsive: probe.window_responsive,
         renderer_count: probe.renderer_count,
         response_ms,
@@ -85,23 +117,29 @@ pub async fn execute(
 pub async fn execute_automatic(
     client: Arc<RiotClientService>,
     pid: u32,
-    enabled: &std::sync::atomic::AtomicBool,
+    monitor: &UnglitchMonitor,
+    revision: u64,
 ) -> Result<UnglitchResult, String> {
-    run_action(client, UnglitchAction::Reload, false, Some((pid, enabled))).await
+    let automatic = Automatic {
+        pid,
+        monitor,
+        revision,
+    };
+    run_action(client, UnglitchAction::Reload, false, Some(automatic)).await
 }
 
 async fn run_action(
     client: Arc<RiotClientService>,
     action: UnglitchAction,
     confirmed: bool,
-    automatic: Option<(u32, &std::sync::atomic::AtomicBool)>,
+    automatic: Option<Automatic<'_>>,
 ) -> Result<UnglitchResult, String> {
-    let _guard = ACTION
+    let _guard = action_lock()
         .try_lock()
-        .map_err(|_| "Другая операция Unglitch ещё выполняется.")?;
+        .map_err(|_| "Другая операция входа или Unglitch ещё выполняется.")?;
     tokio::time::timeout(
         Duration::from_secs(25),
-        execute_inner(client, action, confirmed, automatic),
+        execute_inner(client, action, confirmed, automatic, _guard),
     )
     .await
     .map_err(|_| {
@@ -114,25 +152,18 @@ async fn execute_inner(
     client: Arc<RiotClientService>,
     action: UnglitchAction,
     confirmed: bool,
-    automatic: Option<(u32, &std::sync::atomic::AtomicBool)>,
+    automatic: Option<Automatic<'_>>,
+    guard: tokio::sync::MutexGuard<'static, ()>,
 ) -> Result<UnglitchResult, String> {
+    let _guard = guard;
     let before = status(&client).await?;
     if !before.backend_running {
         return Err("Клиент League не запущен. Откройте League через Riot Client.".into());
     }
-    if let Some((pid, enabled)) = automatic {
-        if !enabled.load(std::sync::atomic::Ordering::SeqCst)
-            || before.backend_pid != Some(pid)
-            || !crate::models::unglitch::automatic_reload_allowed(&before)
-            || !(before.window_responsive == Some(false)
-                || (before.renderer_count == 0 && before.window_responsive.is_some()))
-        {
+    if let Some(automatic) = automatic {
+        if !automatic.allows(&before) {
             return Err("Автовосстановление отменено: состояние клиента изменилось.".into());
         }
-    }
-    #[cfg(debug_assertions)]
-    if action == UnglitchAction::ForceReload && std::env::var_os("RUSTLM_TEST_LCU").is_some() {
-        return Err("Перезапуск реальных процессов отключён в тестовом LCU.".into());
     }
     if action.needs_confirmation(before.phase.as_deref()) && !confirmed {
         return Err("CONFIRM_REQUIRED".into());
@@ -140,29 +171,20 @@ async fn execute_inner(
     if action == UnglitchAction::Hide && !before.api_available {
         return Err("Нет связи с клиентом League. Не удалось проверить возможность восстановления интерфейса.".into());
     }
-    let forced = if action == UnglitchAction::ForceReload {
-        Some(
-            tokio::task::spawn_blocking(RiotClientService::restart_ux_renderers)
-                .await
-                .map_err(|_| "Не удалось проверить рендер клиента.")??,
-        )
-    } else {
-        client
-            .lcu_post(action.endpoint().ok_or("Неизвестное действие.")?, "")
-            .await
-            .map_err(|error| {
-                let text = error.to_string();
-                if text.contains("returned 404") {
-                    "Эта функция недоступна в текущей версии клиента League.".to_string()
-                } else if text.contains("returned 401") || text.contains("returned 403") {
-                    "Клиент отклонил запрос. Обновите состояние и повторите попытку.".to_string()
-                } else {
-                    "Не удалось подтвердить выполнение команды. Обновите состояние перед повтором."
-                        .to_string()
-                }
-            })?;
-        None
-    };
+    // ForceReload is retained as a wire-compatible alias; never kill CEF subprocesses.
+    client
+        .lcu_post_checked(action.endpoint().ok_or("Неизвестное действие.")?, "", || async {
+            let Ok(fresh) = status(&client).await else { return false; };
+            if let Some(automatic) = automatic { return automatic.allows(&fresh); }
+            manual_dispatch_allowed(&before, &fresh, action, confirmed)
+        })
+        .await
+        .map_err(|error| {
+            let text = error.to_string();
+            if text.contains("returned 404") { "Эта функция недоступна в текущей версии клиента League.".to_string() }
+            else if text.contains("returned 401") || text.contains("returned 403") { "Клиент отклонил запрос. Обновите состояние и повторите попытку.".to_string() }
+            else { "Не удалось подтвердить выполнение команды. Обновите состояние перед повтором.".to_string() }
+        })?;
     let mut healthy_checks = 0;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -172,21 +194,7 @@ async fn execute_inner(
         }
         let ready = match action {
             UnglitchAction::Hide => !after.ui_running,
-            UnglitchAction::ForceReload => {
-                let (stopped, root) = forced.as_ref().ok_or("Не удалось проверить рендер.")?;
-                let root = root.clone();
-                let current = tokio::task::spawn_blocking(move || {
-                    let (_, _, renderers) = RiotClientService::unglitch_process_state();
-                    renderers
-                        .into_iter()
-                        .filter(|pid| RiotClientService::unglitch_renderer_matches(*pid, &root))
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .map_err(|_| "Не удалось проверить рендер.")?;
-                after.ui_running && current.iter().any(|pid| !stopped.contains(pid))
-            }
-            UnglitchAction::Reload => {
+            UnglitchAction::Reload | UnglitchAction::ForceReload => {
                 after.ui_running && after.ui_pid.is_some() && after.ui_pid != before.ui_pid
             }
             UnglitchAction::Restore => after.ui_running,
@@ -203,10 +211,7 @@ async fn execute_inner(
             let message = match action {
                 UnglitchAction::Hide => "Интерфейс закрыт; клиент League продолжает работать.",
                 UnglitchAction::Restore => "Интерфейс League открыт.",
-                UnglitchAction::Reload => "Интерфейс перезагружен; окно и связь с League отвечают.",
-                UnglitchAction::ForceReload => {
-                    "Новый рендер запущен; окно и связь с League отвечают."
-                }
+                UnglitchAction::Reload | UnglitchAction::ForceReload => "Интерфейс перезагружен; окно и связь с League отвечают.",
             };
             return Ok(UnglitchResult {
                 message: message.into(),
@@ -219,6 +224,7 @@ async fn execute_inner(
 
 pub struct UnglitchMonitor {
     enabled: AtomicBool,
+    revision: AtomicU64,
     started: std::time::Instant,
     policy: Mutex<WatchPolicy>,
     state: Mutex<WatchStatus>,
@@ -228,6 +234,7 @@ impl UnglitchMonitor {
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled: AtomicBool::new(enabled),
+            revision: AtomicU64::new(0),
             started: std::time::Instant::now(),
             policy: Mutex::new(WatchPolicy::default()),
             state: Mutex::new(WatchStatus {
@@ -251,6 +258,7 @@ impl UnglitchMonitor {
     }
 
     pub fn pause_for_manual_action(&self) {
+        self.revision.fetch_add(1, Ordering::SeqCst);
         self.policy
             .lock()
             .unwrap()
@@ -258,12 +266,17 @@ impl UnglitchMonitor {
     }
 
     async fn tick(&self, client: Arc<RiotClientService>, now: u64) -> Option<String> {
-        if !self.enabled.load(Ordering::SeqCst) {
+        let revision = self.revision.load(Ordering::SeqCst);
+        if !self.enabled.load(Ordering::SeqCst) || self.revision.load(Ordering::SeqCst) != revision
+        {
             return None;
         }
         let sample = match status(&client).await {
             Ok(sample) => sample,
             Err(_) => {
+                if self.revision.load(Ordering::SeqCst) != revision {
+                    return None;
+                }
                 self.policy.lock().unwrap().pause(now);
                 let mut snapshot = self.state.lock().unwrap();
                 if snapshot.enabled {
@@ -272,6 +285,10 @@ impl UnglitchMonitor {
                 return None;
             }
         };
+        if !self.enabled.load(Ordering::SeqCst) || self.revision.load(Ordering::SeqCst) != revision
+        {
+            return None;
+        }
         if !sample.api_available {
             client.invalidate_cache();
         }
@@ -290,7 +307,10 @@ impl UnglitchMonitor {
             return None;
         }
         let result =
-            execute_automatic(client, sample.backend_pid.unwrap_or(0), &self.enabled).await;
+            execute_automatic(client, sample.backend_pid.unwrap_or(0), self, revision).await;
+        if self.revision.load(Ordering::SeqCst) != revision {
+            return None;
+        }
         let recovered = result.is_ok();
         let message = match result {
             Ok(result) => result.message,
@@ -335,10 +355,96 @@ impl UnglitchMonitor {
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_renderer_alias_uses_supported_restart_and_does_not_claim_failed_recovery() {
+        let client = Arc::new(RiotClientService::new());
+        client.lcu_post("/__test/scenario", r#"{"name":"idle"}"#).await.unwrap();
+        client.lcu_post("/__test/ux-health", r#"{"window_responsive":false,"renderer_count":1,"reloadSucceeds":true}"#).await.unwrap();
+        assert!(!status(&client).await.unwrap().force_supported);
+        assert_eq!(execute(client.clone(), UnglitchAction::ForceReload, false).await.err().unwrap(), "CONFIRM_REQUIRED");
+        let before: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert!(before["actions"].as_array().unwrap().iter().all(|action| action["route"] != "/riotclient/kill-and-restart-ux"));
+        let result = execute(client.clone(), UnglitchAction::ForceReload, true).await.unwrap();
+        assert_eq!(result.status.window_responsive, Some(true));
+        let after: serde_json::Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(after["actions"].as_array().unwrap().iter().filter(|action| action["route"] == "/riotclient/kill-and-restart-ux").count(), 1);
+        client.lcu_post("/__test/ux-health", r#"{"window_responsive":false,"reloadSucceeds":false}"#).await.unwrap();
+        assert!(execute(client, UnglitchAction::ForceReload, true).await.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_manual_dispatch_requires_fresh_confirmation_and_same_backend() {
+        let client = RiotClientService::new();
+        client
+            .lcu_post("/__test/scenario", r#"{"name":"idle"}"#)
+            .await
+            .unwrap();
+        let before = status(&client).await.unwrap();
+        assert!(manual_dispatch_allowed(
+            &before,
+            &before,
+            UnglitchAction::Reload,
+            false
+        ));
+        let mut fresh = before.clone();
+        fresh.phase = Some("ChampSelect".into());
+        assert!(!manual_dispatch_allowed(
+            &before,
+            &fresh,
+            UnglitchAction::Reload,
+            false
+        ));
+        assert!(manual_dispatch_allowed(
+            &before,
+            &fresh,
+            UnglitchAction::Reload,
+            true
+        ));
+        fresh.backend_pid = Some(before.backend_pid.unwrap() + 1);
+        assert!(!manual_dispatch_allowed(
+            &before,
+            &fresh,
+            UnglitchAction::Reload,
+            true
+        ));
+        fresh.backend_pid = None;
+        assert!(!manual_dispatch_allowed(
+            &before,
+            &fresh,
+            UnglitchAction::Reload,
+            true
+        ));
+    }
+    #[test]
+    fn disable_reenable_or_manual_pause_invalidates_pending_automatic_recovery() {
+        let monitor = UnglitchMonitor::new(true);
+        let initial = Automatic {
+            pid: 100,
+            monitor: &monitor,
+            revision: 0,
+        };
+        assert!(initial.current());
+        monitor.set_enabled(false);
+        assert!(!initial.current());
+        monitor.set_enabled(true);
+        assert!(!initial.current());
+        let next = Automatic {
+            revision: monitor.revision.load(Ordering::SeqCst),
+            ..initial
+        };
+        assert!(next.current());
+        monitor.pause_for_manual_action();
+        assert!(!next.current());
+    }
 
     #[tokio::test]
     #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
     async fn simulator_watch_recovers_once_and_does_not_loop_after_failure() {
+        let initial_client = RiotClientService::new();
+        let initial: serde_json::Value = serde_json::from_str(&initial_client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let initial_reloads = initial["actions"].as_array().unwrap().iter().filter(|action| action["route"] == "/riotclient/kill-and-restart-ux").count();
         assert!(std::env::var_os("RUSTLM_TEST_LCU").is_some());
         let client = Arc::new(RiotClientService::new());
         client
@@ -384,12 +490,17 @@ mod tests {
             assert!(protected.tick(client.clone(), now).await.is_none());
         }
         assert_eq!(protected.snapshot().state, "protected");
-        let enabled = AtomicBool::new(true);
-        assert!(execute_automatic(client.clone(), 100, &enabled)
-            .await
-            .err()
-            .unwrap()
-            .contains("отменено"));
+        let enabled = UnglitchMonitor::new(true);
+        assert!(execute_automatic(
+            client.clone(),
+            100,
+            &enabled,
+            enabled.revision.load(Ordering::SeqCst)
+        )
+        .await
+        .err()
+        .unwrap()
+        .contains("отменено"));
 
         client
             .lcu_post("/__test/scenario", r#"{"name":"idle"}"#)
@@ -418,18 +529,23 @@ mod tests {
             .iter()
             .filter(|action| action["route"] == "/riotclient/kill-and-restart-ux")
             .count();
-        assert_eq!(reloads, 2);
+        assert_eq!(reloads, initial_reloads + 2);
         failing.set_enabled(false);
         assert!(failing.tick(client.clone(), 2000).await.is_none());
         assert_eq!(failing.snapshot().state, "disabled");
-        assert!(execute_automatic(client.clone(), 100, &failing.enabled)
-            .await
-            .err()
-            .unwrap()
-            .contains("отменено"));
+        assert!(execute_automatic(
+            client.clone(),
+            100,
+            &failing,
+            failing.revision.load(Ordering::SeqCst)
+        )
+        .await
+        .err()
+        .unwrap()
+        .contains("отменено"));
 
         // An existing operation must exclude both manual and automatic commands.
-        let _guard = ACTION.lock().await;
+        let _guard = action_lock().lock().await;
         assert!(execute(client, UnglitchAction::Reload, true)
             .await
             .err()

@@ -1,0 +1,56 @@
+{
+  "actions": [
+    [
+      {
+        "actorCellId": 0,
+        "championId": 236,
+        "completed": true,
+        "id": 0,
+        "isAllyAction": true,
+        "isInProgress": false,
+        "pickTurn": 0,
+        "type": "pick"
+      }
+    ]
+  ],
+  "allowRerolling": true,
+  "allowSubsetChampionPicks": true,
+  "bans": {
+    "myTeamBans": [],
+    "numBans": 0,
+    "theirTeamBans": []
+  },
+  "benchChampions": [
+    {
+      "championId": 12
+    }
+  ],
+  "benchEnabled": true,
+  "gameId": 901035001959,
+  "id": "",
+  "isCustomGame": true,
+  "isSpectating": false,
+  "localPlayerCellId": 0,
+  "myTeam": [
+    {
+      "assignedPosition": "top",
+      "cellId": 0,
+      "championId": 236,
+      "championPickIntent": 0,
+      "pickTurn": 0,
+      "spell1Id": 6,
+      "spell2Id": 7,
+      "team": 1
+    }
+  ],
+  "queueId": 3120,
+  "rerollsRemaining": 0,
+  "skipChampionSelect": false,
+  "theirTeam": [],
+  "timer": {
+    "adjustedTimeLeftInPhase": 45000,
+    "internalNowInEpochMs": 1787051282024,
+    "phase": "FINALIZATION",
+    "totalTimeInPhase": 45000
+  }
+}

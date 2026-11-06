@@ -27,10 +27,78 @@ pub fn ready_timer(data: &Value) -> Option<f64> {
         .filter(|timer| timer.is_finite() && *timer >= 0.0)
 }
 
+pub fn acceptance_confirmed(before: &Value, after: &Value, ready: &Value) -> bool {
+    let game = |flow: &Value| flow["gameData"]["gameId"].as_i64().filter(|id| *id > 0);
+    let original = game(before);
+    let current = game(after);
+    if matches!((original,current),(Some(a),Some(b)) if a!=b) {
+        return false;
+    }
+    ready["playerResponse"] == "Accepted"
+        || (before["phase"] == "ReadyCheck"
+            && original.is_some()
+            && original == current
+            && matches!(
+                after["phase"].as_str(),
+                Some("ChampSelect" | "GameStart" | "InProgress")
+            ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn acceptance_transition_requires_same_positive_game_and_does_not_confuse_next_match() {
+        let initial = json!({"phase":"ReadyCheck","gameData":{"gameId":100}});
+        for phase in ["ChampSelect", "GameStart", "InProgress"] {
+            let next = json!({"phase":phase,"gameData":{"gameId":100}});
+            assert!(acceptance_confirmed(&initial, &next, &Value::Null));
+            let other = json!({"phase":phase,"gameData":{"gameId":101}});
+            assert!(!acceptance_confirmed(
+                &initial,
+                &other,
+                &json!({"playerResponse":"Accepted"})
+            ));
+        }
+        for phase in ["Lobby", "Matchmaking", "ReadyCheck", "EndOfGame"] {
+            assert!(!acceptance_confirmed(
+                &initial,
+                &json!({"phase":phase,"gameData":{"gameId":100}}),
+                &Value::Null
+            ));
+        }
+        assert!(!acceptance_confirmed(
+            &Value::Null,
+            &json!({"phase":"ChampSelect"}),
+            &Value::Null
+        ));
+        assert!(acceptance_confirmed(
+            &Value::Null,
+            &Value::Null,
+            &json!({"playerResponse":"Accepted"})
+        ));
+    }
+
+    #[test]
+    fn upstream_champ_select_fixtures_survive_event_parsing_and_redaction() {
+        for (payload, phase) in [
+            (include_str!("../../fixtures/winer/lol-champ-select-v1-session--champ-select-planning.json"), "PLANNING"),
+            (include_str!("../../fixtures/winer/lol-champ-select-v1-session--champ-select-ban-pick.json"), "BAN_PICK"),
+            (include_str!("../../fixtures/winer/lol-champ-select-v1-session--champ-select-finalization.json"), "FINALIZATION"),
+        ] {
+            let body: Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(super::super::session_recording::sanitize(&body), body);
+            let frame = json!([8,"OnJsonApiEvent",{
+                "uri":"/lol-champ-select/v1/session","eventType":"Update","data":body
+            }]).to_string();
+            let parsed = api_event(&frame).unwrap();
+            assert_eq!(parsed.data["timer"]["phase"], phase);
+            assert!(super::super::champ_select_policy::player(&parsed.data).is_some());
+            assert!(parsed.data["actions"].is_array());
+            assert!(parsed.data.get("chatDetails").is_none());
+        }
+    }
 
     #[test]
     fn whitespace_key_order_and_unicode_do_not_change_event_routing() {

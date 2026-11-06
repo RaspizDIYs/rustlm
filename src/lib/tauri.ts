@@ -850,3 +850,7 @@ export async function lolCfgExportPreset(id: string, path: string): Promise<void
 export async function lolCfgImportPreset(path: string): Promise<LolConfigPreset> {
   return invoke<LolConfigPreset>("lol_cfg_import_preset", { path });
 }
+
+export async function launchRiotAccount(username: string, game: "league" | "tft" | "valorant"): Promise<void> {
+  return invoke("launch_riot_account", { username, game });
+}

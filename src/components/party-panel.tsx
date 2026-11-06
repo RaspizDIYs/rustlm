@@ -1,4 +1,5 @@
 "use client";
+import { ServerBadge } from "@/components/server-badge";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -30,8 +31,7 @@ const roles: { id: PartyRole; name: string }[] = [
   { id: "utility", name: "Поддержка" }, { id: "fill", name: "Любая" },
 ];
 
-export function PartyPanel() {
-  const open = true;
+export function PartyPanel({ embedded = false, active: shown = true }: { embedded?: boolean; active?: boolean }) {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   useEffect(() => { let disposed = false; void loadAccounts().then(value => { if (!disposed) setAccounts(value); }).catch(() => {}); return () => { disposed = true; }; }, []);
   const [snapshot, setSnapshot] = useState<PartySnapshot | null>(null);
@@ -41,6 +41,7 @@ export function PartyPanel() {
   const [selected, setSelected] = useState<string[]>([]);
   const [queueId, setQueueId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const open = shown || busy;
   const [error, setError] = useState("");
   const gate = useRef(createPartyRequestGate());
   const friendsReadAt = useRef(0);
@@ -135,19 +136,14 @@ export function PartyPanel() {
 
   return (
     <div className="flex flex-col gap-3 text-xs">
-      <h1 className="flex items-center gap-2 text-lg font-semibold"><Users className="size-4" />Пати</h1>
+      {!embedded && <h1 className="flex items-center gap-2 text-lg font-semibold"><Users className="size-4" />Пати</h1>}
       <Card><CardContent>
-        <div className="flex items-center justify-between gap-2">
-          {connected ? <div className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground">Аккаунт:</span>
-            <Avatar className="size-8"><AvatarImage src={profileIconUrl(snapshot?.local.profileIconId || 0) || undefined} alt="" /><AvatarFallback>LM</AvatarFallback></Avatar>
-            <span className="font-medium">{snapshot?.local.riotId}</span>
-            <Badge variant="outline">{snapshot?.local.server || "Сервер —"}</Badge>
-            {snapshot?.local.rankDisplay ? <RankBadge display={snapshot.local.rankDisplay} /> : <span className="text-muted-foreground">Ранг —</span>}
+        <div className="grid grid-cols-[minmax(0,1fr)_30px] items-start gap-2">
+          {connected ? <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2"><span className="text-muted-foreground">Аккаунт:</span><Avatar className="size-8 shrink-0"><AvatarImage src={profileIconUrl(snapshot?.local.profileIconId || 0) || undefined} alt="" /><AvatarFallback>LM</AvatarFallback></Avatar><span className="truncate font-medium">{snapshot?.local.riotId}</span></div>
+            <div className="mt-1.5 flex items-center gap-2"><ServerBadge server={snapshot?.local.server}/>{snapshot?.local.rankDisplay ? <RankBadge display={snapshot.local.rankDisplay} /> : <span className="text-muted-foreground">Ранг —</span>}</div>
           </div> : <span className="text-muted-foreground">Аккаунт: откройте League и войдите в игровой аккаунт.</span>}
-          <WithTooltip label="Обновить группу">
-            <Button size="sm" variant="outline" aria-label="Обновить группу" disabled={busy} onClick={() => { setError(""); void refresh(true); }}><RefreshCw /></Button>
-          </WithTooltip>
+          <WithTooltip label="Обновить группу"><Button size="icon-sm" variant="outline" aria-label="Обновить группу" disabled={busy} onClick={() => { setError(""); void refresh(true); }}><RefreshCw /></Button></WithTooltip>
         </div>
       </CardContent></Card>
       <PartyInvitations snapshot={snapshot} accounts={accounts} onSnapshot={setSnapshot} />
@@ -183,14 +179,14 @@ export function PartyPanel() {
           {!validActiveSize && <p role="status" className="text-muted-foreground">{active.queueId === 440 ? "Для Flex нужно 1, 2, 3 или 5 игроков." : "Состав группы не подходит для этой очереди."}</p>}
           <div className="flex flex-col gap-2">{active.members.map(member => {
             const mine = member.id === snapshot?.me;
-            return <div key={member.id} className="flex flex-wrap items-center gap-3 rounded-lg border p-2">
-              <Avatar className="size-9"><AvatarImage src={profileIconUrl(member.profileIconId || 0) || undefined} alt="" /><AvatarFallback>{member.name.slice(0, 1)}</AvatarFallback></Avatar>
-              <div className="min-w-0 flex-1 basis-36">
+            return <div key={member.id} className="grid grid-cols-[32px_minmax(0,1fr)] items-start gap-x-2 gap-y-1.5 rounded-lg border p-2">
+              <Avatar className="size-8"><AvatarImage src={profileIconUrl(member.profileIconId || 0) || undefined} alt="" /><AvatarFallback>{member.name.slice(0, 1)}</AvatarFallback></Avatar>
+              <div className="min-w-0">
                 <div className="flex items-center gap-1"><span className="truncate">{member.name}</span>{member.id === active.leaderId && <Crown className="size-3 shrink-0" aria-label="Лидер" />}{mine && <span className="text-muted-foreground">(вы)</span>}</div>
                 <div className="flex flex-wrap items-center gap-2"><span className="truncate text-muted-foreground">{member.gameRiotId || "Игровой аккаунт не подключён"}</span><Badge variant="outline">{member.server || "Сервер —"}</Badge>{member.rankDisplay ? <RankBadge display={member.rankDisplay} /> : <span className="text-muted-foreground">Ранг —</span>}</div>
-                <p className="text-[11px] text-muted-foreground">{member.online ? "В сети" : "Не в сети"} · {member.accepted ? "В группе" : "Приглашён"}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5"><Badge variant="outline" className={member.accepted ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : "border-amber-500/30 bg-amber-500/10 text-amber-400"}>{!member.accepted ? "Приглашён" : snapshot.local.lobbyMemberIds.includes(member.gameSummonerId) ? "В лобби" : "Принял"}</Badge><span className="text-[10px] text-muted-foreground">{member.online ? "В сети" : "Не в сети"}</span></div>
               </div>
-              {[400,420,440].includes(active.queueId) && <div className="flex flex-wrap items-center justify-end gap-2" aria-label={`Роли: ${member.name}`}>
+              {[400,420,440].includes(active.queueId) && <div className="col-span-2 flex flex-wrap items-center justify-start gap-2 pt-1" aria-label={`Роли: ${member.name}`}>
                 {([1,2] as const).filter(position => position === 1 || member.role !== "fill").map(position => <div key={position} role="group" aria-label={`${position === 1 ? "Основная" : "Вторая"} роль: ${member.name}`} className="flex items-center gap-1">
                   <span className="px-1 text-[10px] text-muted-foreground">{position}</span>
                   {(mine ? roles.filter(role => role.id && (position === 1 || role.id !== "fill")) : roles.filter(role => role.id === (position === 1 ? member.role || "fill" : member.secondaryRole))).map(role => <WithTooltip key={role.id} label={`${position === 1 ? "Основная" : "Вторая"}: ${role.name}`}>
@@ -205,14 +201,15 @@ export function PartyPanel() {
               </div>}
             </div>;
           })}</div>
+          {Array.isArray(active.declined) && active.declined.map(member => <div key={`declined-${member.id}`} className="flex min-w-0 items-center justify-between gap-2 rounded-lg bg-destructive/5 px-2 py-2"><span className="truncate">{member.name}</span><Badge variant="outline" className="shrink-0 border-red-500/30 bg-red-500/10 text-red-400"><X className="size-3"/>Отказ</Badge></div>)}
           {roleIssue && <p role="status" className="text-xs text-amber-500">{roleIssue}</p>}
           {snapshot?.local.matchingInvitation && own?.accepted && <Button size="sm" variant="outline" disabled={disabled || !connected} onClick={() => void run(() => partyAcceptLobby(active.id))}><LogIn data-icon="inline-start" />Принять приглашение в лобби</Button>}
-          <div className="flex flex-wrap gap-2">
+          <div className="flex items-center gap-1.5">
             {leader && <>
-              <WithTooltip label="Создать лобби и пригласить участников"><Button size="sm" variant="outline" disabled={disabled || !connected || active.state !== "forming"} onClick={() => void run(() => partyLobby(active.id))}><Users data-icon="inline-start" />Лобби</Button></WithTooltip>
+              <WithTooltip label="Создать лобби и пригласить участников"><Button size="icon-sm" className="shrink-0" variant="outline" aria-label="Создать лобби League и пригласить участников" disabled={disabled || !connected || active.state !== "forming"} onClick={() => void run(() => partyLobby(active.id))}><Users /></Button></WithTooltip>
               {active.state === "forming" ? <WithTooltip label="Начать поиск с участниками лобби"><Button size="sm" disabled={disabled || !connected || !validActiveSize || !!roleIssue || !active.members.every(m => m.accepted && m.online)} onClick={() => { if (validActiveSize) void run(() => partyQueue(active.id, active.revision)); }}><Play data-icon="inline-start" />Найти игру</Button></WithTooltip>
                 : <Button size="sm" variant="outline" disabled={disabled || !connected} onClick={() => void run(() => partyCancelQueue(active.id))}><Square data-icon="inline-start" />Отменить поиск</Button>}
-              <Button size="sm" variant="destructive" disabled={disabled || active.state !== "forming"} onClick={() => void act(active, "cancel")}><X data-icon="inline-start" />Закрыть группу</Button>
+              <Button size="sm" variant="destructive" disabled={disabled || active.state !== "forming"} onClick={() => void act(active, "cancel")}><X data-icon="inline-start" />Закрыть</Button>
             </>}
             {!leader && <Button size="sm" variant="outline" disabled={disabled} onClick={() => void act(active, "leave")}><LogOut data-icon="inline-start" />Выйти</Button>}
           </div>

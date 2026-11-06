@@ -1,11 +1,11 @@
 "use client";
+import { GameLaunchButtons } from "@/components/game-launch-buttons";
 import { RankBadge } from "@/components/rank-badge";
 import { HighlightText } from "@/components/highlight-text";
-import { LmFriends } from "@/components/lm-friends";
-import { useLeagueSharing, LeagueOffers } from "@/components/league-sharing";
+import { useSocialPanel } from "@/components/social-panel";
+import { ServerBadge } from "@/components/server-badge";
+import { LeagueOffers } from "@/components/league-sharing";
 import { PartyInvitations } from "@/components/party-invitations";
-import Link from "next/link";
-import type { PartySnapshot } from "@/lib/party";
 import { mergeFriends } from "@/lib/friends";
 
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -20,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { AutoAcceptSwitch } from "@/components/auto-accept-provider";
 import { Input } from "@/components/ui/input";
 import {
@@ -79,7 +80,6 @@ import {
   type AccountSort,
   type AccountSortKey,
 } from "@/lib/accounts-view";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -96,22 +96,12 @@ const hasValidPuuid = (value: string) => /^[A-Za-z0-9_-]{78}$/.test(value);
 
 
 export default function AccountsPage() {
-  const league = useLeagueSharing();
-  const [partyState, setPartyState] = useState<PartySnapshot | null>(null);
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    setPartyState(null);
-    if (!league.status?.connected) return;
-    const update = (snapshot: PartySnapshot) => { if (!disposed && Array.isArray(snapshot?.invitations)) setPartyState(snapshot); };
-    void import("@tauri-apps/api/event").then(async ({listen}) => {
-      const stop = await listen<PartySnapshot>("party-changed", event => update(event.payload));
-      if (disposed) stop(); else unlisten = stop;
-    }).catch(() => {});
-    void import("@/lib/party").then(({partySnapshot}) => partySnapshot()).then(update).catch(() => {});
-    return () => { disposed = true; unlisten?.(); };
-  }, [league.status?.connected, league.status?.owner_riot_id]);
+  const social = useSocialPanel();
+  const league = social.league;
+  const partyState = social.party;
+  const setPartyState = social.setParty;
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
+  useEffect(() => { social.setAccounts(accounts); }, [accounts, social.setAccounts]);
   const [loading, setLoading] = useState(true);
   const [loginInProgress, setLoginInProgress] = useState<string | null>(null);
   const [loginProgress, setLoginProgress] = useState<string>("");
@@ -154,7 +144,6 @@ export default function AccountsPage() {
   const [sharedAccounts, setSharedAccounts] = useState<SharedAccountsResponse>({ available_to_me: [], shared_by_me: [] });
   const [sharedLoading, setSharedLoading] = useState(false);
   const [shareTarget, setShareTarget] = useState<AccountRecord | null>(null);
-  const [friendsTab, setFriendsTab] = useState(false);
   const [friends, setFriends] = useState<GoodLuckFriend[]>([]);
   const [shareFriend, setShareFriend] = useState("");
   const [shareDuration, setShareDuration] = useState("168");
@@ -654,6 +643,13 @@ export default function AccountsPage() {
     }
   };
 
+  useEffect(() => {
+    if (!social.shareRequest) return;
+    const {account, friend} = social.shareRequest;
+    social.clearShareRequest();
+    void openShareDialog(account, friend);
+  }, [social.shareRequest]);
+
   const handleFriendSearch = async () => {
     if (friendQuery.trim().length < 2) {
       setShareError("Введи минимум 2 символа для поиска.");
@@ -779,7 +775,7 @@ export default function AccountsPage() {
           <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-2 top-2 size-3.5 text-muted-foreground" />
             <Input
-              aria-label="Поиск аккаунтов и друзей"
+              aria-label="Поиск аккаунтов"
               placeholder="Поиск"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -787,18 +783,7 @@ export default function AccountsPage() {
             />
           </div>
         </div>
-        <Tabs
-          value={friendsTab ? "friends" : "accounts"}
-          onValueChange={(value) => setFriendsTab(value === "friends")}
-          className="accounts-tabs"
-        >
-          <TabsList className="h-[30px] w-full">
-            <TabsTrigger value="accounts">Аккаунты</TabsTrigger>
-            <TabsTrigger value="friends">Друзья</TabsTrigger>
-          </TabsList>
-        </Tabs>
-        {!friendsTab && (
-          <>
+        <>
             <div className="accounts-header-imports">
               <Button className="accounts-import-button" variant="outline" size="sm" onClick={openGlImportDialog}>
                 <Cloud data-icon="inline-start" />
@@ -877,7 +862,7 @@ export default function AccountsPage() {
             <div className="accounts-header-controls has-party">
               <AutoAcceptSwitch className="accounts-autoaccept" />
               <WithTooltip label="Собрать пати">
-                <Button className="party-trigger relative" variant="outline" size="icon-sm" aria-label="Собрать пати" render={<Link href="/party" />}>
+                <Button className="party-trigger relative" variant="outline" size="icon-sm" aria-label="Собрать пати" onClick={() => social.openPanel("party")}>
                   <UserRoundPlus className="size-4" />
                   {!!partyState?.invitations.length && <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1 text-[9px] text-primary-foreground">{partyState.invitations.length}</span>}
                 </Button>
@@ -887,21 +872,12 @@ export default function AccountsPage() {
                 Добавить
               </Button>
             </div>
-          </>
-        )}
+        </>
       </div>
       <PartyInvitations snapshot={partyState} accounts={accounts} onSnapshot={setPartyState} />
       <LeagueOffers league={league} />
-      {!friendsTab && league.error && <p role="alert" className="text-xs text-destructive">{league.error}</p>}
-      {friendsTab ? (
-        <LmFriends
-          league={league}
-          accounts={accounts}
-          query={query}
-          onShare={(account, friend) => void openShareDialog(account, friend)}
-        />
-      ) : (
-        <>
+      {league.error && <p role="alert" className="text-xs text-destructive">{league.error}</p>}
+      <>
           {(sharedLoading ||
             sharedAccounts.available_to_me.length > 0 ||
             sharedAccounts.shared_by_me.length > 0) && (
@@ -914,7 +890,7 @@ export default function AccountsPage() {
               {sharedAccounts.available_to_me.length>0&&<>
                 <div className="bg-muted/20 px-3 py-1 text-[10px] text-muted-foreground">Доступно мне · {sharedAccounts.available_to_me.length}</div>
                 {sharedAccounts.available_to_me.map(account=><div key={account.id} className="flex items-center justify-between gap-3 border-t px-3 py-2">
-                  <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-xs font-medium">{account.riot_id}</span><Badge variant="outline" className="text-[10px]">{account.server}</Badge></div><p className="mt-0.5 truncate text-[11px] text-muted-foreground">От {account.owner_display_name} · {sharedExpiry(account)}</p></div>
+                  <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-xs font-medium">{account.riot_id}</span><ServerBadge server={account.server}/></div><p className="mt-0.5 truncate text-[11px] text-muted-foreground">От {account.owner_display_name} · {sharedExpiry(account)}</p></div>
                   <div className="flex shrink-0 items-center gap-1">
                     <WithTooltip label={loginInProgress===`shared:${account.id}`?loginProgress||'Вход…':'Войти'}><Button size="icon-sm" aria-label={`Войти: ${account.riot_id}`} disabled={loginInProgress!==null} onClick={()=>void handleSharedLogin(account)}>{loginInProgress===`shared:${account.id}`?<Loader2 className="animate-spin"/>:<LogIn/>}</Button></WithTooltip>
                     <WithTooltip label="Отказаться от доступа и выйти"><Button size="icon-sm" variant="outline" aria-label={`Отказаться от доступа: ${account.riot_id}`} onClick={()=>void handleRevokeShared(account,true)}><ShieldOff/></Button></WithTooltip>
@@ -924,7 +900,7 @@ export default function AccountsPage() {
               {sharedAccounts.shared_by_me.length>0&&<>
                 <div className="border-t bg-muted/20 px-3 py-1 text-[10px] text-muted-foreground">Выданные мной · {sharedAccounts.shared_by_me.length}</div>
                 {sharedAccounts.shared_by_me.map(account=><div key={account.id} className="flex items-center justify-between gap-3 border-t px-3 py-2">
-                  <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-xs font-medium">{account.riot_id}</span><Badge variant="outline" className="text-[10px]">{account.server}</Badge><WithTooltip label={`Выдач пароля: ${account.access_count}`}><span className="text-muted-foreground"><Share2 className="size-3"/></span></WithTooltip></div><p className="mt-0.5 truncate text-[11px] text-muted-foreground">Для {account.recipient_display_name} · {sharedExpiry(account)}</p></div>
+                  <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-xs font-medium">{account.riot_id}</span><ServerBadge server={account.server}/><WithTooltip label={`Выдач пароля: ${account.access_count}`}><span className="text-muted-foreground"><Share2 className="size-3"/></span></WithTooltip></div><p className="mt-0.5 truncate text-[11px] text-muted-foreground">Для {account.recipient_display_name} · {sharedExpiry(account)}</p></div>
                   <WithTooltip label="Отозвать доступ"><Button size="icon-sm" variant="destructive" aria-label={`Отозвать доступ: ${account.riot_id}`} onClick={()=>void handleRevokeShared(account,false)}><ShieldOff/></Button></WithTooltip>
                 </div>)}
               </>}
@@ -1030,19 +1006,10 @@ export default function AccountsPage() {
                                   {(account.AvatarUrl ||
                                     account.SummonerLevel > 0) && (
                                     <div className="relative shrink-0">
-                                      {account.AvatarUrl ? (
-                                        <img
-                                          src={account.AvatarUrl}
-                                          alt=""
-                                          className="size-7 rounded-full"
-                                          onError={(e) => {
-                                            const img = e.currentTarget;
-                                            img.style.display = "none";
-                                          }}
-                                        />
-                                      ) : (
-                                        <div className="size-7 rounded-full bg-muted" />
-                                      )}
+                                      <Avatar className="size-10">
+                                        <AvatarImage src={account.AvatarUrl || undefined} alt=""/>
+                                        <AvatarFallback>{(account.RiotId || account.SummonerName || "LM").slice(0,2)}</AvatarFallback>
+                                      </Avatar>
                                       {account.SummonerLevel > 0 && (
                                         <span
                                           className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground ring-2 ring-background"
@@ -1064,7 +1031,7 @@ export default function AccountsPage() {
                                 </div>
                               </TableCell>
                               <TableCell className="text-muted-foreground text-sm">
-                                <HighlightText text={account.Server || "—"} query={query} />
+                                <ServerBadge server={account.Server} query={query} />
                               </TableCell>
                               <TableCell className="break-all text-xs text-muted-foreground">
                                 <div className="flex flex-wrap items-center gap-1">
@@ -1083,30 +1050,32 @@ export default function AccountsPage() {
                               </TableCell>
                               <TableCell className="text-right">
                                 <div className="flex items-center justify-end gap-1">
-                                <WithTooltip label={loginInProgress===account.Username?'Отменить вход':isNotActivated?'Активировать':'Войти'}>
+                                <div className="flex items-center gap-1">
                                 {loginInProgress===account.Username?<Button size="icon-sm" variant="outline" aria-label="Отменить вход" onClick={async () => {
                                         try {
                                           const { cancelLogin } = await import("@/lib/tauri");
                                           await cancelLogin();
                                         } catch { }
-                                      }}><X/></Button>:isNotActivated?<Button size="icon-sm" variant="outline" aria-label="Активировать" disabled={loginInProgress!==null} onClick={()=>openEditDialog(account)}><KeyRound/></Button>:<Button size="icon-sm" aria-label={`Войти: ${account.RiotId||displayUsername}`} disabled={loginInProgress!==null} onClick={async () => {
+                                      }}><X/></Button>:isNotActivated?<Button size="icon-sm" variant="outline" aria-label="Активировать" disabled={loginInProgress!==null} onClick={()=>openEditDialog(account)}><KeyRound/></Button>:<GameLaunchButtons disabled={loginInProgress!==null} onLaunch={async (game) => {
                                       setLoginInProgress(account.Username);
                                       setLoginProgress("");
                                       setLoginError(null);
                                       try {
                                         const {
-                                          loginToAccount,
+                                          launchRiotAccount,
                                           invalidateLcuCache,
                                         } = await import("@/lib/tauri");
-                                        await loginToAccount(account.Username);
+                                        await launchRiotAccount(account.Username, game);
                                         try {
                                           await invalidateLcuCache();
                                         } catch { }
+                                        if (game !== "valorant") {
                                         const { pullProfileFromLcuAfterLogin } = await import("@/lib/post-login-sync");
                                         void pullProfileFromLcuAfterLogin(fetchAccounts, {
                                           retries: 25,
                                           toastOnUpdate: true,
                                         }).catch(() => { });
+                                        }
                                       } catch (e) {
                                         const msg = String(e);
                                         if (!msg.includes("cancelled")) {
@@ -1117,8 +1086,8 @@ export default function AccountsPage() {
                                         setLoginInProgress(null);
                                         setLoginProgress("");
                                       }
-                                    }}><LogIn/></Button>}
-                                </WithTooltip>
+                                    }}/>}
+                                </div>
                                 <DropdownMenu>
                                   <DropdownMenuTrigger
                                     render={
@@ -1321,8 +1290,7 @@ export default function AccountsPage() {
 
             )}
           </div>
-        </>
-      )}
+      </>
 
       {/* Password dialog for encrypted export/import */}
       <Dialog open={passwordDialog !== null} onOpenChange={(open) => { if (!open) setPasswordDialog(null); }}>
