@@ -70,3 +70,28 @@ change is included in this investigation.
   regression distinguishing unknown details from an established elevation denial.
 - Follow-up validation: full Rust library suite 292 passed / 34 ignored; six targeted
   JS tests passed (including eight simulated service scenarios); TypeScript passed.
+
+## Autopick, autoban and identity follow-up
+
+- Champion ID resolution previously depended on a separate CDN detail request for every
+  champion. Partial detail failures left a valid summary catalog but missing cache entries;
+  resolving profiles then replaced saved IDs with zero. Seed champion metadata from the
+  summary's numeric key before merging optional skins/details. Invalid detail keys cannot
+  overwrite the summary ID. Also resolve canonical English names, not just Russian map keys.
+- Champion actions now run before optional spell/rune writes. Previously a slow loadout
+  request could delay an active pick/ban. The native simulator regression observes the first
+  loadout request and requires the champion action to be completed already.
+- Partial summoner/chat identity merging now rejects conflicting valid PUUIDs and tags,
+  including equal game names on different accounts. This prevents constructing a Riot ID
+  from two accounts during a switch. It does not bypass icon ownership confirmation.
+- Removed the redundant party button from Accounts and its unused layout rules; the
+  right social panel remains the party entry point.
+
+These are reproducible code defects, not proof that they account for every failure on
+the home PC. No new installer or production deployment is included.
+
+Validation after these changes: 294 Rust tests passed (34 explicit live/integration
+tests ignored in that run); 105 JS tests passed; the separate native simulator run
+passed all 32 scenarios, including picks/bans without an LM identity and loadout ordering.
+Recorded replay passed with zero mismatches. TypeScript and frontend production build
+passed. Real Riot icon propagation and production party authentication remain unverified.

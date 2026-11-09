@@ -22,6 +22,15 @@ fn identity(summoner: &Value, chat: &Value) -> CurrentRiotAccount {
     CurrentRiotAccount { puuid: puuid.into(), riot_id }
 }
 
+fn identities_conflict(summoner: &Value, chat: &Value) -> bool {
+    let puuids = field(summoner, "puuid").zip(field(chat, "puuid"));
+    let names = field(summoner, "gameName").zip(field(chat, "gameName"));
+    let tags = field(summoner, "tagLine").zip(field(chat, "gameTag").or_else(|| field(chat, "tagLine")));
+    puuids.is_some_and(|(a,b)| is_valid_puuid(a) && is_valid_puuid(b) && a != b)
+        || names.is_some_and(|(a,b)| a.to_lowercase() != b.to_lowercase())
+        || tags.is_some_and(|(a,b)| !a.eq_ignore_ascii_case(b))
+}
+
 pub async fn current_account(client: &RiotClientService) -> Result<CurrentRiotAccount, AppError> {
     // Friend discovery needs identity only, not the ranked/statistics requests in get_account_info.
     let summoner: Value = serde_json::from_str(&client.lcu_get("/lol-summoner/v1/current-summoner").await?)?;
@@ -32,10 +41,8 @@ pub async fn current_account(client: &RiotClientService) -> Result<CurrentRiotAc
             Err(_) => Value::Null,
         }
     } else { Value::Null };
-    if let (Some(before), Some(after)) = (field(&summoner, "gameName"), field(&chat, "gameName")) {
-        if before.to_lowercase() != after.to_lowercase() {
+    if identities_conflict(&summoner, &chat) {
             return Err(AppError::Custom("Riot-аккаунт изменился во время чтения друзей. Повторите обновление".into()));
-        }
     }
     Ok(identity(&summoner, &chat))
 }
@@ -44,6 +51,14 @@ pub async fn current_account(client: &RiotClientService) -> Result<CurrentRiotAc
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn partial_identity_never_mixes_accounts_with_the_same_name() {
+        let summoner = json!({"puuid":"a".repeat(78),"gameName":"Player","tagLine":"RU1"});
+        assert!(identities_conflict(&summoner, &json!({"puuid":"b".repeat(78),"gameName":"Player"})));
+        assert!(identities_conflict(&summoner, &json!({"gameName":"Player","gameTag":"EUW"})));
+        assert!(!identities_conflict(&summoner, &json!({"puuid":"a".repeat(78),"gameName":"player","gameTag":"ru1"})));
+        assert!(!identities_conflict(&json!({"puuid":"incomplete","gameName":"Player"}), &json!({"puuid":"a".repeat(78),"gameName":"Player","gameTag":"RU1"})));
+    }
     #[test]
     fn chat_fills_partial_summoner_identity_without_accepting_a_guid_as_puuid() {
         let puuid = "a".repeat(78);

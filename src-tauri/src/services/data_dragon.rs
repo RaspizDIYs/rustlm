@@ -9,6 +9,40 @@ use crate::models::champion::{ChampionInfo, SkinInfo};
 
 const DDRAGON_BASE: &str = "https://ddragon.leagueoflegends.com";
 
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn summary_ids_resolve_russian_and_english_names_without_skin_details() {
+        let service = DataDragonService::new();
+        let info = summary_champion("Lux", &serde_json::json!({"key":"99","name":"Люкс","image":{"full":"Lux.png"},"tags":["Mage"]})).unwrap();
+        service.champion_info_cache.write().await.insert(info.display_name.clone(), info);
+        for name in ["Люкс", "Lux", "lux"] {
+            let info = service.get_champion_info(name).await.unwrap();
+            assert_eq!(info.id, "99");
+            assert_eq!(info.image_file_name, "Lux.png");
+            assert_eq!(info.tags, vec!["Mage"]);
+            assert!(info.skins.is_empty());
+        }
+        for key in ["0", "invalid", "-1"] {
+            assert!(summary_champion("Lux", &serde_json::json!({"key":key})).is_none());
+        }
+        assert!(service.get_champion_info("Unknown").await.is_none());
+    }
+}
+
+fn summary_champion(english_name: &str, info: &serde_json::Value) -> Option<ChampionInfo> {
+    let id = info["key"].as_str()?.parse::<i32>().ok().filter(|id| *id > 0)?;
+    let display_name = info["name"].as_str().unwrap_or(english_name).to_owned();
+    Some(ChampionInfo {
+        display_name: display_name.clone(), english_name: english_name.into(), id: id.to_string(),
+        image_file_name: info["image"]["full"].as_str().unwrap_or("").into(),
+        tags: info["tags"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
+        aliases: vec![display_name, english_name.into()], skins: vec![],
+    })
+}
+
 pub struct DataDragonService {
     client: reqwest::Client,
     version: RwLock<Option<String>>,
@@ -93,6 +127,7 @@ impl DataDragonService {
         let resp: serde_json::Value = self.client.get(&url).send().await?.json().await?;
 
         let mut result = HashMap::new();
+        let mut summary = HashMap::new();
         if let Some(data) = resp.get("data").and_then(|d| d.as_object()) {
             for (english_name, info) in data {
                 let display_name = info
@@ -101,7 +136,14 @@ impl DataDragonService {
                     .unwrap_or(english_name)
                     .to_string();
                 result.insert(display_name, english_name.clone());
+                if let Some(champion) = summary_champion(english_name, info) {
+                    summary.insert(champion.display_name.clone(), champion);
+                }
             }
+        }
+
+        if summary.is_empty() {
+            return Err(AppError::Custom("Каталог чемпионов не содержит числовых ID".into()));
         }
 
         // Load champion details in parallel (limited concurrency)
@@ -131,14 +173,18 @@ impl DataDragonService {
         }
 
         let mut cache = self.champion_info_cache.write().await;
+        // Numeric IDs must survive failures of optional per-champion skin/detail requests.
+        cache.extend(summary);
         for handle in handles {
             if let Ok(Ok((display_name, english_name, val))) = handle.await {
                 if let Some(champ_data) = val.get("data").and_then(|d| d.get(&english_name)) {
                     let id = champ_data
                         .get("key")
                         .and_then(|k| k.as_str())
-                        .unwrap_or("0")
-                        .to_string();
+                        .filter(|key| key.parse::<i32>().is_ok_and(|id| id > 0))
+                        .map(str::to_owned)
+                        .or_else(|| cache.get(&display_name).map(|info| info.id.clone()))
+                        .unwrap_or_default();
                     let image_file = champ_data
                         .get("image")
                         .and_then(|i| i.get("full"))
@@ -221,7 +267,7 @@ impl DataDragonService {
 
     pub async fn get_champion_info(&self, display_name: &str) -> Option<ChampionInfo> {
         let cache = self.champion_info_cache.read().await;
-        cache.get(display_name).cloned()
+        cache.get(display_name).or_else(|| cache.values().find(|info| info.english_name.eq_ignore_ascii_case(display_name))).cloned()
     }
 
     pub async fn get_champion_image_file_name(&self, display_name: &str) -> String {
