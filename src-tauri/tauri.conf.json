@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RustLM",
-  "version": "0.5.26-local.1",
+  "version": "0.5.26",
   "identifier": "com.rustlm.app",
   "build": {
     "frontendDist": "../out",
