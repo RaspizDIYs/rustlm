@@ -19,6 +19,15 @@ export function repairError(raw: string) {
   } else if (/UAC_CANCELLED|1223/.test(raw)) {
     title = "Запрос прав администратора отменён";
     action = "Повторите операцию и подтвердите запрос Windows, если хотите продолжить.";
+  } else if (/SERVICE_ROLLBACK_FAILED/.test(raw)) {
+    title = "Не удалось восстановить службу Zapret";
+    action = "Резервная копия конфигурации службы сохранена в журнале операции. Проверьте службу и выполните откат.";
+  } else if (/SERVICE_(?:AMBIGUOUS|SCOPE_CHANGED|BUSY)/.test(raw)) {
+    title = "Не удалось однозначно подтвердить службу Zapret";
+    action = "Проверьте выбранную установку и дождитесь завершения других операций со службой. Чужие службы не изменяются.";
+  } else if (/SERVICE_(?:CONTROL|CHANGE)/.test(raw)) {
+    title = "Windows не завершила операцию со службой Zapret";
+    action = /SERVICE_ORIGINAL_RESTORED/.test(raw) ? "Исходная конфигурация службы восстановлена. Проверьте журнал операции." : "Проверьте состояние службы и журнал операции.";
   } else if (/SERVICE_MODE/.test(raw)) {
     title = "Zapret работает как служба";
     action = "Автоматический перезапуск службы пока не поддерживается. Запустите привычную стратегию через BAT-файл.";

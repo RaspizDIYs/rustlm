@@ -1080,7 +1080,7 @@ fn ensure_game_closed() -> Result<(), AppError> {
     let probe = RiotClientService::unglitch_probe();
     if probe.backend_running || probe.ui_running || probe.game_running {
         return Err(AppError::Custom(
-            "Закройте League Client и игру; восстановление остаётся ожидающим".into(),
+            "LEAGUE_CONFIG_IN_USE: Закройте League Client и игру перед изменением конфигов".into(),
         ));
     }
     Ok(())

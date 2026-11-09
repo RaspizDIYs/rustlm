@@ -59,8 +59,8 @@ export function PartyPanel({ embedded = false, active: shown = true }: { embedde
       try {
         const next = await partySnapshot();
         if (current()) { setSnapshot(next); setError(""); setQueueId(id => next.queues.some(q => q.id === id && allowedSizes(q.id)) ? id : next.queues.find(q => allowedSizes(q.id))?.id ?? null); }
-      } catch {
-        if (current()) { setError("Не удалось обновить группу — откройте League и проверьте подключение."); }
+      } catch (error) {
+        if (current()) { setError(partyActionError(error)); }
       }
       if (!current() || !forceFriends && Date.now() - friendsReadAt.current < 30000) return;
       friendsReadAt.current = Date.now();
@@ -73,8 +73,8 @@ export function PartyPanel({ embedded = false, active: shown = true }: { embedde
           setFriendsLoaded(true);
           setFriendsError("");
         }
-      } catch {
-        if (current()) { setFriendsLoaded(false); setFriendsError("Друзья LM недоступны — откройте League и обновите список."); }
+      } catch (error) {
+        if (current()) { setFriendsLoaded(false); setFriendsError(partyActionError(error)); }
       }
     });
   }, []);

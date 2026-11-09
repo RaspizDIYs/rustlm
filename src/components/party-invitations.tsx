@@ -32,7 +32,7 @@ export function PartyInvitations({ snapshot, accounts, onSnapshot }: {
           const next = await partySnapshot();
           if (current()) onSnapshot(next);
         }
-      } catch { if (current()) setError("Не удалось обновить группу — проверьте подключение перед повтором."); }
+      } catch (error) { if (current()) setError(partyActionError(error)); }
       finally { if (current()) setBusy(null); }
     }, () => { setBusy(party.id); setRetained(party); setError(""); });
   };

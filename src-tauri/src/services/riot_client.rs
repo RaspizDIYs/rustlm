@@ -866,6 +866,9 @@ impl RiotClientService {
             if matches!(status.as_u16(), 401 | 403) {
                 self.invalidate_auth_if_current(port, &password, epoch);
             }
+            if status.as_u16() == 429 {
+                self.check_cooldown(epoch, &method, endpoint)?;
+            }
             // Server response bodies can contain account data; log only method, route and status.
             return Err(AppError::Custom(format!(
                 "LCU {} {} returned {}",

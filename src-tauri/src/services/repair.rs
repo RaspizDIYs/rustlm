@@ -461,12 +461,14 @@ pub fn restart(root: &str, strategy: &str, logs: &Path) -> Result<String, String
         r#"
 $ErrorActionPreference='Stop'
 $stopped=$false
+$script:RustLMServiceTouched=$false
 try{{
 $exe={exe}
 $running=@(Get-CimInstance Win32_Process -Filter "name='winws.exe'" | Where-Object {{$_.ExecutablePath -eq $exe}})
 $ids=@($running | ForEach-Object ProcessId)
-$service=@(Get-CimInstance Win32_Service | Where-Object {{$ids -contains $_.ProcessId -and $_.ProcessId -ne 0}})
-if($service.Count){{throw 'SERVICE_MODE: Zapret работает как служба. Автоперезапуск службы пока не поддерживается.'}}
+$service=Get-RustLMWinwsService $exe $ids
+$serviceOriginal=$service
+if($service -and @($running|Where-Object {{$_.ProcessId -ne $service.ProcessId}}).Count){{throw 'SERVICE_AMBIGUOUS: одновременно запущены служба и отдельный winws'}}
 $dry=Start-Process -FilePath $exe -ArgumentList ({args}+' --dry-run') -WorkingDirectory {cwd} -RedirectStandardOutput {dry_out} -RedirectStandardError {dry_err} -WindowStyle Hidden -PassThru
 $dryHandle=$dry.Handle
 if(-not $dry.WaitForExit(15000)){{$dry.Kill();throw 'VALIDATION_FAILED: проверка параметров превысила 15 секунд'}}
@@ -475,10 +477,17 @@ $validation=(Get-Content -LiteralPath {dry_out},{dry_err} -Raw -ErrorAction Sile
 if($dry.ExitCode -ne 0 -and $validation -notmatch '(?m)^command line parameters verified\s*$' -and $validation -notmatch 'already running with the same filter'){{throw ('VALIDATION_FAILED: '+$validation)}}
 if($script:RustLMCancelPath -and (Test-Path -LiteralPath $script:RustLMCancelPath)){{throw 'OPERATION_CANCELLED'}}
 $stopped=$true
+if($service){{
+$newPath='"'+$exe+'" '+{args}
+$service=Restart-RustLMWinwsService $service $newPath {service_backup}
+if($service.ProcessId -eq 0){{throw 'SERVICE_CONTROL_FAILED: служба не сообщила PID'}}
+$p=Get-Process -Id $service.ProcessId -ErrorAction Stop
+}}else{{
 foreach($p in $running){{Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}}
 Start-Sleep -Milliseconds 500
 if($script:RustLMCancelPath -and (Test-Path -LiteralPath $script:RustLMCancelPath)){{throw 'OPERATION_CANCELLED'}}
 $p=Start-Process -FilePath $exe -ArgumentList {args} -WorkingDirectory {cwd} -RedirectStandardOutput {out} -RedirectStandardError {err} -WindowStyle Hidden -PassThru
+}}
 Start-Sleep -Seconds 2
 if($p.HasExited){{throw ('winws завершился: '+(Get-Content -LiteralPath {err} -Tail 8 -ErrorAction SilentlyContinue | Out-String))}}
 $actual=Get-CimInstance Win32_Process -Filter ('ProcessId='+$p.Id)
@@ -490,9 +499,10 @@ Set-ItemProperty -Path $key -Name Pid -Value $p.Id
 Set-ItemProperty -Path $key -Name Created -Value $actual.CreationDate.ToUniversalTime().Ticks.ToString()
 Set-ItemProperty -Path $key -Name Strategy -Value {manager_strategy}
 'winws запущен; журнал записывается в файл'
-}}catch{{$prefix=if($stopped){{'RESTART_FAILED_AFTER_STOP: '}}else{{'RESTART_NOT_STARTED: '}};($prefix+($_|Out-String))|Set-Content -LiteralPath {helper_error} -Encoding UTF8;exit 1}}
+}}catch{{$failure=$_.Exception.Message;if($stopped -and $serviceOriginal -and $script:RustLMServiceTouched){{try{{Restore-RustLMService $serviceOriginal.Name $serviceOriginal.PathName $serviceOriginal.State $newPath;$failure+='; SERVICE_ORIGINAL_RESTORED'}}catch{{$failure+='; SERVICE_ROLLBACK_FAILED: '+$_.Exception.Message}}}};$prefix=if($stopped){{'RESTART_FAILED_AFTER_STOP: '}}else{{'RESTART_NOT_STARTED: '}};($prefix+$failure)|Set-Content -LiteralPath {helper_error} -Encoding UTF8;exit 1}}
 "#,
         exe = literal(&exe),
+        service_backup = literal(&logs.join("service.original.json").to_string_lossy()),
         args = literal(&args),
         cwd = literal(info.root.trim_start_matches("\\\\?\\")),
         out = literal(&output.to_string_lossy()),
@@ -513,6 +523,7 @@ Set-ItemProperty -Path $key -Name Strategy -Value {manager_strategy}
                 .as_ref()
         )
     );
+    let script = format!("{}\n{script}", include_str!("repair_service.ps1"));
     let result = elevated(&script).map_err(|error| {
         format!(
             "{error}. {}",
@@ -541,7 +552,7 @@ pub fn stop(root: &str) -> Result<(), String> {
     let logs = super::repair_paths::root()?.join("logs");
     fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
     let error = logs.join(format!("stop-{}.log", rand::random::<u64>()));
-    let script=format!("$ErrorActionPreference='Stop';try {{$p=@(Get-CimInstance Win32_Process -Filter \"name='winws.exe'\"|Where-Object {{$_.ExecutablePath -eq {exe}}});$ids=@($p|ForEach-Object ProcessId);if(@(Get-CimInstance Win32_Service|Where-Object {{$ids -contains $_.ProcessId -and $_.ProcessId -ne 0}}).Count){{throw 'SERVICE_MODE'}};foreach($item in $p){{Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop}}}}catch{{$_.Exception.Message|Set-Content -LiteralPath {error} -Encoding UTF8;exit 1}}",exe=literal(exe.to_string_lossy().trim_start_matches("\\\\?\\")),error=literal(&error.to_string_lossy()));
+    let script=format!("{}\n$ErrorActionPreference='Stop';try {{$exe={exe};$p=@(Get-CimInstance Win32_Process -Filter \"name='winws.exe'\"|Where-Object {{$_.ExecutablePath -eq $exe}});$ids=@($p|ForEach-Object ProcessId);$service=Get-RustLMWinwsService $exe $ids;if($service){{if(@($p|Where-Object {{$_.ProcessId -ne $service.ProcessId}}).Count){{throw 'SERVICE_AMBIGUOUS'}};Set-RustLMServiceState $service.Name 'Stopped'|Out-Null}}else{{foreach($item in $p){{Stop-Process -Id $item.ProcessId -Force -ErrorAction Stop}}}}}}catch{{$_.Exception.Message|Set-Content -LiteralPath {error} -Encoding UTF8;exit 1}}",include_str!("repair_service.ps1"),exe=literal(exe.to_string_lossy().trim_start_matches("\\\\?\\")),error=literal(&error.to_string_lossy()));
     elevated(&script)
         .map_err(|e| format!("{e}\n{}", fs::read_to_string(&error).unwrap_or_default()))?;
     Ok(())
@@ -614,6 +625,25 @@ pub fn save_journal(root: &Path, journal: Journal) -> Result<(), String> {
         &serde_json::to_vec_pretty(&journal).map_err(|e| e.to_string())?,
     )
 }
+#[derive(Serialize)]
+pub struct SessionSummary {
+    step: u64,
+    operation_failed: bool,
+    network_report_count: usize,
+    error_categories: Vec<&'static str>,
+}
+pub fn session_summaries(root: &Path) -> Vec<SessionSummary> {
+    let mut entries: Vec<_> = fs::read_dir(root).into_iter().flatten().flatten().filter(|entry| entry.path().extension().is_some_and(|value| value == "json") && entry.file_type().is_ok_and(|value| value.is_file())).collect();
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.metadata().and_then(|meta| meta.modified()).ok()));
+    entries.into_iter().take(20).filter_map(|entry| {
+        let mut bytes=Vec::new();
+        fs::File::open(entry.path()).ok()?.take(256*1024+1).read_to_end(&mut bytes).ok()?;
+        if bytes.len()>256*1024 { return None; }
+        let value:serde_json::Value=serde_json::from_slice(&bytes).ok()?;
+        let step=value["step"].as_u64().filter(|step| (1..=6).contains(step))?;
+        Some(SessionSummary {step,operation_failed:value["operation_failed"].as_bool()?,network_report_count:value["report_ids"].as_array().map_or(0,Vec::len),error_categories:categories(value["outcome"].as_str().unwrap_or("")).into_iter().map(|(name,_)|name).collect()})
+    }).collect()
+}
 fn categories(text: &str) -> Vec<(&'static str, usize)> {
     [
         (
@@ -624,8 +654,15 @@ fn categories(text: &str) -> Vec<(&'static str, usize)> {
             "TLS",
             r"(?i)tls.*(?:fail|error)|ssl.*(?:fail|error)|certificate.*(?:fail|invalid|expired)",
         ),
-        ("TIMEOUT", r"(?i)timed?\s*out|timeout"),
-        ("HTTP_403", r"(?i)\b403\b|sorry, you have been blocked"),
+        ("TIMEOUT", r"(?i)\btimed?\s+out\b|\b(?:ETIMEDOUT|ERR_TIMED_OUT|TimeoutException|LM_NETWORK_TIMEOUT)\b|\btimeout\s+(?:error|failure|exceeded|occurred|while)\b|\b(?:error|failed|failure|fatal)\b[^\r\n]{0,60}\btimeout\b"),
+        ("LM_NETWORK_UNAVAILABLE", r"LM_NETWORK_UNAVAILABLE"),
+        ("HTTP_401", r"HTTP_401"),
+        ("HTTP_429", r"HTTP_429"),
+        ("RIOT_PROOF_PENDING", r"RIOT_PROOF_PENDING"),
+        ("ZAPRET_DETAILS_UNAVAILABLE", r"ZAPRET_DETAILS_UNAVAILABLE"),
+        ("SERVICE_MODE", r"SERVICE_MODE"),
+        ("SERVICE_CONTROL", r"SERVICE_(?:CONTROL|CHANGE|ROLLBACK|SCOPE|AMBIGUOUS)[A-Z_]*"),
+        ("HTTP_403", r"(?i)\bHTTP_403\b|\bHTTP(?:/[0-9.]+)?\s+403\b|\bstatus(?:_?code)?\s*[=:]\s*403\b|sorry, you have been blocked"),
         (
             "CONNECTION_RESET",
             r"(?i)connection.*(?:reset|refused)|network.*unreachable",
@@ -673,11 +710,12 @@ fn scan_logs(root: &Path, depth: usize, files: &mut Vec<std::path::PathBuf>) {
         }
     }
 }
-pub fn collect(logs: &Path) -> Result<EvidenceReport, String> {
+pub fn collect(logs: &Path, app_logs: Option<&Path>) -> Result<EvidenceReport, String> {
     let mut errors = vec![];
     let mut unavailable = vec![];
     let mut files = vec![];
     scan_logs(logs, 2, &mut files);
+    if let Some(root) = app_logs { scan_logs(root, 2, &mut files); }
     if let Some(local) = dirs::data_local_dir() {
         let app_log = local.join("LolManager/debug.log");
         if app_log.is_file() {
@@ -771,6 +809,27 @@ pub fn collect(logs: &Path) -> Result<EvidenceReport, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn log_evidence_does_not_count_configuration_values_as_failures() {
+        assert!(categories("config: timeout=30000; profileIconId=403; idle_timeout=60").is_empty());
+        let found=categories("connection timed out; HTTP/1.1 403; LM_NETWORK_TIMEOUT; HTTP_403");
+        assert!(found.contains(&("TIMEOUT",2)));assert!(found.contains(&("HTTP_403",2)));
+    }
+
+    #[test]
+    fn session_report_excludes_identity_credentials_and_raw_error_text() {
+        let root=std::env::temp_dir().join(format!("rustlm-summary-{}",rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        let path=root.join("sample.json");
+        fs::write(&path,serde_json::to_vec(&serde_json::json!({"step":3,"operation_failed":true,"report_ids":[],"provider":"SECRET_SENTINEL","password":"SECRET_SENTINEL","outcome":"SERVICE_CONTROL_FAILED: SECRET_SENTINEL"})).unwrap()).unwrap();
+        let report=serde_json::to_string(&session_summaries(&root)).unwrap();
+        assert!(report.contains("SERVICE_CONTROL"));assert!(!report.contains("SECRET_SENTINEL"));
+        assert!(report.contains("operation_failed"));
+        fs::write(&path,b"corrupt").unwrap();assert!(session_summaries(&root).is_empty());
+        fs::write(&path,vec![b' ';256*1024+1]).unwrap();assert!(session_summaries(&root).is_empty());
+        fs::remove_file(path).unwrap();fs::remove_dir(root).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn helper_finishes_while_its_long_running_child_remains_alive() {
