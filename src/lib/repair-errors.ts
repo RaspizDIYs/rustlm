@@ -1,11 +1,14 @@
 export function repairError(raw: string) {
   let title = "Не удалось завершить операцию";
   let action = "Повторите попытку. Если ошибка повторяется, сохраните технические подробности.";
-  if (/ELEVATION_TIMEOUT|POWERSHELL_TIMEOUT|RESTART_STATE_UNKNOWN/.test(raw)) {
+  if (/ZAPRET_CONTROL_BUSY/.test(raw)) {
+    title = "Операция Zapret уже выполняется";
+    action = "Дождитесь завершения включения или остановки, затем обновите состояние.";
+  } else if (/ELEVATION_TIMEOUT|POWERSHELL_TIMEOUT|RESTART_STATE_UNKNOWN/.test(raw)) {
     title = "Не удалось подтвердить завершение операции Windows";
     action = "Обновите состояние Zapret и откройте журнал операции. Отсутствие запроса Windows не означает отказ: права могли быть предоставлены ранее. Не запускайте несколько повторных попыток подряд.";
   } else if (/ZAPRET_DETAILS_UNAVAILABLE/.test(raw)) {
-    title = "Zapret запущен с правами администратора";
+    title = "Не удалось прочитать параметры Zapret";
     action = "Папку повторно выбирать не нужно. Нажмите «Включить» или начните настройку: LM подтвердит выбранную стратегию через помощник Windows.";
   } else if (/VPN_DETECTED/.test(raw)) {
     title = "Обнаружены признаки VPN или прокси";

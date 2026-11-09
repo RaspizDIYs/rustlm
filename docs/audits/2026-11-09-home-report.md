@@ -52,3 +52,21 @@ Verify elevated service restart/rollback under the user's actual service policy,
 Riot icon confirmation, party connection and config restoration with League installed.
 Collect a schema-v2 report if these fail. No installer, release, deployment or version
 change is included in this investigation.
+
+## Follow-up review
+
+- Windows process metadata may contain ExecutablePath but omit CommandLine. Previously
+  this became STRATEGY_MISMATCH rather than unavailable details. Both missing fields
+  now use the existing PID/creation-time-bound receipt fallback. Unknown details are
+  not presented as proof that Windows denied an administrator request.
+- Concurrent start/stop commands within the LM process are rejected before filesystem
+  operations or UAC. This prevents overlapping helpers started from the same instance;
+  it does not lock external service managers or another LM process.
+- Rollback rechecks service arguments after waiting for StopService, avoiding an overwrite
+  if another administrator changes configuration during that wait. An eighth isolated
+  service scenario covers this conflict. CIM provides no atomic compare-and-swap; an
+  external modification after the final read remains a platform race boundary.
+- Added Rust regressions for missing command lines and concurrent control, and a UI-error
+  regression distinguishing unknown details from an established elevation denial.
+- Follow-up validation: full Rust library suite 292 passed / 34 ignored; six targeted
+  JS tests passed (including eight simulated service scenarios); TypeScript passed.

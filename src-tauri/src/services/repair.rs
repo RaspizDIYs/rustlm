@@ -296,7 +296,7 @@ fn detect_from(processes: &[serde_json::Value]) -> Result<Option<ActiveZapret>, 
     }
     let exe = match processes[0]["ExecutablePath"]
         .as_str()
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && processes[0]["CommandLine"].as_str().is_some_and(|line| !line.trim().is_empty()))
     {
         Some(exe) => exe,
         None => {
@@ -428,7 +428,9 @@ fn arguments(root: &str, strategy: &str) -> Result<Vec<String>, String> {
             .replace("%GameFilterUDP%", udp),
     )
 }
+static ZAPRET_CONTROL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub fn restart(root: &str, strategy: &str, logs: &Path) -> Result<String, String> {
+    let _control = ZAPRET_CONTROL_LOCK.try_lock().map_err(|_| "ZAPRET_CONTROL_BUSY: дождитесь завершения предыдущей операции Zapret".to_string())?;
     let info = network::installation(root)?;
     let args = arguments(&info.root, strategy)?;
     let fingerprint = network::hash(normalize(&args.join(" ")).as_bytes());
@@ -543,6 +545,7 @@ Set-ItemProperty -Path $key -Name Strategy -Value {manager_strategy}
     }
 }
 pub fn stop(root: &str) -> Result<(), String> {
+    let _control = ZAPRET_CONTROL_LOCK.try_lock().map_err(|_| "ZAPRET_CONTROL_BUSY: дождитесь завершения предыдущей операции Zapret".to_string())?;
     let info = network::installation(root)?;
     let exe =
         fs::canonicalize(Path::new(&info.root).join("bin/winws.exe")).map_err(|e| e.to_string())?;
@@ -905,6 +908,19 @@ mod tests {
             &receipt,
             &serde_json::json!({"ProcessId":43,"Created":"100"})
         ));
+    }
+    #[test]
+    fn overlapping_zapret_controls_are_rejected_before_filesystem_or_uac() {
+        let _held = ZAPRET_CONTROL_LOCK.lock().unwrap();
+        assert!(restart("missing", "missing", Path::new("missing")).unwrap_err().starts_with("ZAPRET_CONTROL_BUSY"));
+        assert!(stop("missing").unwrap_err().starts_with("ZAPRET_CONTROL_BUSY"));
+    }
+    #[test]
+    fn hidden_command_line_is_not_reported_as_a_strategy_mismatch() {
+        for command in [serde_json::Value::Null, serde_json::json!(""), serde_json::json!("   ")] {
+            let process = serde_json::json!({"ProcessId":0,"Created":"","ExecutablePath":"C:\\unavailable-installation\\bin\\winws.exe","CommandLine":command});
+            assert!(detect_from(&[process]).err().unwrap().starts_with("ZAPRET_DETAILS_UNAVAILABLE"));
+        }
     }
     #[test]
     fn preflight_blocks_vpn_stopped_zapret_and_wrong_strategy() {

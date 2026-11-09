@@ -38,6 +38,8 @@ function Restore-RustLMService($Name, $OriginalPath, $OriginalState, $NewPath) {
     if ($current.PathName -ne $NewPath -and $current.PathName -ne $OriginalPath) { throw 'SERVICE_ROLLBACK_CONFLICT: параметры изменены другим процессом' }
     if ($current.PathName -eq $OriginalPath -and $current.State -eq $OriginalState) { return }
     Set-RustLMServiceState $Name 'Stopped' | Out-Null
+    $current = Read-RustLMService $Name
+    if ($current.PathName -ne $NewPath -and $current.PathName -ne $OriginalPath) { throw 'SERVICE_ROLLBACK_CONFLICT: параметры изменены во время остановки службы' }
     Set-RustLMServicePath $Name $OriginalPath
     Set-RustLMServiceState $Name $OriginalState | Out-Null
 }

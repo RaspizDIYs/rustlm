@@ -64,8 +64,12 @@ try {
  try {Restart-RustLMWinwsService (Get-RustLMWinwsService $exe @(10)) $new $backup;throw 'Expected conflict'} catch {Assert ($_.Exception.Message -match 'SERVICE_ROLLBACK_FAILED') 'Concurrent configuration conflict was hidden'}
  Assert ($script:services.zapret.PathName -eq '"C:\Foreign\winws.exe"') 'Concurrent administrator changes overwritten'
  Assert (-not ($script:mutations -contains 'Change')) 'Changed conflicting service'
+ Reset-Services;$script:services.zapret.PathName=$new;$script:concurrent=$true
+ try {Restore-RustLMService 'zapret' $old 'Running' $new;throw 'Expected rollback conflict'} catch {Assert ($_.Exception.Message -match 'SERVICE_ROLLBACK_CONFLICT') 'Rollback stop race was hidden'}
+ Assert ($script:services.zapret.PathName -eq '"C:\Foreign\winws.exe"') 'Rollback overwrote concurrent administrator changes'
+ Assert (-not ($script:mutations -contains 'Change')) 'Rollback changed conflicting service'
  Reset-Services;$script:services.duplicate=$script:services.zapret.Clone();$script:services.duplicate.Name='duplicate'
  try {Get-RustLMWinwsService $exe @(10);throw 'Expected ambiguity'} catch {Assert ($_.Exception.Message -match 'SERVICE_AMBIGUOUS') 'Ambiguous service accepted'}
  Assert ($script:mutations.Count -eq 0) 'Ambiguous services mutated'
- '{"service_scenarios":7,"foreign_services_mutated":0,"real_service_commands":0,"restart_template_parsed":true}'
+ '{"service_scenarios":8,"foreign_services_mutated":0,"real_service_commands":0,"restart_template_parsed":true}'
 } finally {Remove-Item -LiteralPath $backup,$cancel -ErrorAction SilentlyContinue}
