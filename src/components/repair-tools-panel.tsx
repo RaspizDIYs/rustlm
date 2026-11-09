@@ -782,7 +782,7 @@ export default function RepairToolsPanel() {
           ● VPN: {readiness ? (readiness.vpn_signals.length ? "обнаружен" : "не обнаружен") : "проверяем"}
         </button>
         <span title={strategy || "Выберите BAT-файл"} className="rounded-full border px-2.5 py-1 text-xs text-muted-foreground">
-          Стратегия: {!strategy ? "не выбрана" : readiness?.details_unavailable ? "нужны права" : readiness?.strategy_matches ? "совпадает" : "не запущена / другая"}
+          Стратегия: {!strategy ? "не выбрана" : readiness?.details_unavailable ? "не подтверждена" : readiness?.strategy_matches ? "совпадает" : "не запущена / другая"}
         </span>
         <Button size="icon-sm" variant="ghost" aria-label="Обновить состояние" title="Обновить состояние" disabled={busy || checkingState} onClick={() => {void refreshReadiness().catch(() => {});}}><RefreshCw className={checkingState ? "animate-spin" : ""} /></Button>
         <Button size="xs" disabled={busy || !strategy || !installation || checkingState || Boolean(readiness?.vpn_signals.length)} onClick={() => {void activate();}}><Play />Включить</Button>

@@ -56,14 +56,14 @@ export function GuestConfig({ presets, onChange }: { presets: LolConfigPreset[];
         setSaveName("");
         toast.success(restore ? "Исходные настройки восстановлены" : mode === "keyboard" ? "Клавиши применены временно" : "Весь пресет применён временно");
       }
-    } catch (e) { if (mountedRef.current) toast.error(String(e)); }
+    } catch (e) { if (mountedRef.current) { const message=String(e); if (message.includes("LEAGUE_CONFIG_IN_USE") || message.includes("восстановление остаётся ожидающим")) toast.info("Исходные настройки сохранены. Закройте League Client и игру, затем повторите действие."); else toast.error(message); } }
     finally {
       try {
         if (mountedRef.current) {
           await refresh();
           if (mountedRef.current) await onChange();
         }
-      } catch (e) { if (mountedRef.current) toast.error(String(e)); }
+      } catch (e) { if (mountedRef.current) { const message=String(e); if (message.includes("LEAGUE_CONFIG_IN_USE") || message.includes("восстановление остаётся ожидающим")) toast.info("Исходные настройки сохранены. Закройте League Client и игру, затем повторите действие."); else toast.error(message); } }
       finally {
         busyRef.current = false;
         if (mountedRef.current) setBusy(false);
@@ -78,7 +78,7 @@ export function GuestConfig({ presets, onChange }: { presets: LolConfigPreset[];
     try {
       const api = await import("@/lib/tauri");
       await api.lolCfgGuestSetDefault(next);
-    } catch (e) { if (mountedRef.current) toast.error(String(e)); }
+    } catch (e) { if (mountedRef.current) { const message=String(e); if (message.includes("LEAGUE_CONFIG_IN_USE") || message.includes("восстановление остаётся ожидающим")) toast.info("Исходные настройки сохранены. Закройте League Client и игру, затем повторите действие."); else toast.error(message); } }
     finally {
       try { await refresh(); }
       finally { busyRef.current = false; if (mountedRef.current) setBusy(false); }
@@ -95,7 +95,7 @@ export function GuestConfig({ presets, onChange }: { presets: LolConfigPreset[];
       </div>
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       {status?.active ? <>
-        <p role="status" className="text-xs text-amber-500">{status.changed ? "Настройки изменились. Сохранить или восстановить?" : "Гостевой режим активен. Исходные настройки сохранены."}</p>
+        <p role="status" className="text-xs text-amber-500">{status.changed ? "Настройки изменились. Сохранить или восстановить?" : status.pending_restore ? "Исходные настройки сохранены. Для восстановления закройте League Client и игру." : "Гостевой режим активен. Исходные настройки сохранены."}</p>
         <div className="flex justify-end"><Button size="sm" disabled={busy || !!error} onClick={() => { if (!busyRef.current) setRestoreOpen(true); }}>Восстановить…</Button></div>
       </> : <div className="flex flex-wrap items-end justify-between gap-3 py-1">
         <span className="self-center text-xs font-medium">Применить вручную</span>

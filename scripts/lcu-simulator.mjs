@@ -146,6 +146,12 @@ export async function createSimulator({ port = 0, password = randomUUID(), succe
         if (ux.reloadSucceeds) { ux.window_responsive = true; ux.renderer_count = 1; }
         return reply(204);
       }
+      if (request.method === 'PUT' && route === '/lol-summoner/v1/current-summoner/icon' && state.summoner) {
+        if (!Number.isSafeInteger(data.profileIconId) || data.profileIconId < 0) return reply(400, {});
+        state.summoner.profileIconId = data.profileIconId;
+        actions.push({method:request.method,route});
+        return reply(204);
+      }
       if (request.method === 'POST' && route === `${readyRoute}/accept` && state.ready.state === 'InProgress') {
         actions.push({ method: request.method, route });
         state.ready.playerResponse = 'Accepted'; publish(readyRoute, state.ready); return reply(204);

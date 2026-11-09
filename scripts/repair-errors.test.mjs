@@ -22,3 +22,7 @@ test("preflight problems have actionable messages", () => {
 test("a failed rollback stays visible even when validation was the original error", () => {
   assert.match(repairError("VALIDATION_FAILED. Откат не завершён: error").action, /Откат не завершён/);
 });
+test("unknown process details do not assert an administrator denial; concurrent control waits", () => {
+  assert.doesNotMatch(repairError("ZAPRET_DETAILS_UNAVAILABLE").title, /администратор/);
+  assert.match(repairError("ZAPRET_CONTROL_BUSY").action, /Дождитесь/);
+});

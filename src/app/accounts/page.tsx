@@ -57,7 +57,6 @@ import {
   Share2,
   ShieldOff,
   UserPlus,
-  UserRoundPlus,
   Search,
   Plus,
   Ellipsis,
@@ -859,14 +858,8 @@ export default function AccountsPage() {
                 </Button>
               </WithTooltip>
             </div>
-            <div className="accounts-header-controls has-party">
+            <div className="accounts-header-controls">
               <AutoAcceptSwitch className="accounts-autoaccept" />
-              <WithTooltip label="Собрать пати">
-                <Button className="party-trigger relative" variant="outline" size="icon-sm" aria-label="Собрать пати" onClick={() => social.openPanel("party")}>
-                  <UserRoundPlus className="size-4" />
-                  {!!partyState?.invitations.length && <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1 text-[9px] text-primary-foreground">{partyState.invitations.length}</span>}
-                </Button>
-              </WithTooltip>
               <Button size="sm" onClick={() => setAddOpen(true)}>
                 <Plus data-icon="inline-start" />
                 Добавить

@@ -765,32 +765,6 @@ impl AutoAcceptService {
         }
         self.sync_loadout_profile(mode, role, settings_revision)
             .await;
-        // Bound retries when the client rejects a restricted loadout.
-        let mut retry = self.loadout_retry_at.lock().await;
-        if std::time::Instant::now() >= *retry {
-            *retry = std::time::Instant::now() + Duration::from_secs(5);
-            if settings.auto_spells_enabled
-                && !self.has_set_spells.load(Ordering::SeqCst)
-                && self
-                    .set_summoner_spells(&settings, mode, role, me, settings_revision, version)
-                    .await
-                && self.settings_revision.load(Ordering::SeqCst) == settings_revision
-                && self.champ_select_version.load(Ordering::SeqCst) == version
-            {
-                self.has_set_spells.store(true, Ordering::SeqCst);
-            }
-            if settings.auto_runes_enabled
-                && !self.has_set_runes.load(Ordering::SeqCst)
-                && self
-                    .set_rune_page(&settings, settings_revision, version)
-                    .await
-                && self.settings_revision.load(Ordering::SeqCst) == settings_revision
-                && self.champ_select_version.load(Ordering::SeqCst) == version
-            {
-                self.has_set_runes.store(true, Ordering::SeqCst);
-            }
-        }
-        drop(retry);
         if matches!(mode, "aram" | "mayhem") && settings.auto_pick_enabled && profile.is_some() {
             let mut progress = self.bench_progress.lock().await;
             progress.observe(session, std::time::Instant::now());
@@ -1293,6 +1267,33 @@ impl AutoAcceptService {
                 }
             }
         }
+        // Champion actions have a deadline; optional loadouts must not delay them.
+        // Bound retries when the client rejects a restricted loadout.
+        let mut retry = self.loadout_retry_at.lock().await;
+        if std::time::Instant::now() >= *retry {
+            *retry = std::time::Instant::now() + Duration::from_secs(5);
+            if settings.auto_spells_enabled
+                && !self.has_set_spells.load(Ordering::SeqCst)
+                && self
+                    .set_summoner_spells(&settings, mode, role, me, settings_revision, version)
+                    .await
+                && self.settings_revision.load(Ordering::SeqCst) == settings_revision
+                && self.champ_select_version.load(Ordering::SeqCst) == version
+            {
+                self.has_set_spells.store(true, Ordering::SeqCst);
+            }
+            if settings.auto_runes_enabled
+                && !self.has_set_runes.load(Ordering::SeqCst)
+                && self
+                    .set_rune_page(&settings, settings_revision, version)
+                    .await
+                && self.settings_revision.load(Ordering::SeqCst) == settings_revision
+                && self.champ_select_version.load(Ordering::SeqCst) == version
+            {
+                self.has_set_runes.store(true, Ordering::SeqCst);
+            }
+        }
+        drop(retry);
     }
 
     async fn subset_champions(&self) -> Vec<i32> {
@@ -3049,6 +3050,12 @@ mod simulator_tests {
                     ..Default::default()
                 },
             );
+            if mode == "classic" {
+                let profile = settings.profiles.get_mut("classic:middle").unwrap();
+                profile.auto_spells = true;
+                profile.spell1_id = Some(4);
+                profile.spell2_id = Some(14);
+            }
             service.set_settings(settings).await;
             let random = matches!(mode, "aram" | "mayhem");
             for ban in [true, false] {
@@ -3067,7 +3074,27 @@ mod simulator_tests {
                     .unwrap();
                 service.has_picked_champion.store(false, Ordering::SeqCst);
                 service.has_banned_champion.store(false, Ordering::SeqCst);
-                service.handle_champ_select_session(&session).await;
+                let loadout_route = "GET /lol-gameflow/v1/session/per-position-summoner-spells/disallowed";
+                let before: Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+                let count = before["requestCounts"][loadout_route].as_u64().unwrap_or(0);
+                if mode == "classic" {
+                    // Observe the first loadout request rather than relying on a fixed sleep.
+                    let observe = async {
+                        loop {
+                            let state: Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+                            if state["requestCounts"][loadout_route].as_u64().unwrap_or(0) > count {
+                                assert_eq!(state["session"]["actions"][0][0]["completed"], true, "loadout ran before champion action");
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    };
+                    let (_, observed) = tokio::join!(service.handle_champ_select_session(&session), tokio::time::timeout(Duration::from_secs(10), observe));
+                    observed.unwrap();
+                    *service.loadout_retry_at.lock().await = std::time::Instant::now();
+                } else {
+                    service.handle_champ_select_session(&session).await;
+                }
                 let state: Value =
                     serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
                 if random {

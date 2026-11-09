@@ -42,7 +42,7 @@ pub fn repair_open_folder(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
-pub async fn repair_export_report(app: tauri::AppHandle, path: String) -> Result<(), String> {
+pub async fn repair_export_report(app: tauri::AppHandle, state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
     if std::path::Path::new(&path)
         .extension()
         .and_then(|s| s.to_str())
@@ -50,12 +50,17 @@ pub async fn repair_export_report(app: tauri::AppHandle, path: String) -> Result
     {
         return Err("Выберите файл .json".into());
     }
-    let reports = super::network::network_history(app)?;
-    let logs = crate::services::repair_paths::root()?.join("logs");
-    let evidence = tokio::task::spawn_blocking(move || repair::collect(&logs))
+    let reports = super::network::network_history(app.clone())?;
+    let root = crate::services::repair_paths::root()?;
+    let session_root = root.join("sessions");
+    let logs = root.join("logs");
+    let app_logs = app.path().app_log_dir().ok();
+    let diagnostics = state.riot_client.diagnostics.snapshot();
+    let watch = state.unglitch.snapshot();
+    let (evidence,sessions) = tokio::task::spawn_blocking(move || repair::collect(&logs, app_logs.as_deref()).map(|evidence| (evidence, repair::session_summaries(&session_root))))
         .await
         .map_err(|e| e.to_string())??;
-    let bytes = serde_json::to_vec_pretty(&serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"created_at":chrono::Utc::now(),"network_reports":reports,"evidence":evidence,"note":"Отчёт содержит сетевые замеры и категории ошибок. Пароли, аккаунты и сырые клиентские логи не включены."})).map_err(|e|e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({"report_schema_version":2,"version":env!("CARGO_PKG_VERSION"),"created_at":chrono::Utc::now(),"network_reports":reports,"evidence":evidence,"client_diagnostics":diagnostics,"unglitch_watch":watch,"repair_sessions":sessions,"note":"Отчёт содержит сетевые замеры, состояния клиента и категории ошибок. Пароли, аккаунты и сырые клиентские логи не включены."})).map_err(|e|e.to_string())?;
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 #[tauri::command]
@@ -108,7 +113,8 @@ pub async fn repair_collect_evidence(
         .map_err(|e| e.to_string())?
         .join("Repair Tools")
         .join("logs");
-    tokio::task::spawn_blocking(move || repair::collect(&logs))
+    let app_logs = app.path().app_log_dir().ok();
+    tokio::task::spawn_blocking(move || repair::collect(&logs, app_logs.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }

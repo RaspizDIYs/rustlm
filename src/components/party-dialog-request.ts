@@ -9,12 +9,14 @@ export function partyActionError(error: unknown) {
   const text = error instanceof Error ? error.message : details
     ? `${details.status ?? details.statusCode ?? ""} ${details.message ?? String(error)}`
     : String(error);
-  if (/\b401\b/.test(text)) return "Подтвердите свою учётную запись LM заново.";
+  if (/\b401\b|Подключите.*(?:League|LM)/i.test(text)) return "Подключите аккаунт League к LM в панели «Друзья».";
+  if (/Дождитесь завершения подключения League/i.test(text)) return "Подключение League к LM ещё выполняется — дождитесь подтверждения.";
+  if (/\b429\b/.test(text)) return "Слишком частое обновление пати — подождите немного перед повтором.";
   if (/\b503\b/.test(text)) return "Сервис пати временно недоступен — попробуйте позже.";
   if (/\b403\b/.test(text)) return "У вас нет прав на это действие в группе.";
   if (/\b409\b|revision|conflict|устар|конфликт/i.test(text)) return "Группа изменилась — проверьте её состояние и повторите действие.";
   if (/(?:league|lcu).*(?:not connected|disconnected|offline|not running)|(?:откройте|запустите).*league/i.test(text)) return "Откройте League и войдите в игровой аккаунт.";
-  if (/network|fetch|timeout|connection/i.test(text)) return "Не удалось связаться с сервисом пати — проверьте подключение.";
+  if (/network|fetch|timeout|connection|Не удалось связаться|сервером друзей|LM_NETWORK/i.test(text)) return "Не удалось связаться с сервисом пати — проверьте подключение.";
   return "Не удалось выполнить действие — проверьте состояние группы перед повтором.";
 }
 
