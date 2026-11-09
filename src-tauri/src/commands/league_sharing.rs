@@ -75,6 +75,7 @@ pub(super) async fn request(
             }
             429 if path == "/presence" => "Список обновляется слишком часто. Подождите минуту",
             429 => "Слишком много попыток. Повторите подключение через 10 минут",
+            503 if path == "/connect/confirm" => "RIOT_PROFILE_UNAVAILABLE: сервер не смог проверить профиль Riot. Этап сохранён; повторите подключение позже",
             503 => "Независимые друзья League пока не включены на сервере",
             _ => "Сервер друзей League не завершил операцию",
         };
@@ -230,7 +231,7 @@ pub async fn league_connect(state: State<'_, AppState>) -> Result<(), AppError> 
         .riot_client
         .lcu_get("/lol-gameflow/v1/gameflow-phase")
         .await?;
-    if !matches!(phase.trim_matches('"'), "None" | "Lobby") {
+    if !icon_phase_allowed(&phase) {
         return Err(AppError::Custom(
             "Подключите LM вне поиска, выбора чемпионов и матча".into(),
         ));
@@ -462,7 +463,7 @@ async fn ensure_icon_account(
         .riot_client
         .lcu_get("/lol-gameflow/v1/gameflow-phase")
         .await?;
-    if !matches!(phase.trim_matches('"'), "None" | "Lobby") {
+    if !icon_phase_allowed(&phase) {
         return Err(AppError::Custom(
             "Изменение значка отложено до выхода из поиска, выбора чемпионов и матча".into(),
         ));
@@ -470,30 +471,59 @@ async fn ensure_icon_account(
     Ok(())
 }
 
+fn icon_phase_allowed(raw: &str) -> bool {
+    serde_json::from_str::<String>(raw).is_ok_and(|phase| matches!(phase.as_str(), "None" | "Lobby"))
+}
+
 async fn set_icon(
     state: &AppState,
     me: &riot_friends::CurrentRiotAccount,
     icon: u64,
 ) -> Result<(), AppError> {
+    apply_icon(&state.riot_client, icon, || ensure_icon_account(state, me)).await
+}
+
+async fn apply_icon<F, Fut>(
+    client: &crate::services::riot_client::RiotClientService,
+    icon: u64,
+    check: F,
+) -> Result<(), AppError>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Result<(), AppError>> + Send,
+{
     for attempt in 0..4 {
-        ensure_icon_account(state, me).await?;
-        match state
-            .riot_client
+        check().await?;
+        let current: Value = serde_json::from_str(&client.lcu_get("/lol-summoner/v1/current-summoner").await?)?;
+        if current["profileIconId"].as_u64() == Some(icon) {
+            check().await?;
+            return Ok(());
+        }
+        match client
             .lcu_put_checked(
                 "/lol-summoner/v1/current-summoner/icon",
                 &json!({"profileIconId":icon}).to_string(),
-                || async { ensure_icon_account(state, me).await.is_ok() },
+                || async { check().await.is_ok() },
             )
             .await
         {
-            Ok(_) => return Ok(()),
+            Ok(_) => break,
             Err(error) if is_status(&error, 429) && attempt < 3 => {
                 tokio::time::sleep(std::time::Duration::from_secs(confirmation_delay(&error, attempt))).await;
             }
             Err(error) => return Err(error),
         }
     }
-    unreachable!()
+    for _ in 0..10 {
+        check().await?;
+        let current: Value = serde_json::from_str(&client.lcu_get("/lol-summoner/v1/current-summoner").await?)?;
+        if current["profileIconId"].as_u64() == Some(icon) {
+            check().await?;
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    Err(AppError::Custom("RIOT_ICON_NOT_APPLIED: клиент League не подтвердил смену значка. Серверная проверка не начата; повторите подключение".into()))
 }
 
 async fn restore_icon(
@@ -764,3 +794,37 @@ mod tests {
         );
     }
 }
+    #[test]
+    fn icon_change_parses_json_phase_with_whitespace_and_rejects_active_games() {
+        for raw in ["\"Lobby\"", " \"Lobby\"\r\n", "\"None\"\n"] { assert!(icon_phase_allowed(raw)); }
+        for raw in ["Lobby", "null", "\"ChampSelect\"", "\"InProgress\"", "\"Matchmaking\""] { assert!(!icon_phase_allowed(raw)); }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit RUSTLM_TEST_LCU simulator config"]
+    async fn simulator_icon_updates_are_verified_idempotent_and_account_guarded() {
+        use crate::services::riot_client::RiotClientService;
+        let client = RiotClientService::new();
+        client.lcu_post("/__test/scenario", r#"{"name":"idle"}"#).await.unwrap();
+        let mut fixture: Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        fixture["summoner"] = json!({"profileIconId":5});
+        client.lcu_post("/__test/fixture", &fixture.to_string()).await.unwrap();
+        let route = "/lol-summoner/v1/current-summoner/icon";
+        let key = format!("PUT {route}");
+        let count = |v: &Value| v["requestCounts"][&key].as_u64().unwrap_or(0);
+        let before: Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        apply_icon(&client, 6, || std::future::ready(Ok(()))).await.unwrap();
+        apply_icon(&client, 6, || std::future::ready(Ok(()))).await.unwrap();
+        let after: Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(count(&after), count(&before)+1);
+        assert_eq!(after["summoner"]["profileIconId"], 6);
+        client.lcu_post("/__test/failure", &json!({"route":route,"status":200,"response":{}}).to_string()).await.unwrap();
+        assert!(apply_icon(&client, 7, || std::future::ready(Ok(()))).await.unwrap_err().to_string().contains("RIOT_ICON_NOT_APPLIED"));
+        let guarded_before: Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        assert!(apply_icon(&client, 7, || std::future::ready(if checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {Ok(())} else {Err(AppError::Custom("account switched".into()))})).await.is_err());
+        let guarded_after: Value = serde_json::from_str(&client.lcu_get("/__test/state").await.unwrap()).unwrap();
+        assert_eq!(count(&guarded_before), count(&guarded_after));
+        client.lcu_post("/__test/failure", &json!({"route":route,"status":429,"retryAfter":1}).to_string()).await.unwrap();
+        apply_icon(&client, 7, || std::future::ready(Ok(()))).await.unwrap();
+    }

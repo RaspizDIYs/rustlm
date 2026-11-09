@@ -3955,7 +3955,7 @@ dependencies = [
 
 [[package]]
 name = "rustlm"
-version = "0.5.25"
+version = "0.5.26-local.1"
 dependencies = [
  "aes",
  "aes-gcm",

@@ -95,3 +95,24 @@ tests ignored in that run); 105 JS tests passed; the separate native simulator r
 passed all 32 scenarios, including picks/bans without an LM identity and loadout ordering.
 Recorded replay passed with zero mismatches. TypeScript and frontend production build
 passed. Real Riot icon propagation and production party authentication remain unverified.
+
+## Local build 0.5.26-local.1
+
+- Production log review found four successful challenge starts and 91 confirmation
+  conflicts on 2026-11-06 15:35:42–15:48:02 UTC, with no route-level 429/500/503 in
+  that set. Public verification did not observe the challenged icon. These logs cannot
+  distinguish an unapplied local write from public-profile propagation latency.
+- The icon operation now verifies actual LCU state before public verification and
+  skips writes when the target is already applied. Dispatch/account checks remain.
+  Idle-phase parsing uses JSON parsing rather than stripping quote characters.
+- Backend counterpart distinguishes unreadable Riot responses from real icon
+  mismatches (sanitized 503 with Retry-After; proof retained). It is prepared separately,
+  tested against isolated Redis, and is not deployed by this local-build task.
+- Validation: 295 Rust passed / 35 ignored; separately 33 native simulator scenarios
+  passed plus one native replay with zero mismatches. JS: 105 passed. Frontend build
+  and native Windows debug build passed. GUI accessibility confirmed version
+  0.5.26-local.1, Accounts and the absence of the duplicate party button.
+- Native artifact: artifacts/league-connect-preview/RustLM-0.5.26-local.1.exe,
+  SHA256 2fe6b4c4d912131e82ec55e50e58122eb3dce11ffd274ee2d94dda67f2d54349.
+  This is a local development build, not a published updater release. No live Riot
+  sign-in, challenge confirmation or two-user party was performed here.
