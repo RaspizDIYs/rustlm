@@ -60,6 +60,7 @@ fn absolutize_goodluck_media_url(url: &str) -> String {
 
 pub struct GoodLuckAuthService {
     http_client: reqwest::Client,
+    api_base: String,
     auth_state: Mutex<Option<AuthState>>,
     pending_flow: Mutex<Option<PendingAuthFlow>>,
     refresh_lock: tokio::sync::Mutex<()>,
@@ -85,6 +86,7 @@ impl GoodLuckAuthService {
         let tokens_path = roaming_dir.join("goodluck_auth.json");
 
         let service = Self {
+            api_base: GOODLUCK_API_BASE.to_string(),
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
@@ -203,7 +205,7 @@ impl GoodLuckAuthService {
         // 2) на время миграции меняем identity-токен на JWT GoodLuck (legacy-формат для RustLM)
         let resp = self
             .http_client
-            .post(&format!("{}/auth/oidc/exchange/rustlm", GOODLUCK_API_BASE))
+            .post(&format!("{}/auth/oidc/exchange/rustlm", self.api_base))
             .json(&serde_json::json!({ "accessToken": access_token }))
             .send()
             .await
@@ -248,15 +250,14 @@ impl GoodLuckAuthService {
                 refresh_token: auth_response.refresh_token.clone(),
                 expires_at,
             });
+            // Serialize persistence with refresh so an older write cannot win.
+            self.write_auth_to_disk(
+                &auth_response.token,
+                &auth_response.refresh_token,
+                &user,
+                expires_at,
+            )?;
         }
-
-        // Persist tokens to disk (DPAPI-encrypted)
-        self.write_auth_to_disk(
-            &auth_response.token,
-            &auth_response.refresh_token,
-            &user,
-            expires_at,
-        )?;
 
         log::info!(
             "[auth] OIDC login via identity succeeded for user {}",
@@ -282,33 +283,18 @@ impl GoodLuckAuthService {
 
     /// Get the current JWT for API calls (auto-refresh if expired)
     pub async fn get_token(&self) -> Result<String, AppError> {
-        // Check if token is expired
-        let needs_refresh = {
+        let (token, needs_refresh) = {
             let auth = self.auth_state.lock().unwrap();
-            match &*auth {
-                Some(state) => chrono::Utc::now() >= state.expires_at,
-                None => return Err(AppError::Custom("Not authenticated".to_string())),
-            }
+            let state = auth.as_ref()
+                .ok_or_else(|| AppError::Custom("Not authenticated".to_string()))?;
+            (state.jwt.clone(), chrono::Utc::now() >= state.expires_at)
         };
-
         if needs_refresh {
-            // Serialize refresh attempts so only one runs at a time.
-            // If another caller already refreshed, we'll just read the new token.
-            let _guard = self.refresh_lock.lock().await;
-            let still_needs_refresh = {
-                let auth = self.auth_state.lock().unwrap();
-                match &*auth {
-                    Some(state) => chrono::Utc::now() >= state.expires_at,
-                    None => return Err(AppError::Custom("Not authenticated".to_string())),
-                }
-            };
-            if still_needs_refresh {
-                self.refresh_token().await?;
-            }
+            self.refresh_rejected_token(&token).await?;
         }
-
         let auth = self.auth_state.lock().unwrap();
-        Ok(auth.as_ref().unwrap().jwt.clone())
+        auth.as_ref().map(|state| state.jwt.clone())
+            .ok_or_else(|| AppError::Custom("Not authenticated".to_string()))
     }
 
     /// Logout: revoke refresh token on server, clear local state
@@ -322,7 +308,7 @@ impl GoodLuckAuthService {
         if let Some(jwt) = token {
             let _ = self
                 .http_client
-                .post(&format!("{}/auth/rustlm/revoke", GOODLUCK_API_BASE))
+                .post(&format!("{}/auth/rustlm/revoke", self.api_base))
                 .bearer_auth(&jwt)
                 .send()
                 .await;
@@ -346,7 +332,7 @@ impl GoodLuckAuthService {
 
     /// Fetch latest profile from GoodLuck (`GET /auth/rustlm/me`), update nick / riot list / avatar cache.
     pub async fn refresh_profile_from_server(&self) -> Result<GoodLuckUser, AppError> {
-        let url = format!("{}/auth/rustlm/me", GOODLUCK_API_BASE);
+        let url = format!("{}/auth/rustlm/me", self.api_base);
 
         let mut user: GoodLuckUser = {
             let mut last_err = None;
@@ -362,7 +348,7 @@ impl GoodLuckAuthService {
                     .map_err(|e| AppError::Custom(format!("Profile refresh failed: {}", e)))?;
 
                 if resp.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                    let _ = self.refresh_token().await;
+                    let _ = self.refresh_rejected_token(&token).await;
                     continue;
                 }
 
@@ -392,23 +378,17 @@ impl GoodLuckAuthService {
         user.avatar_url = absolutize_goodluck_media_url(&user.avatar_url);
         let _ = self.attach_cached_avatar(&mut user).await;
 
-        let (jwt, refresh, expires_at) = {
+        {
             let mut auth = self.auth_state.lock().unwrap();
-            let state = auth
-                .as_mut()
-                .ok_or_else(|| AppError::Custom("Not authenticated".to_string()))?;
+            let state = auth.as_mut()
+                .filter(|current| current.user.user_id == user.user_id)
+                .ok_or_else(|| AppError::Custom("Сессия GoodLuck изменилась во время загрузки профиля.".to_string()))?;
             state.user.display_name = user.display_name.clone();
             state.user.avatar_url = user.avatar_url.clone();
             state.user.riot_accounts = user.riot_accounts.clone();
             state.user.local_avatar_path = user.local_avatar_path.clone();
-            (
-                state.jwt.clone(),
-                state.refresh_token.clone(),
-                state.expires_at,
-            )
-        };
-
-        self.write_auth_to_disk(&jwt, &refresh, &user, expires_at)?;
+            self.write_auth_to_disk(&state.jwt, &state.refresh_token, &user, state.expires_at)?;
+        }
 
         Ok(user)
     }
@@ -430,7 +410,7 @@ impl GoodLuckAuthService {
             })
             .collect();
 
-        let url = format!("{}/auth/rustlm/sync-accounts", GOODLUCK_API_BASE);
+        let url = format!("{}/auth/rustlm/sync-accounts", self.api_base);
 
         for attempt in 0..2u8 {
             let token = self.get_token().await?;
@@ -444,7 +424,7 @@ impl GoodLuckAuthService {
                 .map_err(|e| AppError::Custom(format!("Sync failed: {}", e)))?;
 
             if resp.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                self.refresh_token().await?;
+                self.refresh_rejected_token(&token).await?;
                 continue;
             }
 
@@ -468,7 +448,7 @@ impl GoodLuckAuthService {
 
     /// Delete all synced RustLM data from GoodLuck server
     pub async fn delete_server_data(&self) -> Result<(), AppError> {
-        let url = format!("{}/auth/rustlm/sync-accounts", GOODLUCK_API_BASE);
+        let url = format!("{}/auth/rustlm/sync-accounts", self.api_base);
 
         for attempt in 0..2u8 {
             let token = self.get_token().await?;
@@ -481,7 +461,7 @@ impl GoodLuckAuthService {
                 .map_err(|e| AppError::Custom(format!("Delete server data failed: {}", e)))?;
 
             if resp.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                self.refresh_token().await?;
+                self.refresh_rejected_token(&token).await?;
                 continue;
             }
 
@@ -508,7 +488,7 @@ impl GoodLuckAuthService {
 
         let resp = self
             .http_client
-            .get(&format!("{}/auth/rustlm/sync-accounts", GOODLUCK_API_BASE))
+            .get(&format!("{}/auth/rustlm/sync-accounts", self.api_base))
             .bearer_auth(&token)
             .send()
             .await
@@ -716,68 +696,61 @@ impl GoodLuckAuthService {
         });
     }
 
-    async fn refresh_token(&self) -> Result<(), AppError> {
-        let refresh_token = {
+    /// All refresh paths share one gate, including retries after HTTP 401.
+    async fn refresh_rejected_token(&self, rejected_token: &str) -> Result<(), AppError> {
+        let _guard = self.refresh_lock.lock().await;
+        let previous = {
             let auth = self.auth_state.lock().unwrap();
-            auth.as_ref()
-                .map(|a| a.refresh_token.clone())
-                .ok_or_else(|| AppError::Custom("Not authenticated".to_string()))?
+            let state = auth.as_ref()
+                .ok_or_else(|| AppError::Custom("Not authenticated".to_string()))?;
+            if state.jwt != rejected_token {
+                // Another request already refreshed this access token.
+                return Ok(());
+            }
+            state.clone()
         };
 
-        let resp = self
-            .http_client
-            .post(&format!("{}/auth/refresh", GOODLUCK_API_BASE))
-            .json(&serde_json::json!({
-                "refreshToken": refresh_token
-            }))
-            .send()
-            .await
+        let resp = self.http_client
+            .post(&format!("{}/auth/refresh", self.api_base))
+            .json(&serde_json::json!({ "refreshToken": previous.refresh_token }))
+            .send().await
             .map_err(|e| AppError::Custom(format!("Token refresh failed: {}", e)))?;
 
-        if !resp.status().is_success() {
-            // Refresh token is invalid — clear auth
-            {
+        let status = resp.status();
+        if !status.is_success() {
+            // Only 401 means a revoked/expired refresh token in the GoodLuck API.
+            // A rate limit or an outage must not destroy the saved login.
+            if status == reqwest::StatusCode::UNAUTHORIZED {
                 let mut auth = self.auth_state.lock().unwrap();
-                *auth = None;
+                if auth.as_ref().is_some_and(|current|
+                    current.jwt == previous.jwt && current.refresh_token == previous.refresh_token
+                ) {
+                    *auth = None;
+                    let _ = fs::remove_file(&self.tokens_path);
+                }
+                return Err(AppError::Custom("Session expired. Please login again.".to_string()));
             }
-            if self.tokens_path.exists() {
-                fs::remove_file(&self.tokens_path).ok();
-            }
-            return Err(AppError::Custom(
-                "Session expired. Please login again.".to_string(),
-            ));
+            return Err(AppError::Custom(format!(
+                "Не удалось обновить вход GoodLuck (HTTP {}). Сохранённый вход оставлен; повторите позже.", status
+            )));
         }
 
-        let auth_response: GoodLuckAuthResponse = resp
-            .json()
-            .await
+        let response: GoodLuckAuthResponse = resp.json().await
             .map_err(|e| AppError::Custom(format!("Failed to parse refresh response: {}", e)))?;
-
-        let expires_at =
-            chrono::Utc::now() + chrono::Duration::seconds(auth_response.expires_in as i64);
-
-        // Refresh response has user=null — preserve existing user data
-        let user = {
-            let mut auth = self.auth_state.lock().unwrap();
-            let state = auth
-                .as_mut()
-                .ok_or_else(|| AppError::Custom("Not authenticated".to_string()))?;
-            state.jwt = auth_response.token.clone();
-            state.refresh_token = auth_response.refresh_token.clone();
-            state.expires_at = expires_at;
-            state.user.clone()
-        };
-
-        // Update persisted tokens with existing user
-        self.write_auth_to_disk(
-            &auth_response.token,
-            &auth_response.refresh_token,
-            &user,
-            expires_at,
-        )?;
-
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(response.expires_in as i64);
+        let mut auth = self.auth_state.lock().unwrap();
+        let state = auth.as_mut()
+            .filter(|current| current.jwt == previous.jwt && current.refresh_token == previous.refresh_token)
+            .ok_or_else(|| AppError::Custom("Сессия GoodLuck изменилась во время обновления входа.".to_string()))?;
+        state.jwt = response.token;
+        state.refresh_token = response.refresh_token;
+        state.expires_at = expires_at;
+        // Keep the state check and persistence together: a delayed reply must
+        // never overwrite the credentials of a newer login.
+        self.write_auth_to_disk(&state.jwt, &state.refresh_token, &state.user, state.expires_at)?;
         Ok(())
     }
+
 }
 
 // --- Cloud accounts API ---
@@ -787,7 +760,7 @@ impl GoodLuckAuthService {
         let token = self.get_token().await?;
         let mut req = self
             .http_client
-            .delete(&format!("{}/auth/rustlm/cloud-accounts", GOODLUCK_API_BASE))
+            .delete(&format!("{}/auth/rustlm/cloud-accounts", self.api_base))
             .bearer_auth(&token);
         if let Some(session) = totp_session {
             req = req.header("X-TOTP-Session", session);
@@ -822,7 +795,7 @@ impl GoodLuckAuthService {
         let token = self.get_token().await?;
         let resp = self
             .http_client
-            .post(&format!("{}/auth/rustlm/2fa/setup", GOODLUCK_API_BASE))
+            .post(&format!("{}/auth/rustlm/2fa/setup", self.api_base))
             .bearer_auth(&token)
             .send()
             .await
@@ -849,7 +822,7 @@ impl GoodLuckAuthService {
         let token = self.get_token().await?;
         let resp = self
             .http_client
-            .post(&format!("{}/auth/rustlm/2fa/verify", GOODLUCK_API_BASE))
+            .post(&format!("{}/auth/rustlm/2fa/verify", self.api_base))
             .bearer_auth(&token)
             .json(&serde_json::json!({ "code": code }))
             .send()
@@ -874,7 +847,7 @@ impl GoodLuckAuthService {
         let token = self.get_token().await?;
         let resp = self
             .http_client
-            .post(&format!("{}/auth/rustlm/2fa/disable", GOODLUCK_API_BASE))
+            .post(&format!("{}/auth/rustlm/2fa/disable", self.api_base))
             .bearer_auth(&token)
             .json(&serde_json::json!({ "code": code }))
             .send()
@@ -897,7 +870,7 @@ impl GoodLuckAuthService {
         let token = self.get_token().await?;
         let resp = self
             .http_client
-            .get(&format!("{}/auth/rustlm/2fa/status", GOODLUCK_API_BASE))
+            .get(&format!("{}/auth/rustlm/2fa/status", self.api_base))
             .bearer_auth(&token)
             .send()
             .await
@@ -926,7 +899,7 @@ impl GoodLuckAuthService {
         let token = self.get_token().await?;
         let resp = self
             .http_client
-            .post(&format!("{}/auth/rustlm/2fa/validate", GOODLUCK_API_BASE))
+            .post(&format!("{}/auth/rustlm/2fa/validate", self.api_base))
             .bearer_auth(&token)
             .json(&serde_json::json!({ "code": code }))
             .send()
@@ -962,13 +935,13 @@ impl GoodLuckAuthService {
         body: Option<serde_json::Value>,
         totp_session: Option<&str>,
     ) -> Result<reqwest::Response, AppError> {
-        let url = format!("{}{}", GOODLUCK_API_BASE, path);
+        let url = format!("{}{}", self.api_base, path);
         for attempt in 0..2u8 {
             let token = self.get_token().await?;
             let mut request = self
                 .http_client
                 .request(method.clone(), &url)
-                .bearer_auth(token);
+                .bearer_auth(&token);
             if let Some(session) = totp_session {
                 request = request.header("X-TOTP-Session", session);
             }
@@ -980,7 +953,7 @@ impl GoodLuckAuthService {
                 .await
                 .map_err(|e| AppError::Custom(format!("GoodLuck request failed: {}", e)))?;
             if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-                self.refresh_token().await?;
+                self.refresh_rejected_token(&token).await?;
                 continue;
             }
             if !response.status().is_success() {
@@ -1275,3 +1248,7 @@ mod avatar_url_tests {
         assert_eq!(absolutize_goodluck_media_url("  "), "");
     }
 }
+
+#[cfg(test)]
+#[path = "goodluck_auth_tests.rs"]
+mod restored_session_tests;
