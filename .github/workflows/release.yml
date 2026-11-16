@@ -91,6 +91,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: src-tauri
+          tauriScript: npx --no-install tauri
           args: --config tauri.ci-updater.json -- --locked
           tagName: v__VERSION__
           releaseName: 'RustLM v__VERSION__'
