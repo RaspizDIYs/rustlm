@@ -73,12 +73,9 @@ pub fn apply_pending_repair() -> PendingRepair {
 
 fn restart(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
     log::warn!("[webview] перезапуск для починки окна: {}", reason);
-    let exe = std::env::current_exe().map_err(|e| format!("Не удалось найти exe: {}", e))?;
-    std::process::Command::new(exe)
-        .args(std::env::args().skip(1))
-        .spawn()
-        .map_err(|e| format!("Не удалось перезапустить приложение: {}", e))?;
-    app.exit(0);
+    // Exit освобождает single-instance и вебвью до запуска новой копии.
+    // spawn до app.exit гоняется со старым экземпляром и теряет перезапуск.
+    app.request_restart();
     Ok(())
 }
 
